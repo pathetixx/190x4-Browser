@@ -30,7 +30,7 @@ pub mod message;
 pub mod tab;
 
 pub use downloads::DownloadPolicy;
-pub use host::{Layout, TabHost, TabId, PAGES_HOST};
+pub use host::{EngineProcess, Layout, TabBrief, TabHost, TabId, PAGES_HOST};
 pub use message::{ChromeEvent, TabCommand};
 pub use tab::Tab;
 pub use tab::TabEvent;

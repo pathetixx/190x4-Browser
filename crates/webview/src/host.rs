@@ -68,6 +68,91 @@ impl From<Layout> for RECT {
     }
 }
 
+/// Процесс движка и документы, которые он показывает.
+#[derive(Debug, Clone)]
+pub struct EngineProcess {
+    pub pid: u32,
+    /// `browser`, `renderer`, `gpu`, `utility`, `sandbox` или `plugin`.
+    pub kind: &'static str,
+    /// Адреса документов верхнего уровня, чьи фреймы живут в процессе: iframe
+    /// чужого сайта в отдельном процессе засчитывается странице, в которую встроен.
+    pub pages: Vec<String>,
+}
+
+/// Вкладка для отчёта о ресурсах.
+#[derive(Debug, Clone)]
+pub struct TabBrief {
+    pub id: u32,
+    pub url: String,
+    pub title: String,
+}
+
+fn read_processes(
+    collection: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2ProcessExtendedInfoCollection,
+) -> windows_core::Result<Vec<EngineProcess>> {
+    use webview2_com::take_pwstr;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2FrameInfo, ICoreWebView2FrameInfo2, COREWEBVIEW2_PROCESS_KIND_BROWSER,
+        COREWEBVIEW2_PROCESS_KIND_GPU, COREWEBVIEW2_PROCESS_KIND_PPAPI_BROKER,
+        COREWEBVIEW2_PROCESS_KIND_PPAPI_PLUGIN, COREWEBVIEW2_PROCESS_KIND_RENDERER,
+        COREWEBVIEW2_PROCESS_KIND_SANDBOX_HELPER, COREWEBVIEW2_PROCESS_KIND_UTILITY,
+    };
+    use windows_core::{Interface, BOOL, PWSTR};
+
+    let mut count = 0u32;
+    unsafe { collection.Count(&mut count)? };
+    let mut out = Vec::with_capacity(count as usize);
+
+    for index in 0..count {
+        unsafe {
+            let info = collection.GetValueAtIndex(index)?;
+            let process = info.ProcessInfo()?;
+            let mut pid = 0i32;
+            process.ProcessId(&mut pid)?;
+            let mut kind = COREWEBVIEW2_PROCESS_KIND_BROWSER;
+            process.Kind(&mut kind)?;
+
+            let mut pages = Vec::new();
+            let frames = info.AssociatedFrameInfos()?;
+            let iterator = frames.GetIterator()?;
+            let mut has = BOOL::default();
+            iterator.HasCurrent(&mut has)?;
+            while has.as_bool() {
+                let mut frame: ICoreWebView2FrameInfo = iterator.GetCurrent()?;
+                while let Ok(parent) = frame
+                    .cast::<ICoreWebView2FrameInfo2>()
+                    .and_then(|frame| frame.ParentFrameInfo())
+                {
+                    frame = parent;
+                }
+                let mut raw = PWSTR::null();
+                frame.Source(&mut raw)?;
+                let url = take_pwstr(raw);
+                if !url.is_empty() && !pages.contains(&url) {
+                    pages.push(url);
+                }
+                iterator.MoveNext(&mut has)?;
+            }
+
+            out.push(EngineProcess {
+                pid: pid.max(0) as u32,
+                kind: match kind {
+                    COREWEBVIEW2_PROCESS_KIND_BROWSER => "browser",
+                    COREWEBVIEW2_PROCESS_KIND_RENDERER => "renderer",
+                    COREWEBVIEW2_PROCESS_KIND_GPU => "gpu",
+                    COREWEBVIEW2_PROCESS_KIND_UTILITY => "utility",
+                    COREWEBVIEW2_PROCESS_KIND_SANDBOX_HELPER => "sandbox",
+                    COREWEBVIEW2_PROCESS_KIND_PPAPI_PLUGIN
+                    | COREWEBVIEW2_PROCESS_KIND_PPAPI_BROKER => "plugin",
+                    _ => "utility",
+                },
+                pages,
+            });
+        }
+    }
+    Ok(out)
+}
+
 struct HostState {
     /// Наше дочернее окно, в котором живут все вкладки. См. [`crate::container`].
     container: HWND,
@@ -391,6 +476,56 @@ impl TabHost {
 
     pub fn active_id(&self) -> Option<TabId> {
         self.inner.borrow().active
+    }
+
+    /// Вкладки по порядку: адрес и заголовок документа — для монитора ресурсов.
+    pub fn tabs_brief(&self) -> Vec<TabBrief> {
+        let state = self.inner.borrow();
+        state
+            .order
+            .iter()
+            .filter_map(|id| {
+                state.tabs.get(id).map(|tab| TabBrief {
+                    id: id.0,
+                    url: tab.source_url(),
+                    title: tab.title(),
+                })
+            })
+            .collect()
+    }
+
+    /// Процессы движка с их ролями и страницами. Список приходит асинхронно:
+    /// `done` зовётся на UI-потоке, при ошибке — с пустым списком.
+    pub fn engine_processes(
+        &self,
+        done: impl FnOnce(Vec<EngineProcess>) + 'static,
+    ) -> anyhow::Result<()> {
+        use webview2_com::GetProcessExtendedInfosCompletedHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment13;
+        use windows_core::Interface;
+
+        let env: ICoreWebView2Environment13 = self
+            .inner
+            .borrow()
+            .env
+            .cast()
+            .map_err(|_| anyhow::anyhow!("движок не сообщает о своих процессах"))?;
+        let handler =
+            GetProcessExtendedInfosCompletedHandler::create(Box::new(move |code, collection| {
+                let processes = match (code, collection) {
+                    (Ok(()), Some(collection)) => {
+                        read_processes(&collection).unwrap_or_else(|err| {
+                            tracing::debug!(%err, "процессы движка не прочитаны");
+                            Vec::new()
+                        })
+                    }
+                    _ => Vec::new(),
+                };
+                done(processes);
+                Ok(())
+            }));
+        unsafe { env.GetProcessExtendedInfos(&handler)? };
+        Ok(())
     }
 
     pub fn len(&self) -> usize {

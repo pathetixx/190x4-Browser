@@ -251,12 +251,13 @@ function openAccounts() {
 }
 
 /** Пузырь о сайте: соединение, блокировки, быстрые ссылки в настройки. */
-function openSiteInfo() {
+async function openSiteInfo() {
   const tab = activeTab();
   if (!tab || tab.internal || isNewTabUrl(tab.url)) {
     if (tab?.internal) openSettings();
     return;
   }
+  const blocking = await invoke("adblock_site", { url: tab.url }).catch(() => null);
   openPopup("site", site, {
     width: 340,
     payload: {
@@ -265,6 +266,8 @@ function openSiteInfo() {
       secure: tab.url.startsWith("https:"),
       blocked: tab.blocked ?? 0,
       adblock: state.adblockOn,
+      site: blocking?.site ?? null,
+      blocking: blocking?.blocking ?? true,
       passwords: state.passwordSites.get(tab.id)?.accounts?.length ?? 0,
     },
   });

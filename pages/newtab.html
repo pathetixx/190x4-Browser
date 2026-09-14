@@ -1,164 +1,169 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="kurogane">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Новая вкладка</title>
-    <style>
-      /* Страница новой вкладки живёт в нативной вкладке, а не в chrome-е:
-         она загружается через virtual host 190x4-pages.invalid и ничего не знает ни о
-         Tauri, ни о его IPC. Общение с браузером — только
-         window.chrome.webview.postMessage. */
-
-      @font-face { font-family: "Inter Tight"; font-weight: 600; font-display: swap;
-        src: url("./fonts/inter-tight-latin-600-normal.woff2") format("woff2");
-        unicode-range: U+0000-00FF, U+2000-206F, U+2122, U+2212; }
-      @font-face { font-family: "Inter Tight"; font-weight: 600; font-display: swap;
-        src: url("./fonts/inter-tight-cyrillic-600-normal.woff2") format("woff2");
-        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+2116; }
-      @font-face { font-family: "Inter"; font-weight: 400; font-display: swap;
-        src: url("./fonts/inter-latin-400-normal.woff2") format("woff2");
-        unicode-range: U+0000-00FF, U+2000-206F, U+2122, U+2212; }
-      @font-face { font-family: "Inter"; font-weight: 400; font-display: swap;
-        src: url("./fonts/inter-cyrillic-400-normal.woff2") format("woff2");
-        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+2116; }
-      @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap;
-        src: url("./fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
-        unicode-range: U+0000-00FF, U+2000-206F; }
-      @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap;
-        src: url("./fonts/jetbrains-mono-cyrillic-500-normal.woff2") format("woff2");
-        unicode-range: U+0301, U+0400-045F, U+2116; }
-
-      :root {
-        --ink-0: #08080a; --ink-1: #0e0e11; --ink-2: #15151a; --ink-3: #1d1d24;
-        --line-1: rgba(255,255,255,.04); --line-2: rgba(255,255,255,.07);
-        --text-hi: #f5f5f2; --text-mid: #a3a3a8; --text-lo: #6b6b72; --text-faint: #46464c;
-        --accent: #c0304a; --accent-bright: #de5772; --accent-soft: rgba(192,48,74,.14);
-        --ease-emph: cubic-bezier(.16,1,.3,1);
-      }
-
-      * { box-sizing: border-box; }
-      html, body { height: 100%; margin: 0; }
-      body {
-        background:
-          radial-gradient(120% 80% at 50% -10%, rgba(192,48,74,.14) 0%, transparent 58%),
-          var(--ink-0);
-        color: var(--text-hi);
-        font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
-        display: grid;
-        place-items: center;
-        user-select: none;
-      }
-
-      .wrap { width: min(760px, calc(100vw - 96px)); }
-
-      .clock {
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 64px; font-weight: 500; letter-spacing: -.04em;
-        font-variant-numeric: tabular-nums; text-align: center; line-height: 1;
-      }
-      .date {
-        margin-top: 10px; text-align: center;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px; font-weight: 500; letter-spacing: .22em; text-transform: uppercase;
-        color: var(--text-faint);
-      }
-
-      .search {
-        margin: 40px 0 34px; display: flex; align-items: center; gap: 12px;
-        height: 52px; padding: 0 18px; border-radius: 14px;
-        background: var(--ink-1); border: 1px solid var(--line-2);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 20px 50px rgba(0,0,0,.5);
-        transition: border-color .16s var(--ease-emph), box-shadow .16s var(--ease-emph);
-      }
-      .search:focus-within {
-        border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-        box-shadow: 0 0 0 3px var(--accent-soft), 0 20px 50px rgba(0,0,0,.5);
-      }
-      .search input {
-        flex: 1; border: 0; background: none; outline: none;
-        font-family: inherit; font-size: 15px; color: var(--text-hi);
-        caret-color: var(--accent-bright); user-select: text;
-      }
-      .search input::placeholder { color: var(--text-faint); }
-
-      .dials { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
-      .dial {
-        display: flex; flex-direction: column; align-items: center; gap: 9px;
-        padding: 16px 8px 13px; border-radius: 14px;
-        background: var(--ink-1); border: 1px solid var(--line-1);
-        color: var(--text-mid); text-decoration: none;
-        transition: background .16s var(--ease-emph), transform .16s var(--ease-emph), border-color .16s var(--ease-emph);
-      }
-      .dial:hover { background: var(--ink-2); border-color: var(--line-2); transform: translateY(-2px); }
-      .dial__mark {
-        width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
-        background: var(--ink-3);
-        font-family: "Inter Tight", sans-serif; font-size: 15px; font-weight: 600; color: var(--text-hi);
-      }
-      .dial__name {
-        font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
-      }
-
-    </style>
+    <!-- Страница живёт в обычной вкладке на 190x4-pages.invalid и о Tauri ничего
+         не знает: с браузером она говорит только через window.chrome.webview.
+         Разметка — здесь, данные и поведение — в newtab.js. -->
+    <link rel="stylesheet" href="./newtab.css" />
   </head>
   <body>
-    <div class="wrap">
-      <div class="clock" id="clock">--:--</div>
-      <div class="date" id="date"></div>
-
-      <form class="search" id="search">
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" style="color: var(--text-lo)" aria-hidden="true"><path d="M13.73 14.44a6.5 6.5 0 1 1 .7-.7l3.42 3.4a.5.5 0 0 1-.63.77l-.07-.06zm-.71-.71A5.5 5.5 0 0 0 15 9.5a5.5 5.5 0 1 0-1.98 4.23"/></svg>
-        <input id="q" type="text" placeholder="Найти или ввести адрес" autocomplete="off" spellcheck="false" />
-      </form>
-
-      <div class="dials" id="dials"></div>
-
+    <div class="bg" aria-hidden="true">
+      <div class="bg__glow"></div>
+      <div class="bg__floor"><div class="bg__grid"></div></div>
+      <div class="bg__scan"></div>
+      <div class="bg__noise"></div>
     </div>
 
-    <script>
-      const DIALS = [
-        ["КП", "Кинопоиск", "https://www.kinopoisk.ru/"],
-        ["YT", "YouTube", "https://www.youtube.com/"],
-        ["GH", "GitHub", "https://github.com/"],
-        ["ХБ", "Хабр", "https://habr.com/ru/"],
-        ["TG", "Telegram", "https://web.telegram.org/"],
-        ["ДЗ", "Дзен", "https://dzen.ru/"],
-      ];
+    <button class="gear" id="customize" type="button" title="Настроить страницу" aria-label="Настроить страницу" aria-expanded="false">
+      <svg aria-hidden="true"><use href="./icons.svg#i-settings" /></svg>
+    </button>
+    <div class="pop customize" id="customize-pop" role="dialog" aria-label="Настройки новой вкладки" hidden>
+      <div class="pop__title">Новая вкладка</div>
+      <label class="toggle"><span>Погода</span><input type="checkbox" data-pref="weather" /><i></i></label>
+      <label class="toggle"><span>Ресурсы браузера</span><input type="checkbox" data-pref="monitor" /><i></i></label>
+      <label class="toggle"><span>Секунды на часах</span><input type="checkbox" data-pref="seconds" /><i></i></label>
+    </div>
 
-      const dials = document.getElementById("dials");
-      for (const [mark, name, url] of DIALS) {
-        const a = document.createElement("a");
-        a.className = "dial";
-        a.href = url;
-        a.innerHTML = `<span class="dial__mark">${mark}</span><span class="dial__name">${name}</span>`;
-        dials.append(a);
-      }
+    <main class="deck" id="deck">
+      <section class="core">
+        <div class="chrono" id="chrono">
+          <svg class="hud" id="hud" viewBox="0 0 400 400" aria-hidden="true"></svg>
+          <div class="chrono__face">
+            <div class="chrono__time" id="time" role="timer" aria-live="off">
+              <span id="hh">--</span><span class="chrono__colon">:</span><span id="mm">--</span>
+            </div>
+            <div class="chrono__sec" id="sec">--</div>
+            <div class="chrono__date" id="date"></div>
+          </div>
+        </div>
 
-      function tick() {
-        const now = new Date();
-        document.getElementById("clock").textContent = now.toLocaleTimeString("ru-RU", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        document.getElementById("date").textContent = now.toLocaleDateString("ru-RU", {
-          weekday: "long",
-          day: "numeric",
-          month: "long",
-        });
-      }
-      tick();
-      setInterval(tick, 10_000);
+        <form class="search" id="search" role="search" autocomplete="off">
+          <svg class="search__icon" aria-hidden="true"><use href="./icons.svg#i-search" /></svg>
+          <input class="search__input" id="q" type="text" placeholder="Поиск или адрес сайта" spellcheck="false" aria-label="Поиск или адрес сайта" />
+          <kbd class="search__key">Enter</kbd>
+        </form>
 
-      // Строка поиска здесь — та же адресная строка: разбор запроса живёт в
-      // Rust (`normalize_url`), чтобы правило было одно на весь браузер.
-      document.getElementById("search").addEventListener("submit", (event) => {
-        event.preventDefault();
-        const value = document.getElementById("q").value.trim();
-        if (!value) return;
-        window.chrome?.webview?.postMessage(JSON.stringify({ evt: "navigate", url: value }));
-      });
+        <div class="dials" id="dials" role="list" aria-label="Сайты"></div>
+      </section>
 
-    </script>
+      <aside class="card weather" id="weather" aria-label="Погода" hidden>
+        <header class="card__head">
+          <span class="card__label">Погода</span>
+          <button class="card__place" id="place" type="button" title="Выбрать город">
+            <svg aria-hidden="true"><use href="./icons.svg#i-location" /></svg>
+            <span id="place-name">Ищем, где вы…</span>
+          </button>
+        </header>
+
+        <div class="weather__body" id="weather-body" hidden>
+          <div class="weather__now">
+            <svg class="weather__icon" id="w-icon" aria-hidden="true"><use href="./icons.svg#i-cloudy" /></svg>
+            <div>
+              <div class="weather__temp" id="w-temp">—</div>
+              <div class="weather__desc" id="w-desc"></div>
+            </div>
+          </div>
+          <div class="weather__meta">
+            <span title="Ощущается как"><svg aria-hidden="true"><use href="./icons.svg#i-temperature" /></svg><span id="w-feels">—</span></span>
+            <span title="Ветер"><svg aria-hidden="true"><use href="./icons.svg#i-wind" /></svg><span id="w-wind">—</span></span>
+            <span title="Влажность"><svg aria-hidden="true"><use href="./icons.svg#i-humidity" /></svg><span id="w-humidity">—</span></span>
+          </div>
+          <div class="chart" id="w-chart">
+            <svg class="chart__plot" id="w-plot" viewBox="0 0 280 56" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div class="chart__marks" id="w-marks"></div>
+            <div class="chart__labels" id="w-hours"></div>
+          </div>
+          <ol class="weather__days" id="w-days"></ol>
+        </div>
+
+        <div class="weather__status" id="weather-status">
+          <div class="skeleton skeleton--big"></div>
+          <div class="skeleton"></div>
+          <div class="skeleton skeleton--short"></div>
+        </div>
+
+        <div class="picker" id="picker" hidden>
+          <div class="picker__field">
+            <svg aria-hidden="true"><use href="./icons.svg#i-search" /></svg>
+            <input id="picker-q" type="text" placeholder="Название города" spellcheck="false" aria-label="Название города" />
+            <button class="picker__close" id="picker-close" type="button" title="Закрыть" aria-label="Закрыть">
+              <svg aria-hidden="true"><use href="./icons.svg#i-dismiss" /></svg>
+            </button>
+          </div>
+          <button class="picker__row picker__auto" id="picker-auto" type="button">
+            <svg aria-hidden="true"><use href="./icons.svg#i-my-location" /></svg>
+            <span>Определять автоматически</span>
+          </button>
+          <ul class="picker__list" id="picker-list"></ul>
+        </div>
+      </aside>
+
+      <aside class="card monitor" id="monitor" aria-label="Ресурсы браузера" hidden>
+        <header class="card__head">
+          <span class="card__label">Ресурсы браузера</span>
+          <span class="live" title="Обновляется каждую секунду"><i></i>сейчас</span>
+        </header>
+
+        <div class="metric__label">Память</div>
+        <div class="metric__big"><span id="m-mem">—</span><small id="m-mem-unit"></small></div>
+        <div class="membar" id="m-bar" role="img" aria-label="Память компьютера">
+          <i class="membar__browser" id="m-bar-browser"></i><i class="membar__other" id="m-bar-other"></i>
+        </div>
+        <div class="membar__legend">
+          <span><i class="dot dot--accent"></i><span id="m-share">—</span></span>
+          <span id="m-system">—</span>
+        </div>
+
+        <div class="gauges" id="m-gauges">
+          <div class="gauge">
+            <div class="gauge__head"><span class="metric__label">Процессор</span><span class="gauge__value" id="m-cpu">—</span></div>
+            <svg class="spark" id="s-cpu" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+          </div>
+          <div class="gauge" id="g-gpu">
+            <div class="gauge__head"><span class="metric__label">Видеокарта</span><span class="gauge__value" id="m-gpu">—</span></div>
+            <svg class="spark" id="s-gpu" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+          </div>
+        </div>
+
+        <div class="card__sub">Что потребляет</div>
+        <ul class="groups" id="m-groups"></ul>
+        <footer class="monitor__foot">
+          <span id="m-processes">—</span>
+          <span id="m-system-cpu">—</span>
+        </footer>
+      </aside>
+    </main>
+
+    <div class="pop tile-menu" id="tile-menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-action="edit">
+        <svg aria-hidden="true"><use href="./icons.svg#i-edit" /></svg><span>Изменить</span>
+      </button>
+      <button type="button" role="menuitem" data-action="delete" class="danger">
+        <svg aria-hidden="true"><use href="./icons.svg#i-delete" /></svg><span>Удалить</span>
+      </button>
+    </div>
+
+    <dialog class="dialog" id="tile-dialog" aria-labelledby="tile-dialog-title">
+      <form id="tile-form" novalidate>
+        <h2 class="dialog__title" id="tile-dialog-title">Новый сайт</h2>
+        <label class="field">
+          <span>Адрес</span>
+          <input id="tile-url" type="text" placeholder="example.com" spellcheck="false" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Название</span>
+          <input id="tile-title" type="text" placeholder="Необязательно" maxlength="40" autocomplete="off" />
+        </label>
+        <div class="dialog__actions">
+          <button class="btn" type="button" id="tile-cancel">Отмена</button>
+          <button class="btn btn--primary" type="submit">Сохранить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="./newtab.js"></script>
   </body>
 </html>

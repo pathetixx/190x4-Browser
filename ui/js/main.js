@@ -13,6 +13,7 @@ import {
   zoom,
 } from "./actions.js";
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
+import { initContextMenu, openContextMenu } from "./context-menu.js";
 import { el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
@@ -70,6 +71,7 @@ initToolbar();
 initBookmarksBar();
 initDownloads();
 initUpdates();
+initContextMenu({ translate: translateText });
 
 const web = () => {
   const tab = activeTab();
@@ -94,6 +96,7 @@ initPalette([
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
   { group: "Браузер", title: "Удалить данные о работе в браузере", icon: "broom", keys: "Ctrl+Shift+Del", run: () => openSettings("privacy") },
   { group: "Браузер", title: "Настройки", icon: "settings", run: () => openSettings() },
+  { group: "Браузер", title: "Браузер по умолчанию", icon: "globe", keywords: "default основной", run: () => openSettings("default") },
   {
     group: "Браузер",
     title: "Сменить тему",
@@ -192,8 +195,8 @@ listen("tab", (event) => {
     case "find":
       renderFindResult(event);
       break;
-    case "menu_action":
-      handleMenuAction(event);
+    case "context_menu":
+      openContextMenu(event);
       break;
   }
 });
@@ -221,12 +224,6 @@ function handlePageMessage({ id, source, payload }) {
   if (message.evt === "media_found" && typeof message.url === "string") {
     upsertTab(id, { media: { url: message.url, title: String(message.title ?? "") } });
   }
-}
-
-/** Пункт нашего контекстного меню страницы. `payload` — данные со страницы. */
-function handleMenuAction(event) {
-  if (event.action === "translate") translateText(event.payload);
-  if (event.action === "download_media") openMediaExtension(event.payload);
 }
 
 /* ── Переводчик ────────────────────────────────────────────── */
@@ -285,6 +282,8 @@ onPopupAction("accounts", ({ action }) => {
 onPopupAction("site", ({ action }) => {
   if (action === "privacy") openSettings("privacy");
   if (action === "passwords") openSettings("passwords");
+  // Блокировку на сайте переключили — страница перезагружается уже с новым правилом.
+  if (action === "reload") tabAction("reload");
 });
 onPopupAction("media", ({ action }) => {
   if (action === "settings") openSettings("extensions");
@@ -523,40 +522,60 @@ invoke("services_state")
   })
   .catch(() => {});
 
+// Ссылка из другой программы, пока браузер открыт: адреса ждут в очереди Rust.
+// До конца восстановления сессии их заберёт restoreSession.
+listen("launch", () => {
+  if (sessionReady) openLaunched();
+});
+
 try {
   await restoreSession();
 } catch (error) {
   toast(String(error?.message ?? error));
 }
 
-/** Что открыть при запуске — по настройке «При запуске». */
+/**
+ * Что открыть при запуске — по настройке «При запуске». Если браузер запустили
+ * ссылкой или файлом, пустая новая вкладка не нужна: откроется сама ссылка.
+ */
 async function restoreSession() {
   const mode = pref("startup");
+  const launched = await invoke("launch_take").catch(() => []);
+  const blank = !launched.length;
 
   if (mode === "pages") {
     const pages = (pref("startup_pages") ?? []).filter(Boolean);
     if (!pages.length) {
-      await open("about:newtab");
+      if (blank) await open("about:newtab");
     } else {
       const ids = [];
       for (const url of pages) ids.push(await open(url, { background: true }));
-      await activate(ids[0]);
+      if (blank) await activate(ids[0]);
     }
   } else if (mode === "restore") {
     const saved = await invoke("session_restore").catch(() => []);
     if (!saved.length) {
-      await open("about:newtab");
+      if (blank) await open("about:newtab");
     } else {
       let activeIndex = saved.findIndex((tab) => tab.active);
       if (activeIndex < 0) activeIndex = 0;
       const ids = [];
       for (const tab of saved) ids.push(await open(tab.url, { background: true }));
-      if (ids[activeIndex] != null) await activate(ids[activeIndex]);
+      if (blank && ids[activeIndex] != null) await activate(ids[activeIndex]);
     }
-  } else {
+  } else if (blank) {
     await open("about:newtab");
   }
+  for (const url of launched) await open(url);
   sessionReady = true;
+  // Повторный запуск мог прийти, пока открывалась сессия.
+  await openLaunched();
+}
+
+/** Ссылки и файлы, которыми браузер открыли снаружи, — каждая в своей вкладке. */
+async function openLaunched() {
+  const urls = await invoke("launch_take").catch(() => []);
+  for (const url of urls) await open(url);
 }
 
 function sessionTabs() {

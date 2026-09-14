@@ -55,7 +55,8 @@
         "languages": [
           "Russian"
         ],
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerHooks": "windows/hooks.nsh"
       }
     }
   },

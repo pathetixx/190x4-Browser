@@ -77,7 +77,7 @@ export function isPanelOpen(name) {
 }
 
 const VIEWS = {
-  shield() {
+  async shield() {
     const tab = activeTab();
     const blocked = tab?.blocked ?? 0;
 
@@ -94,8 +94,16 @@ const VIEWS = {
     latency.append(meter);
 
     const toggleRow = el("button", "prow");
+    const exempt = (pref("adblock_exempt_sites") ?? []).length;
     toggleRow.append(
-      textBlock("Блокировка рекламы и трекеров", state.adblockOn ? "Включена для всех сайтов" : "Выключена")
+      textBlock(
+        "Блокировка рекламы и трекеров",
+        !state.adblockOn
+          ? "Выключена"
+          : exempt
+            ? `Включена, кроме ${exempt} ${plural(exempt, "сайта", "сайтов", "сайтов")}`
+            : "Включена для всех сайтов"
+      )
     );
     const switchNode = el("span", "switch");
     switchNode.setAttribute("aria-checked", String(state.adblockOn));
@@ -110,7 +118,24 @@ const VIEWS = {
     settings.append(icon("settings", 20), textBlock("Списки фильтров", "Настройки блокировки"));
     settings.addEventListener("click", () => openSettings("privacy"));
 
-    return [page, total, latency, toggleRow, settings];
+    const out = [page, total, latency, toggleRow];
+    const url = tab && !tab.internal ? tab.url : "";
+    const site = state.adblockOn && url ? await invoke("adblock_site", { url }).catch(() => null) : null;
+    if (site?.site) {
+      const siteRow = el("button", "prow");
+      siteRow.append(textBlock(`На сайте ${site.site}`, site.blocking ? "Реклама блокируется" : "Реклама не блокируется"));
+      const siteSwitch = el("span", "switch");
+      siteSwitch.setAttribute("aria-checked", String(site.blocking));
+      siteRow.append(siteSwitch);
+      siteRow.addEventListener("click", async () => {
+        await invoke("adblock_site_set", { url, blocking: !site.blocking }).catch(() => {});
+        invoke("tab_action", { id: tab.id, action: "reload" }).catch(() => {});
+        renderPanel();
+      });
+      out.push(siteRow);
+    }
+    out.push(settings);
+    return out;
   },
 
   async bookmarks() {

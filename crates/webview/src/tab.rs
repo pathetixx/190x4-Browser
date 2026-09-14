@@ -1,12 +1,14 @@
 //! Одна вкладка = один `ICoreWebView2Controller` на общем HWND окна.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
 use browser190x4_adblock::Guard;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Find,
+    ICoreWebView2, ICoreWebView2ContextMenuItemCollection,
+    ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2ContextMenuTarget,
+    ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2Find,
     ICoreWebView2_15,
 };
 use webview2_com::{
@@ -16,8 +18,8 @@ use webview2_com::{
     NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
     ZoomFactorChangedEventHandler,
 };
-use windows::Win32::Foundation::RECT;
-use windows_core::{Interface, HSTRING, PWSTR};
+use windows::Win32::Foundation::{POINT, RECT};
+use windows_core::{Interface, BOOL, HSTRING, PWSTR};
 
 use crate::downloads::{self, SharedDownloads};
 use crate::filter::{self, SourceUrl};
@@ -109,14 +111,19 @@ pub enum TabEvent {
         id: u32,
         factor: f64,
     },
-    /// Выбран наш пункт контекстного меню.
+    /// Правый щелчок по странице. Меню рисует chrome; движок ждёт ответа
+    /// в [`Tab::context_menu_done`] с тем же `menu`.
     ///
-    /// `payload` — то, к чему пункт относится: выделенный текст или адрес
-    /// медиа. Это данные со страницы, обращаться с ними как с недоверенными.
-    MenuAction {
+    /// Цель щелчка — данные со страницы: адреса и выделенный текст обращать
+    /// только как с недоверенными.
+    ContextMenu {
         id: u32,
-        action: &'static str,
-        payload: String,
+        menu: u64,
+        /// Точка щелчка в физических пикселях от левого верхнего угла вкладки.
+        x: i32,
+        y: i32,
+        target: MenuTarget,
+        items: Vec<MenuItem>,
     },
     /// Звук вкладки: играет ли что-то и заглушена ли она.
     Audio {
@@ -161,6 +168,46 @@ pub enum TabEvent {
     },
 }
 
+/// По чему щёлкнули правой кнопкой.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MenuTarget {
+    /// `page`, `image`, `selection`, `audio` или `video`.
+    pub kind: &'static str,
+    pub page_url: String,
+    pub frame_url: String,
+    pub main_frame: bool,
+    pub editable: bool,
+    pub link_url: Option<String>,
+    pub link_text: Option<String>,
+    pub source_url: Option<String>,
+    pub selection: Option<String>,
+}
+
+/// Пункт меню движка: команда, её подпись и состояние.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MenuItem {
+    /// Неизменное имя пункта (`copy`, `saveImageAs`, `spellCheck`…) — по нему
+    /// chrome решает, что показать и как подписать.
+    pub name: String,
+    pub label: String,
+    pub command: i32,
+    pub shortcut: String,
+    /// `command`, `checkbox`, `radio`, `separator` или `submenu`.
+    pub kind: &'static str,
+    pub enabled: bool,
+    pub checked: bool,
+    pub children: Vec<MenuItem>,
+}
+
+/// Меню страницы, которое ждёт выбора пользователя.
+struct PendingMenu {
+    token: u64,
+    args: ICoreWebView2ContextMenuRequestedEventArgs,
+    deferral: ICoreWebView2Deferral,
+}
+
+type MenuSlot = Rc<RefCell<Option<PendingMenu>>>;
+
 pub type EventSink = Rc<dyn Fn(TabEvent)>;
 
 pub struct Tab {
@@ -169,6 +216,7 @@ pub struct Tab {
     core: ICoreWebView2,
     source: SourceUrl,
     visible: bool,
+    menu: MenuSlot,
 }
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
@@ -305,35 +353,25 @@ fn wire_audio(id: TabId, core: &ICoreWebView2, sink: EventSink) {
     }
 }
 
-/// Свои пункты в контекстном меню страницы.
+/// Контекстное меню страницы рисует браузер.
 ///
-/// Меню остаётся нативным — его рисует движок поверх страницы. Своё, в HTML,
-/// потребовало бы overlay-режима, то есть страница исчезала бы ровно в тот
-/// момент, когда пользователь щёлкает по её элементу. Поэтому мы только
-/// добавляем пункты в существующее меню.
-fn wire_context_menu(
-    id: TabId,
-    core: &ICoreWebView2,
-    env: &ICoreWebView2Environment,
-    sink: EventSink,
-) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Environment9, ICoreWebView2_11, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
-        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO,
-        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT,
-        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO,
-    };
-    use webview2_com::{ContextMenuRequestedEventHandler, CustomItemSelectedEventHandler};
+/// Движок отдаёт свои пункты (команда, подпись, состояние) и цель щелчка, а
+/// показывает меню всплывающее окно chrome-а — то же, что у остальных меню,
+/// поэтому страница под ним не прячется. Пока пользователь выбирает, событие
+/// держится отсрочкой; выбранную команду выполняет сам движок через
+/// `SelectedCommandId` — «Вставить», «Сохранить картинку как» и подсказки
+/// орфографии работают так же, как в его собственном меню.
+fn wire_context_menu(id: TabId, core: &ICoreWebView2, sink: EventSink, slot: MenuSlot) {
+    use webview2_com::ContextMenuRequestedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
 
-    let (Ok(core11), Ok(env9)) = (
-        core.cast::<ICoreWebView2_11>(),
-        env.cast::<ICoreWebView2Environment9>(),
-    ) else {
-        tracing::warn!("движок не умеет расширять контекстное меню");
+    let Ok(core11) = core.cast::<ICoreWebView2_11>() else {
+        tracing::warn!("движок не отдаёт контекстное меню");
         return;
     };
 
     let tab_id = id.0;
+    let counter = Rc::new(Cell::new(0u64));
     let mut token = 0i64;
 
     let result = unsafe {
@@ -341,73 +379,34 @@ fn wire_context_menu(
             &ContextMenuRequestedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()) };
 
-                let target = args.ContextMenuTarget()?;
-                let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT;
-                target.Kind(&mut kind)?;
-
-                let items = args.MenuItems()?;
-                let mut count = 0u32;
-                items.Count(&mut count)?;
-
-                // Наши пункты идут первыми: то, ради чего браузер и делался,
-                // не должно прятаться под «Сохранить как».
-                let mut position = 0u32;
-
-                if kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT {
-                    let mut raw = PWSTR::null();
-                    target.SelectionText(&mut raw)?;
-                    let text = take_pwstr(raw);
-
-                    let item = env9.CreateContextMenuItem(
-                        &HSTRING::from("Перевести выделенное"),
-                        None,
-                        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
-                    )?;
-                    let selected_sink = sink.clone();
-                    let mut item_token = 0i64;
-                    item.add_CustomItemSelected(
-                        &CustomItemSelectedEventHandler::create(Box::new(move |_, _| {
-                            selected_sink(TabEvent::MenuAction {
-                                id: tab_id,
-                                action: "translate",
-                                payload: text.clone(),
-                            });
-                            Ok(())
-                        })),
-                        &mut item_token,
-                    )?;
-                    items.InsertValueAtIndex(position, &item)?;
-                    position += 1;
+                // Меню, на которое так и не ответили, закрываем без выбора.
+                if let Some(stale) = slot.borrow_mut().take() {
+                    let _ = stale.deferral.Complete();
                 }
 
-                if kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO
-                    || kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO
-                {
-                    let mut raw = PWSTR::null();
-                    target.SourceUri(&mut raw)?;
-                    let source = take_pwstr(raw);
+                let target = read_menu_target(&args.ContextMenuTarget()?)?;
+                let items = read_menu_items(&args.MenuItems()?)?;
+                let mut point = POINT::default();
+                args.Location(&mut point)?;
 
-                    let item = env9.CreateContextMenuItem(
-                        &HSTRING::from("Скачать через 190x4"),
-                        None,
-                        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
-                    )?;
-                    let media_sink = sink.clone();
-                    let mut item_token = 0i64;
-                    item.add_CustomItemSelected(
-                        &CustomItemSelectedEventHandler::create(Box::new(move |_, _| {
-                            media_sink(TabEvent::MenuAction {
-                                id: tab_id,
-                                action: "download_media",
-                                payload: source.clone(),
-                            });
-                            Ok(())
-                        })),
-                        &mut item_token,
-                    )?;
-                    items.InsertValueAtIndex(position, &item)?;
-                }
+                args.SetHandled(true)?;
+                let deferral = args.GetDeferral()?;
+                let menu = counter.get().wrapping_add(1);
+                counter.set(menu);
+                *slot.borrow_mut() = Some(PendingMenu {
+                    token: menu,
+                    args: args.clone(),
+                    deferral,
+                });
 
+                sink(TabEvent::ContextMenu {
+                    id: tab_id,
+                    menu,
+                    x: point.x,
+                    y: point.y,
+                    target,
+                    items,
+                });
                 Ok(())
             })),
             &mut token,
@@ -415,8 +414,122 @@ fn wire_context_menu(
     };
 
     if let Err(err) = result {
-        tracing::warn!(%err, "контекстное меню не расширено");
+        tracing::warn!(%err, "контекстное меню не перехвачено");
     }
+}
+
+fn read_string(
+    get: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>,
+) -> windows_core::Result<String> {
+    let mut raw = PWSTR::null();
+    get(&mut raw)?;
+    Ok(take_pwstr(raw))
+}
+
+fn read_flag(
+    get: impl FnOnce(*mut BOOL) -> windows_core::Result<()>,
+) -> windows_core::Result<bool> {
+    let mut value = BOOL::default();
+    get(&mut value)?;
+    Ok(value.as_bool())
+}
+
+/// Выделенный текст длиннее этого в меню не нужен: он уходит в поиск и перевод.
+const MENU_SELECTION_LIMIT: usize = 10_000;
+
+fn read_menu_target(target: &ICoreWebView2ContextMenuTarget) -> windows_core::Result<MenuTarget> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE,
+        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE,
+        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT,
+        COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO,
+    };
+
+    unsafe {
+        let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
+        target.Kind(&mut kind)?;
+        let optional = |has: bool, value: String| (has && !value.is_empty()).then_some(value);
+
+        Ok(MenuTarget {
+            kind: match kind {
+                COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE => "image",
+                COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT => "selection",
+                COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO => "audio",
+                COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO => "video",
+                _ => "page",
+            },
+            page_url: read_string(|out| target.PageUri(out))?,
+            frame_url: read_string(|out| target.FrameUri(out))?,
+            main_frame: read_flag(|out| target.IsRequestedForMainFrame(out))?,
+            editable: read_flag(|out| target.IsEditable(out))?,
+            link_url: optional(
+                read_flag(|out| target.HasLinkUri(out))?,
+                read_string(|out| target.LinkUri(out))?,
+            ),
+            link_text: optional(
+                read_flag(|out| target.HasLinkText(out))?,
+                read_string(|out| target.LinkText(out))?,
+            ),
+            source_url: optional(
+                read_flag(|out| target.HasSourceUri(out))?,
+                read_string(|out| target.SourceUri(out))?,
+            ),
+            selection: optional(
+                read_flag(|out| target.HasSelection(out))?,
+                read_string(|out| target.SelectionText(out))?
+                    .chars()
+                    .take(MENU_SELECTION_LIMIT)
+                    .collect(),
+            ),
+        })
+    }
+}
+
+fn read_menu_items(
+    items: &ICoreWebView2ContextMenuItemCollection,
+) -> windows_core::Result<Vec<MenuItem>> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_CHECK_BOX, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_RADIO, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR,
+        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU,
+    };
+
+    let mut count = 0u32;
+    unsafe { items.Count(&mut count)? };
+    let mut out = Vec::with_capacity(count as usize);
+
+    for index in 0..count {
+        unsafe {
+            let item = items.GetValueAtIndex(index)?;
+            let mut kind = COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND;
+            item.Kind(&mut kind)?;
+            let mut command = 0i32;
+            item.CommandId(&mut command)?;
+            let children = if kind == COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU {
+                read_menu_items(&item.Children()?)?
+            } else {
+                Vec::new()
+            };
+
+            out.push(MenuItem {
+                name: read_string(|out| item.Name(out))?,
+                label: read_string(|out| item.Label(out))?,
+                command,
+                shortcut: read_string(|out| item.ShortcutKeyDescription(out))?,
+                kind: match kind {
+                    COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_CHECK_BOX => "checkbox",
+                    COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_RADIO => "radio",
+                    COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR => "separator",
+                    COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU => "submenu",
+                    _ => "command",
+                },
+                enabled: read_flag(|out| item.IsEnabled(out))?,
+                checked: read_flag(|out| item.IsChecked(out))?,
+                children,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Отчёт о состоянии поиска: сколько нашли и на каком совпадении стоим.
@@ -554,7 +667,8 @@ impl Tab {
         downloads::wire(id, &core, downloads, sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
         wire_audio(id, &core, sink.clone());
-        wire_context_menu(id, &core, env, sink.clone());
+        let menu = MenuSlot::default();
+        wire_context_menu(id, &core, sink.clone(), menu.clone());
 
         let tab = Self {
             id,
@@ -562,6 +676,7 @@ impl Tab {
             core,
             source,
             visible,
+            menu,
         };
         tab.wire_events(sink)?;
         tracing::debug!(?id, "вкладка готова");
@@ -902,6 +1017,15 @@ impl Tab {
         Ok(unsafe { core28.Find()? })
     }
 
+    /// Заголовок текущего документа.
+    pub fn title(&self) -> String {
+        let mut raw = PWSTR::null();
+        match unsafe { self.core.DocumentTitle(&mut raw) } {
+            Ok(()) => take_pwstr(raw),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Адрес текущего документа — по данным движка, а не chrome-а.
     pub fn source_url(&self) -> String {
         let mut raw = PWSTR::null();
@@ -926,6 +1050,35 @@ impl Tab {
 
     pub fn open_devtools(&self) -> windows_core::Result<()> {
         unsafe { self.core.OpenDevToolsWindow() }
+    }
+
+    /// Ответ на меню страницы: команда движка или `None` — меню закрыли без
+    /// выбора. Ответ на устаревшее меню (`menu` не совпал) ничего не делает.
+    pub fn context_menu_done(&self, menu: u64, command: Option<i32>) -> windows_core::Result<()> {
+        let pending = {
+            let mut slot = self.menu.borrow_mut();
+            match slot.as_ref() {
+                Some(pending) if pending.token == menu => slot.take(),
+                _ => None,
+            }
+        };
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        unsafe {
+            if let Some(command) = command {
+                pending.args.SetSelectedCommandId(command)?;
+            }
+            pending.deferral.Complete()?;
+            if command.is_some() {
+                // Меню забирало фокус себе: без возврата «Вставить» и набор
+                // текста после него уходили бы не в страницу.
+                let _ = self
+                    .controller
+                    .MoveFocus(webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+            }
+        }
+        Ok(())
     }
 
     /// Шаг масштаба: `1` — крупнее, `-1` — мельче, `0` — сбросить. Возвращает

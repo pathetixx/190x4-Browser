@@ -18,6 +18,6 @@ mod lists;
 mod stats;
 
 pub use cosmetic::{document_host, document_script, Cosmetics};
-pub use engine::{Decision, FilterList, Guard, ResourceKind};
+pub use engine::{site_key, Decision, FilterList, Guard, ResourceKind};
 pub use lists::{ListSource, ListSpec, Subscriptions};
 pub use stats::{Snapshot, Stats};

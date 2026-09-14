@@ -113,7 +113,9 @@ def main() -> None:
     renderer.render(256).save(ICONS / "128x128@2x.png", optimize=True)
     renderer.render(128).save(ICONS / "128x128.png", optimize=True)
     renderer.render(32).save(ICONS / "32x32.png", optimize=True)
-    write_ico(renderer, ICONS / "icon.ico", [16, 20, 24, 32, 40, 48, 64, 128, 256])
+    # Первым — 32 px: Tauri берёт первую запись .ico значком окна, и с 16 px
+    # на первом месте панель задач растягивала мутный комок.
+    write_ico(renderer, ICONS / "icon.ico", [32, 16, 20, 24, 40, 48, 64, 128, 256])
     renderer.render(72).save(BRAND / "mark-72.png", optimize=True)
     # Знак в заголовке окна и в адресной строке — 16–18 px: упрощённый вариант.
     renderer.render(32).save(BRAND / "mark-32.png", optimize=True)

@@ -6,14 +6,20 @@
 //! * [`browser190x4_webview`] — вкладки поверх того же HWND, из того же Environment;
 //! * [`browser190x4_adblock`] — сетевой фильтр на горячем пути WebResourceRequested.
 
+mod default_browser;
 mod filters;
 pub mod ipc;
+mod launch;
+mod newtab;
 mod passwords;
 mod popup;
+mod resources;
+mod site_icons;
 mod state;
 mod transfers;
 mod updates;
 mod vault;
+mod weather;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,20 +32,41 @@ use tauri::{Emitter, Manager, WindowEvent};
 use state::App;
 
 pub fn run() {
-    init_logging();
+    // Установщик запускает exe только ради регистрации в Windows.
+    if let Some(code) = default_browser::installer_flag() {
+        std::process::exit(code);
+    }
 
-    migrate_profile();
+    // Повторный запуск передаёт адреса первому процессу и выходит (плагин
+    // single-instance). Профиль ему не трогать: лог открывается с обрезкой, а
+    // незавершённые загрузки при старте помечаются прерванными.
+    let secondary = launch::already_running();
+    if secondary {
+        launch::allow_foreground();
+    } else {
+        init_logging();
+        migrate_profile();
+    }
 
     let guard = Arc::new(Guard::empty());
     let store = Arc::new(open_store());
     let services = Arc::new(open_services());
+    let launched = launch::Launch::default();
+    launched.push(launch::from_command_line());
 
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
-    if let Err(err) = store.fail_interrupted_downloads() {
-        tracing::warn!(%err, "незавершённые загрузки не отмечены");
+    guard.set_exempt_sites(ipc::exempt_sites(&store));
+    if !secondary {
+        if let Err(err) = store.fail_interrupted_downloads() {
+            tracing::warn!(%err, "незавершённые загрузки не отмечены");
+        }
     }
 
     tauri::Builder::default()
+        // Первым: второй процесс должен выйти раньше, чем проснутся другие плагины.
+        .plugin(tauri_plugin_single_instance::init(
+            launch::on_second_instance,
+        ))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -53,6 +80,8 @@ pub fn run() {
             popup: Default::default(),
         })
         .manage(updates::Updates::default())
+        .manage(newtab::NewTab::default())
+        .manage(launched)
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
             ipc::tab_close,
@@ -60,6 +89,7 @@ pub fn run() {
             ipc::tab_navigate,
             ipc::tab_action,
             ipc::tab_post,
+            ipc::tab_context_menu,
             ipc::tab_mute,
             ipc::tab_find,
             ipc::tab_find_step,
@@ -71,6 +101,8 @@ pub fn run() {
             ipc::adblock_stats,
             ipc::adblock_set_enabled,
             ipc::adblock_lists,
+            ipc::adblock_site,
+            ipc::adblock_site_set,
             ipc::settings_get,
             ipc::settings_set,
             ipc::history_record,
@@ -123,6 +155,9 @@ pub fn run() {
             updates::update_check,
             updates::update_state,
             updates::update_install,
+            launch::launch_take,
+            default_browser::default_browser_state,
+            default_browser::default_browser_set,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -139,6 +174,7 @@ pub fn run() {
                 // указатель и не Send. Переносим его числом и собираем
                 // обратно уже внутри, на UI-потоке, где он и живёт.
                 let hwnd_bits = window.hwnd()?.0 as isize;
+                apply_window_icon(&window);
                 let guard = guard.clone();
                 let policy = ipc::download_policy(&store);
                 // Папка со встроенными страницами: в dev — из репозитория,
@@ -222,7 +258,9 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
             source,
             payload,
         } => {
-            if passwords::handle_message(app, *id, source, payload) {
+            if passwords::handle_message(app, *id, source, payload)
+                || newtab::handle_message(app, *id, source, payload)
+            {
                 return;
             }
         }
@@ -245,6 +283,8 @@ fn wire_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     let main = window.clone();
     window.on_window_event(move |event| match event {
         WindowEvent::Moved(_) => popup::hide(&handle),
+        #[cfg(windows)]
+        WindowEvent::ScaleFactorChanged { .. } => apply_window_icon(&main),
         WindowEvent::Resized(_) => {
             popup::hide(&handle);
             let maximized = main.is_maximized().unwrap_or(false);
@@ -256,6 +296,53 @@ fn wire_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
         }
         _ => {}
     });
+}
+
+/// Значок окна для панели задач и Alt+Tab — из ресурсов exe, нужного размера.
+///
+/// Tauri ставит окну одну картинку, и Windows растягивала её под панель задач.
+/// В ресурсах exe лежат все размеры `icon.ico` (tauri-build кладёт иконку под
+/// номером 32512), и `LoadImageW` берёт нарисованный под текущий DPI.
+#[cfg(windows)]
+fn apply_window_icon(window: &tauri::WebviewWindow) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HINSTANCE, LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXICON,
+        SM_CXSMICON, WM_SETICON,
+    };
+
+    const APP_ICON: u16 = 32512;
+    let Ok(hwnd) = window.hwnd() else { return };
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else {
+            return;
+        };
+        let dpi = GetDpiForWindow(hwnd);
+        for (kind, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+            let size = GetSystemMetricsForDpi(metric, dpi);
+            match LoadImageW(
+                Some(HINSTANCE(module.0)),
+                PCWSTR(APP_ICON as usize as *const u16),
+                IMAGE_ICON,
+                size,
+                size,
+                LR_DEFAULTCOLOR,
+            ) {
+                Ok(icon) => {
+                    SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(kind as usize)),
+                        Some(LPARAM(icon.0 as isize)),
+                    );
+                }
+                Err(err) => tracing::warn!(%err, size, "значок окна не загружен"),
+            }
+        }
+    }
 }
 
 /// База профиля рядом с логом. Если её не открыть (диск только на чтение,

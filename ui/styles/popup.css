@@ -156,6 +156,13 @@ svg {
   background: var(--line-2);
 }
 
+/* Меню страницы: без колонки значков, плотнее — как системное. */
+.menu--context .menu__item {
+  height: 30px;
+  gap: 24px;
+  padding: 0 12px;
+}
+
 .menu__head {
   display: flex;
   align-items: center;

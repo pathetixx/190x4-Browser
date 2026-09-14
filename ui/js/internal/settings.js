@@ -15,6 +15,7 @@ import { checkUpdates, installUpdate, onUpdate, update } from "../updates.js";
 
 const SECTIONS = [
   { id: "appearance", title: "Внешний вид", icon: "paint" },
+  { id: "default", title: "Браузер по умолчанию", icon: "globe" },
   { id: "startup", title: "При запуске", icon: "power" },
   { id: "search", title: "Поисковая система", icon: "find" },
   { id: "passwords", title: "Пароли и автозаполнение", icon: "key" },
@@ -398,6 +399,52 @@ const BUILDERS = {
     ];
   },
 
+  default() {
+    const row = setting("Браузер по умолчанию", "…", el("div"), { iconId: "globe" });
+    const label = row.querySelector(".setting__label");
+    const hint = row.querySelector(".setting__hint");
+    const slot = row.lastElementChild;
+    let watch = 0;
+    const stopWatch = () => {
+      clearInterval(watch);
+      watch = 0;
+    };
+
+    const draw = ({ is_default: isDefault }) => {
+      if (isDefault) {
+        stopWatch();
+        label.textContent = "190x4 — браузер по умолчанию";
+        hint.textContent = "Ссылки из других программ и файлы HTML открываются здесь";
+        const state = el("span", "setting__state", "Используется");
+        state.prepend(icon("checkmark-16", 16));
+        slot.replaceChildren(state);
+      } else if (!watch) {
+        label.textContent = "Браузер по умолчанию";
+        hint.textContent = "Сейчас ссылки из других программ и файлы HTML открывает другой браузер";
+        slot.replaceChildren(button("Использовать по умолчанию", choose, { kind: "btn btn--primary" }));
+      }
+    };
+    const check = () =>
+      invoke("default_browser_state")
+        .then((info) => row.isConnected && draw(info))
+        .catch(() => {});
+
+    async function choose() {
+      if ((await attempt(invoke("default_browser_set"))) === undefined) return;
+      hint.textContent = "Подтвердите выбор в открывшихся параметрах Windows — кнопкой вверху страницы";
+      // Выбор делает сама Windows; как только он сделан, строка обновится.
+      stopWatch();
+      const started = Date.now();
+      watch = setInterval(() => {
+        if (!row.isConnected || Date.now() - started > 180_000) stopWatch();
+        else check();
+      }, 1500);
+    }
+
+    check();
+    return [group([row])];
+  },
+
   startup() {
     const pages = Array.isArray(pref("startup_pages")) ? pref("startup_pages") : [];
     const list = [];
@@ -607,7 +654,7 @@ const BUILDERS = {
     const lists = el("div");
     const adblockGroup = group(
       [
-        switchSetting("adblock_enabled", "Блокировать рекламу и трекеры", "Встроенный фильтр 190x4 на всех сайтах", {
+        switchSetting("adblock_enabled", "Блокировать рекламу и трекеры", "Встроенный фильтр 190x4; на отдельных сайтах его можно выключить", {
           onChange: (on) => {
             state.adblockOn = on;
           },
@@ -660,7 +707,30 @@ const BUILDERS = {
     clear.append(tile, text, icon("chevron-right-16", 16, "setting__chevron"));
     clear.addEventListener("click", clearBrowsingData);
 
-    return [group([clear], { title: "Данные браузера" }), adblockGroup];
+    const exempt = pref("adblock_exempt_sites") ?? [];
+    const exemptRows = exempt.length
+      ? exempt.map((site) =>
+          setting(
+            site,
+            "Реклама не блокируется на сайте и его поддоменах",
+            iconButton("delete-16", "Снова блокировать рекламу", () =>
+              setPref(
+                "adblock_exempt_sites",
+                exempt.filter((entry) => entry !== site)
+              )
+            )
+          )
+        )
+      : [
+          setting(
+            "Блокировка работает на всех сайтах",
+            "Выключить её на сайте можно в меню страницы по правому щелчку или в сведениях о сайте слева в адресной строке",
+            el("span")
+          ),
+        ];
+    const exemptGroup = group(exemptRows, { title: "Сайты без блокировки" });
+
+    return [group([clear], { title: "Данные браузера" }), adblockGroup, exemptGroup];
   },
 
   downloads() {
@@ -798,7 +868,7 @@ const BUILDERS = {
 
     const licenses = setting(
       "Сторонние компоненты",
-      "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0). Расширенные фильтры и скриптлеты — uBlock Origin и uAssets (GPL-3.0), скачиваются отдельно.",
+      "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0). Расширенные фильтры и скриптлеты — uBlock Origin и uAssets (GPL-3.0), скачиваются отдельно. Погода на новой вкладке — Open-Meteo (CC BY 4.0), названия мест — © участники OpenStreetMap (ODbL).",
       null
     );
 

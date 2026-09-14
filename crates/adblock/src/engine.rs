@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use adblock::lists::{FilterSet, ParseOptions};
@@ -6,8 +7,28 @@ use adblock::resources::{PermissionMask, Resource};
 use adblock::Engine;
 use arc_swap::ArcSwap;
 
-use crate::cosmetic::Cosmetics;
+use crate::cosmetic::{document_host, Cosmetics};
 use crate::stats::Stats;
+
+/// Ключ сайта для исключений: хост без `www.`. Исключение действует и на
+/// поддомены: выключенная блокировка на `youtube.com` выключает её и на
+/// `m.youtube.com`.
+pub fn site_key(url: &str) -> Option<String> {
+    let host = document_host(url)?;
+    Some(host.strip_prefix("www.").unwrap_or(&host).to_string())
+}
+
+/// Хост адреса без аллокаций — для горячего пути. Регистр не трогаем: адрес
+/// документа приходит от движка уже нормализованным.
+fn host_slice(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    if host.starts_with('[') {
+        return host.split(']').next().map(|ipv6| &host[..ipv6.len() + 1]);
+    }
+    host.split(':').next()
+}
 
 /// Текст списка и доверие к нему.
 pub struct FilterList {
@@ -75,6 +96,8 @@ pub struct Guard {
     engine: ArcSwap<Engine>,
     stats: Stats,
     enabled: ArcSwap<bool>,
+    /// Сайты, на которых пользователь выключил блокировку (ключи [`site_key`]).
+    exempt: ArcSwap<HashSet<String>>,
 }
 
 impl Guard {
@@ -84,6 +107,33 @@ impl Guard {
             engine: ArcSwap::from_pointee(Engine::default()),
             stats: Stats::default(),
             enabled: ArcSwap::from_pointee(true),
+            exempt: ArcSwap::from_pointee(HashSet::new()),
+        }
+    }
+
+    /// Заменить список сайтов без блокировки.
+    pub fn set_exempt_sites(&self, sites: impl IntoIterator<Item = String>) {
+        self.exempt.store(Arc::new(sites.into_iter().collect()));
+    }
+
+    /// Выключена ли блокировка для документа по этому адресу. Сверяются хост и
+    /// все его родительские домены; пустой список — одна загрузка указателя.
+    pub fn is_exempt(&self, document_url: &str) -> bool {
+        let exempt = self.exempt.load();
+        if exempt.is_empty() {
+            return false;
+        }
+        let Some(mut host) = host_slice(document_url) else {
+            return false;
+        };
+        loop {
+            if exempt.contains(host) {
+                return true;
+            }
+            match host.find('.') {
+                Some(dot) => host = &host[dot + 1..],
+                None => return false,
+            }
         }
     }
 
@@ -121,7 +171,7 @@ impl Guard {
     /// Косметика документа по адресу: что скрыть и какие скриптлеты запустить.
     /// Пусто, если фильтр выключен. Звать на навигацию, не на каждый запрос.
     pub fn cosmetics(&self, url: &str) -> Cosmetics {
-        if !**self.enabled.load() {
+        if !**self.enabled.load() || self.is_exempt(url) {
             return Cosmetics::default();
         }
         let resources = self.engine.load().url_cosmetic_resources(url);
@@ -153,7 +203,9 @@ impl Guard {
     /// для `$third-party` и исключений по домену), `method` — HTTP-метод
     /// (правила с `$method=` без него не работают).
     pub fn check(&self, url: &str, source_url: &str, kind: ResourceKind, method: &str) -> Decision {
-        if !**self.enabled.load() {
+        // Исключение сайта считается по документу вкладки: на выключенном сайте
+        // проходят и его собственные запросы, и запросы встроенных в него фреймов.
+        if !**self.enabled.load() || self.is_exempt(source_url) {
             return Decision::Allow;
         }
 
@@ -316,6 +368,59 @@ mod tests {
                 "GET"
             ),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn site_key_drops_www_and_port() {
+        assert_eq!(
+            site_key("https://www.YouTube.com:443/watch?v=1").as_deref(),
+            Some("youtube.com")
+        );
+        assert_eq!(
+            site_key("http://m.example.com/").as_deref(),
+            Some("m.example.com")
+        );
+        assert_eq!(site_key("about:blank"), None);
+    }
+
+    #[test]
+    fn exempt_site_and_subdomains_pass() {
+        let guard = guard_with("||ads.example.com^\nnews.example##.promo");
+        guard.set_exempt_sites(["news.example".to_string()]);
+        for page in [
+            "https://news.example/",
+            "https://m.news.example/a",
+            "http://[::1]:8080/",
+        ] {
+            let expected = if page.contains("news.example") {
+                Decision::Allow
+            } else {
+                Decision::Block
+            };
+            assert_eq!(
+                guard.check(
+                    "https://ads.example.com/b.js",
+                    page,
+                    ResourceKind::Script,
+                    "GET"
+                ),
+                expected,
+                "{page}"
+            );
+        }
+        assert!(guard.cosmetics("https://news.example/").is_empty());
+        assert!(!guard.is_exempt("https://othernews.example/"));
+
+        guard.set_exempt_sites(Vec::new());
+        assert_eq!(
+            guard.check(
+                "https://ads.example.com/b.js",
+                "https://news.example/",
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
         );
     }
 

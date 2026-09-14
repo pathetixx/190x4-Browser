@@ -81,6 +81,7 @@ const DOWNLOADS = [
 ];
 
 const settings = {};
+let defaultBrowser = false;
 
 export async function invoke(command, args = {}) {
   switch (command) {
@@ -137,6 +138,13 @@ export async function invoke(command, args = {}) {
       return DOWNLOADS;
     case "services_state":
       return { translate: true, media: true };
+    case "launch_take":
+      return [];
+    case "default_browser_state":
+      return { is_default: defaultBrowser };
+    case "default_browser_set":
+      defaultBrowser = true;
+      return null;
     case "about_info":
       return { version: "0.1.0", webview: "131.0.2903.70", profile: "C:\\Users\\me\\AppData\\Local\\190x4 Browser" };
     case "translate_text":
@@ -193,6 +201,21 @@ function seed() {
 /** Данные для скриншотов всплывающего окна: popup.html?kind=… */
 export function popupDemo(kind) {
   switch (kind) {
+    case "context":
+      return {
+        tab: 1,
+        token: 1,
+        rows: [
+          { id: "cmd:1", command: 1, name: "back", label: "Назад", keys: "Alt+←", disabled: true },
+          { id: "cmd:2", command: 2, name: "reload", label: "Обновить", keys: "Ctrl+R" },
+          { separator: true },
+          { id: "cmd:3", command: 3, name: "saveAs", label: "Сохранить как", keys: "Ctrl+S" },
+          { id: "cmd:4", command: 4, name: "print", label: "Печать", keys: "Ctrl+P" },
+          { separator: true },
+          { id: "adblock", label: "Не блокировать рекламу на сайте" },
+          { id: "cmd:5", command: 5, name: "inspectElement", label: "Просмотреть код", keys: "Ctrl+Shift+I" },
+        ],
+      };
     case "update":
       return {
         version: "0.2.0",
@@ -260,7 +283,7 @@ export function popupDemo(kind) {
     case "accounts":
       return { tab: 1, origin: "https://github.com", accounts: [{ id: 1, username: "pathetixx" }, { id: 2, username: "work@190x4.pw" }] };
     case "site":
-      return { url: "https://habr.com/ru/", host: "habr.com", secure: true, blocked: 41, adblock: true, passwords: 1 };
+      return { url: "https://habr.com/ru/", host: "habr.com", secure: true, blocked: 41, adblock: true, site: "habr.com", blocking: true, passwords: 1 };
     case "suggest":
       return {
         selected: 1,

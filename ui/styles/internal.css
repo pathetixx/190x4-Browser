@@ -257,6 +257,15 @@
   white-space: nowrap;
 }
 
+.setting__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--accent-bright);
+  white-space: nowrap;
+}
+
 .setting .field {
   width: 240px;
 }

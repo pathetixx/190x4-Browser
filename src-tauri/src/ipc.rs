@@ -89,6 +89,21 @@ pub fn tab_action(app: AppHandle, id: u32, action: String) -> Result<(), String>
     })?
 }
 
+/// Выбор в меню страницы: команда движка или `None` — меню закрыто.
+#[tauri::command]
+pub fn tab_context_menu(
+    app: AppHandle,
+    id: u32,
+    menu: u64,
+    command: Option<i32>,
+) -> Result<(), String> {
+    with_host(&app, move |host| {
+        host.with_tab(TabId(id), |tab| tab.context_menu_done(menu, command))
+            .unwrap_or(Ok(()))
+            .map_err(text)
+    })?
+}
+
 /// Отправить сообщение на страницу вкладки.
 #[tauri::command]
 pub fn tab_post(app: AppHandle, id: u32, payload: Value) -> Result<(), String> {
@@ -314,6 +329,71 @@ pub fn adblock_set_enabled(app: AppHandle, state: State<'_, App>, on: bool) -> R
     Ok(())
 }
 
+/// Сайты, где пользователь выключил блокировку, — ключи `site_key`.
+pub fn exempt_sites(store: &Store) -> Vec<String> {
+    match store.setting("adblock_exempt_sites").ok().flatten() {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct SiteBlocking {
+    /// `None` — страница не сайт (встроенная, `about:`, файл): переключать нечего.
+    site: Option<String>,
+    blocking: bool,
+}
+
+/// Работает ли блокировка на сайте этой страницы.
+#[tauri::command]
+pub fn adblock_site(state: State<'_, App>, url: String) -> SiteBlocking {
+    // Встроенные страницы браузера сайтом не считаются.
+    let site = browser190x4_adblock::site_key(&url)
+        .filter(|site| site != browser190x4_webview::PAGES_HOST);
+    let blocking = site.is_some() && !state.guard.is_exempt(&url);
+    SiteBlocking { site, blocking }
+}
+
+/// Включить или выключить блокировку на сайте страницы. Действует со следующей
+/// загрузки: уже встроенную в страницу рекламу снимает только перезагрузка.
+///
+/// Включение снимает и исключение родительского домена: иначе на `m.youtube.com`
+/// переключатель не работал бы, пока выключен `youtube.com`.
+#[tauri::command]
+pub fn adblock_site_set(
+    app: AppHandle,
+    state: State<'_, App>,
+    url: String,
+    blocking: bool,
+) -> Result<SiteBlocking, String> {
+    let site = browser190x4_adblock::site_key(&url)
+        .ok_or_else(|| "на этой странице блокировка не переключается".to_string())?;
+    let mut sites = exempt_sites(&state.store);
+    if blocking {
+        sites.retain(|entry| site != *entry && !site.ends_with(&format!(".{entry}")));
+    } else if !state.guard.is_exempt(&url) {
+        sites.push(site.clone());
+        sites.sort();
+    }
+    let value = Value::from(sites.clone());
+    state
+        .store
+        .set_setting("adblock_exempt_sites", &value)
+        .map_err(text)?;
+    state.guard.set_exempt_sites(sites);
+    let _ = app.emit(
+        "settings",
+        serde_json::json!({ "key": "adblock_exempt_sites", "value": value }),
+    );
+    Ok(SiteBlocking {
+        blocking: !state.guard.is_exempt(&url),
+        site: Some(site),
+    })
+}
+
 #[derive(Serialize)]
 pub struct FilterList {
     id: String,
@@ -375,6 +455,7 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
         "adblock_enabled" => state
             .guard
             .set_enabled(state.store.setting_bool("adblock_enabled", true)),
+        "adblock_exempt_sites" => state.guard.set_exempt_sites(exempt_sites(&state.store)),
         "adblock_lists" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
         }

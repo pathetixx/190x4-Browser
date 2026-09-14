@@ -23,6 +23,7 @@ export const DEFAULTS = {
   passwords_offer: true,
   passwords_autofill: true,
   adblock_enabled: true,
+  adblock_exempt_sites: [],
   download_dir: "",
   download_ask: false,
   download_bubble: true,

@@ -493,7 +493,7 @@ const VIEWS = {
   },
 
   /** Сведения о сайте из значка слева в адресной строке. */
-  site({ host, secure, blocked, adblock, passwords }) {
+  site({ url, host, secure, blocked, adblock, site, blocking = true, passwords }) {
     const bubble = el("div", "bubble");
     const head = el("div", "bubble__head");
     head.append(el("h2", "bubble__title", host), iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" }));
@@ -530,12 +530,11 @@ const VIEWS = {
         ? "Данные, которые вы вводите, передаются в зашифрованном виде."
         : "Не вводите здесь пароли и данные карт: их могут перехватить."
     );
-    info(
-      "shield-16",
-      adblock ? `Заблокировано: ${blocked} ${plural(blocked, "запрос", "запроса", "запросов")}` : "Блокировка рекламы выключена",
-      "Реклама и трекеры на этой странице",
-      "privacy"
-    );
+    if (adblock && site) {
+      list.append(siteBlockingRow({ url, site, blocked, blocking }));
+    } else {
+      info("shield-16", "Блокировка рекламы выключена", "На всех сайтах — включается в настройках", "privacy");
+    }
     info(
       "key-16",
       passwords ? `Сохранено паролей: ${passwords}` : "Паролей для сайта нет",
@@ -545,6 +544,82 @@ const VIEWS = {
     bubble.append(list);
     root.append(bubble);
   },
+};
+
+/** Строка «блокировка на этом сайте» с переключателем: исключение хранится в
+ *  настройках, страница перезагружается уже с новым правилом. */
+function siteBlockingRow({ url, site, blocked, blocking }) {
+  const row = el("div", "menu__item");
+  row.style.height = "auto";
+  row.style.padding = "8px 10px";
+  const slot = el("span", "menu__icon");
+  slot.append(icon("shield-16", 16));
+  const text = el("span", "menu__label");
+  const title = el("div");
+  const hint = el("div");
+  hint.style.cssText = "font-size:12px;color:var(--text-lo);white-space:normal";
+  text.append(title, hint);
+
+  const toggleNode = el("button", "switch");
+  toggleNode.type = "button";
+  toggleNode.setAttribute("aria-label", "Блокировать рекламу на этом сайте");
+  let on = blocking;
+  const paint = () => {
+    title.textContent = on
+      ? `Заблокировано: ${blocked} ${plural(blocked, "запрос", "запроса", "запросов")}`
+      : "Реклама на сайте не блокируется";
+    hint.textContent = on ? `Реклама и трекеры на ${site}` : `Исключение для ${site} и его поддоменов`;
+    toggleNode.setAttribute("aria-checked", String(on));
+  };
+  paint();
+  toggleNode.addEventListener("click", async () => {
+    toggleNode.disabled = true;
+    try {
+      const result = await invoke("adblock_site_set", { url, blocking: !on });
+      on = result.blocking;
+      paint();
+      act("site", "reload", {}, { keepOpen: true });
+    } catch {
+      // Страница не сайт или настройки не записались — переключатель остаётся как был.
+    } finally {
+      toggleNode.disabled = false;
+    }
+  });
+  row.append(slot, text, toggleNode);
+  return row;
+}
+
+/** Меню страницы по правому щелчку: пункты собирает окно браузера
+ *  (`context-menu.js`). Команду движка попап отдаёт движку сам и только потом
+ *  закрывается — иначе закрытие успело бы ответить «без выбора». */
+VIEWS.context = function context({ tab, token, rows = [] }) {
+  const list = el("div", "menu menu--context scroll");
+  for (const row of rows) {
+    if (row.separator) {
+      list.append(el("div", "menu__sep"));
+      continue;
+    }
+    const node = el("button", "menu__item");
+    node.type = "button";
+    node.disabled = Boolean(row.disabled);
+    node.append(el("span", "menu__label", row.label));
+    if (row.checked) node.append(icon("checkmark-16", 16, "menu__check"));
+    else if (row.keys) node.append(el("span", "menu__keys", row.keys));
+    node.addEventListener("mouseenter", () => {
+      for (const other of list.querySelectorAll(".menu__item")) other.dataset.selected = "false";
+      node.dataset.selected = "true";
+    });
+    node.addEventListener("click", async () => {
+      if (row.command == null) {
+        act("context", row.id, { tab, token });
+        return;
+      }
+      if (isNative) await invoke("tab_context_menu", { id: tab, menu: token, command: row.command }).catch(() => {});
+      close();
+    });
+    list.append(node);
+  }
+  root.append(list);
 };
 
 /** Подсказки адресной строки. Клавиатура — у окна браузера, сюда приходит

@@ -34,6 +34,9 @@ pub struct Popup {
     /// Вид и место последнего показа: тот же попап на том же месте
     /// перерисовывается без переезда окна.
     placement: Mutex<Option<(String, i32, i32, i64)>>,
+    /// Меню у точки щелчка (`align = "point"`): высота точки в окне браузера.
+    /// Вверх или вниз от неё раскрываться, решает `show`, когда высота известна.
+    point: Mutex<Option<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -168,16 +171,28 @@ pub fn open(
     let main_width = f64::from(size.width) / scale;
     let main_height = f64::from(size.height) / scale;
 
+    let point = align == "point";
     let left = match align {
         "end" => anchor.x + anchor.width - width,
         "center" => anchor.x + (anchor.width - width) / 2.0,
+        // Как у системных меню: у правого края раскрывается влево от курсора.
+        "point" if anchor.x + width > main_width - 8.0 => anchor.x - width,
         _ => anchor.x,
     }
     .clamp(8.0, (main_width - width - 8.0).max(8.0));
-    let top = anchor.y + anchor.height + 4.0;
+    let top = if point {
+        anchor.y
+    } else {
+        anchor.y + anchor.height + 4.0
+    };
 
     *state.width.lock() = width;
-    *state.max_height.lock() = (main_height - top - 12.0).max(160.0);
+    *state.max_height.lock() = if point {
+        (main_height - 16.0).max(160.0)
+    } else {
+        (main_height - top - 12.0).max(160.0)
+    };
+    *state.point.lock() = point.then_some(anchor.y);
 
     let x = origin.x + (left * scale).round() as i32;
     let y = origin.y + (top * scale).round() as i32;
@@ -210,8 +225,39 @@ pub fn show(app: &AppHandle, state: &Popup, height: f64, focus: bool) -> anyhow:
     let width = *state.width.lock();
     let height = height.min(*state.max_height.lock()).max(24.0);
     popup.set_size(LogicalSize::new(width, height))?;
+    if let Some(y) = *state.point.lock() {
+        place_at_point(app, &popup, y, height)?;
+    }
     native_show(&popup, focus)?;
     Ok(height)
+}
+
+/// Меню у точки щелчка: под точкой, а если снизу не помещается — над ней.
+fn place_at_point(
+    app: &AppHandle,
+    popup: &WebviewWindow,
+    y: f64,
+    height: f64,
+) -> anyhow::Result<()> {
+    let main = app
+        .get_webview_window("chrome")
+        .ok_or_else(|| anyhow::anyhow!("нет окна браузера"))?;
+    let scale = main.scale_factor()?;
+    let origin = main.inner_position()?;
+    let main_height = f64::from(main.inner_size()?.height) / scale;
+    let top = if y + height <= main_height - 8.0 {
+        y
+    } else if y - height >= 8.0 {
+        y - height
+    } else {
+        (main_height - 8.0 - height).max(8.0)
+    };
+    let x = popup.outer_position()?.x;
+    popup.set_position(PhysicalPosition::new(
+        x,
+        origin.y + (top * scale).round() as i32,
+    ))?;
+    Ok(())
 }
 
 /// Содержимое попапа поменялось (пришёл список форматов, выросла загрузка) —
@@ -223,6 +269,9 @@ pub fn resize(app: &AppHandle, state: &Popup, height: f64) -> anyhow::Result<f64
     };
     let width = *state.width.lock();
     popup.set_size(LogicalSize::new(width, height))?;
+    if let Some(y) = *state.point.lock() {
+        place_at_point(app, &popup, y, height)?;
+    }
     Ok(height)
 }
 
