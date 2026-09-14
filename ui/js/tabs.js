@@ -21,6 +21,8 @@ let internalSeq = 1_000_000;
 const closedTabs = [];
 
 export function initTabs() {
+  // Ширина вкладок меняется и без перерисовки — окно развернули или сузили.
+  new ResizeObserver(() => updateNarrow()).observe(strip);
   strip.addEventListener("click", onClick);
   strip.addEventListener("auxclick", (event) => {
     // Средняя кнопка закрывает вкладку — мышечная память из любого браузера.
@@ -314,14 +316,20 @@ export function renderTabs() {
     if (strip.children[index] !== node) strip.insertBefore(node, strip.children[index] ?? null);
   });
 
-  // Узкий режим — по фактической ширине плитки: при открытой панели места
-  // меньше при том же счёте.
-  requestAnimationFrame(() => {
-    for (const node of strip.children) {
-      const narrow = node.getBoundingClientRect().width < 84 ? "true" : "false";
-      if (node.dataset.narrow !== narrow) node.dataset.narrow = narrow;
-    }
-  });
+  // Ширина полосы — от числа вкладок, а не от их содержимого: иначе узкие
+  // вкладки без подписей сжимали полосу под себя и не расширялись, когда место
+  // появлялось (окно развернули, вкладки закрыли).
+  strip.parentElement.style.setProperty("--tab-count", String(tabs.length));
+  requestAnimationFrame(updateNarrow);
+}
+
+/** Узкий режим — по фактической ширине плитки: при открытой панели места меньше при том же счёте. */
+function updateNarrow() {
+  for (const node of strip.children) {
+    // Подпись прячем, только когда от неё остались бы две-три буквы.
+    const narrow = node.getBoundingClientRect().width < 64 ? "true" : "false";
+    if (node.dataset.narrow !== narrow) node.dataset.narrow = narrow;
+  }
 }
 
 function updateTab(node, tab) {

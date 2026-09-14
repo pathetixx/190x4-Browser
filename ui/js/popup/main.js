@@ -21,7 +21,7 @@ import {
   textButton,
 } from "../dom.js";
 import * as model from "../downloads-model.js";
-import { applyTheme, loadPrefs } from "../prefs.js";
+import { applyTheme, loadPrefs, onPref } from "../prefs.js";
 
 const root = document.getElementById("popup");
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
@@ -31,7 +31,13 @@ let visible = false;
 
 await loadPrefs();
 applyTheme();
-listen("settings", () => applyTheme());
+// Тема — по подписке на настройки: она срабатывает, когда значение уже
+// обновлено. Свой слушатель события мог успеть раньше, и попап отставал от
+// окна браузера на одну смену темы.
+onPref((key) => {
+  if (key === "theme") applyTheme();
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 
 listen("popup-render", (message) => render(message));
 listen("popup-closed", () => {
@@ -75,25 +81,35 @@ function render({ kind, payload, reuse = false }) {
  * а не высоту содержимого. Rust возвращает высоту, которая досталась окну, —
  * по ней прокручиваемые части сжимаются, а не обрезаются.
  */
+// Показ и подгонка — отдельные команды, и их ответы приходят в любом порядке.
+// Ответ на устаревший замер, пришедший последним, оставлял окно прежней высоты:
+// содержимое, дорисованное после загрузки (папка закладок), обрезалось.
+// Поэтому замеры идут очередью, а из скопившихся выполняется только последний.
+let fitting = Promise.resolve();
+let fitRequest = 0;
+
 function fit() {
+  const request = ++fitRequest;
+  fitting = fitting.then(() => (request === fitRequest ? fitNow() : undefined));
+}
+
+async function fitNow() {
   root.style.maxHeight = "";
   const height = Math.ceil(root.getBoundingClientRect().height);
   if (!isNative) return;
-  const apply = (applied) => {
+  try {
+    let applied;
+    if (visible) {
+      applied = await invoke("popup_resize", { height });
+    } else {
+      visible = true;
+      // Подсказки адресной строки не забирают фокус: курсор остаётся в строке.
+      applied = await invoke("popup_show", { height, focus: current?.kind !== "suggest" });
+      root.querySelector("[autofocus]")?.focus();
+    }
     if (Number.isFinite(applied)) root.style.maxHeight = `${applied}px`;
-  };
-  if (visible) {
-    invoke("popup_resize", { height }).then(apply).catch(() => {});
-  } else {
-    visible = true;
-    // Подсказки адресной строки не забирают фокус: курсор остаётся в строке.
-    const focus = current?.kind !== "suggest";
-    invoke("popup_show", { height, focus })
-      .then((applied) => {
-        apply(applied);
-        root.querySelector("[autofocus]")?.focus();
-      })
-      .catch(() => {});
+  } catch {
+    // Окно попапа уже закрыто — подгонять нечего.
   }
 }
 

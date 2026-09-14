@@ -11,7 +11,9 @@
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  flex: 0 1 auto;
+  /* Ширина — от числа вкладок (--tab-count ставит tabs.js) плюс «+», а не от
+     их содержимого: так вкладки сжимаются и расширяются вместе с окном. */
+  flex: 0 1 calc(var(--tab-count, 1) * var(--tab-max) + 40px);
   min-width: 0;
   /* Место под кнопки окна и хотя бы немного ручки для перетаскивания. */
   max-width: calc(100% - 3 * 46px - 96px);
@@ -21,7 +23,7 @@
 .tabstrip {
   display: flex;
   align-items: flex-end;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   height: 100%;
   overflow: hidden;

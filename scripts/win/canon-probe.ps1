@@ -51,6 +51,9 @@ $KEY = (U @(0x0421,0x043E,0x0445,0x0440,0x0430,0x043D,0x0451,0x043D,0x043D,0x044
 $DONE = (U @(0x0413,0x043E,0x0442,0x043E,0x0432,0x043E))
 $DELETE = (U @(0x0423,0x0434,0x0430,0x043B,0x0438,0x0442,0x044C))
 $EXPORT = (U @(0x042D,0x043A,0x0441,0x043F,0x043E,0x0440,0x0442,0x0438,0x0440,0x043E,0x0432,0x0430,0x0442,0x044C))
+$IMPORTED = (U @(0x0418,0x043C,0x043F,0x043E,0x0440,0x0442,0x0438,0x0440,0x043E,0x0432,0x0430,0x043D,0x043E))
+$LIGHT = (U @(0x0421,0x0432,0x0435,0x0442,0x043B,0x0430,0x044F))
+$DARK = (U @(0x0422,0x0451,0x043C,0x043D,0x0430,0x044F))
 $CHOOSE_FILE = (U @(0x0412,0x044B,0x0431,0x0440,0x0430,0x0442,0x044C,0x0020,0x0444,0x0430,0x0439,0x043B))
 
 function Find-AppWindow([int]$procId) {
@@ -216,6 +219,28 @@ function File-Dialog([string]$path, [string]$label) {
   Chord @(0x0D)
   Log "$label dialog done"
   return $true
+}
+
+function Press-Like([string]$fragment, $type, [string]$label) {
+  # Accessible name holds more than the label (a hint next to it), so match
+  # by a fragment.
+  $byType = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)
+  $byPid = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $script:proc.Id)
+  foreach ($window in $AE::RootElement.FindAll($TS::Children, $byPid)) {
+    foreach ($el in $window.FindAll($TS::Descendants, $byType)) {
+      if ($el.Current.Name -notlike "*$fragment*") { continue }
+      $rect = $el.Current.BoundingRectangle
+      $x = [int]($rect.X + $rect.Width / 2); $y = [int]($rect.Y + $rect.Height / 2)
+      [void][WinC]::SetCursorPos($x, $y)
+      Start-Sleep -Milliseconds 250
+      [WinC]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+      [WinC]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+      Log "pressed $label at $x,$y"
+      return $true
+    }
+  }
+  Log "MISSING $label"
+  return $false
 }
 
 function Count-Tabs {
@@ -416,6 +441,30 @@ Start-Sleep -Seconds 3
 Shot "13-extensions"
 Keys "{ESC}"
 Start-Sleep -Seconds 1
+
+# 7b. A bookmarks bar folder: the popup fits its content.
+if (Press $IMPORTED $CT::Button "bookmarks folder") {
+  Start-Sleep -Seconds 2
+  Shot "13b-bookmark-folder"
+  Keys "{ESC}"
+  Start-Sleep -Seconds 1
+}
+
+# 7c. Light theme: settings radio and the menu popup follow at once; then back.
+Go "190x4://settings/appearance"
+Start-Sleep -Seconds 3
+if (Press-Like $LIGHT $CT::RadioButton "theme light") {
+  Start-Sleep -Seconds 2
+  Shot "13c-settings-light"
+  [void](Press $MENU $CT::Button "main menu light")
+  Start-Sleep -Seconds 2
+  Shot "13d-menu-light"
+  Keys "{ESC}"
+  Start-Sleep -Seconds 1
+  [void](Press-Like $DARK $CT::RadioButton "theme dark")
+  Start-Sleep -Seconds 2
+  Shot "13e-settings-dark"
+}
 
 # 8. Taskbar icon.
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds

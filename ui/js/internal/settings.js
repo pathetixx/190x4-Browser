@@ -105,8 +105,17 @@ export function createSettingsPage(root, { section, onSection }) {
     main.replaceChildren(views.section(item, { searchable: false }));
   }
 
+  // Перерисовка по смене настройки. Пока пользователь печатает в поле, её
+  // откладываем — пересоздание унесло бы курсор. После клика по переключателю,
+  // варианту или списку перерисовываем и возвращаем фокус на тот же контрол:
+  // иначе отметки и зависимые строки обновлялись только после повторного входа.
   const rerender = () => {
-    if (!root.contains(document.activeElement) || document.activeElement === searchInput) render();
+    const active = document.activeElement;
+    const inside = root.contains(active) && active !== searchInput;
+    if (inside && active.matches("input, textarea")) return;
+    const focusKey = inside ? active.dataset.focusKey : null;
+    render();
+    if (focusKey) root.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   };
   const offPref = onPref(rerender);
   const unlisten = [listen("passwords", () => views.refresh("passwords")), listen("bookmarks", () => views.refresh("bookmarks"))];
@@ -197,6 +206,7 @@ function toggle(key, { onChange } = {}) {
   const node = el("button", "switch");
   node.type = "button";
   node.setAttribute("role", "switch");
+  node.dataset.focusKey = `pref:${key}`;
   node.setAttribute("aria-checked", String(Boolean(pref(key))));
   node.addEventListener("click", async () => {
     const value = !pref(key);
@@ -218,6 +228,7 @@ function switchSetting(key, label, hint, options) {
 
 function select(key, options, { onChange } = {}) {
   const node = el("select", "field");
+  node.dataset.focusKey = `pref:${key}`;
   for (const [value, label] of options) {
     const option = el("option", null, label);
     option.value = value;
@@ -240,9 +251,11 @@ function choices(key, options, { onChange } = {}) {
     choice.setAttribute("role", "radio");
     choice.dataset.search = `${label} ${hint ?? ""}`.toLowerCase();
     choice.setAttribute("aria-checked", String(pref(key) === value));
+    choice.dataset.focusKey = `pref:${key}=${value}`;
     choice.append(el("span", null, label));
     if (hint) choice.append(el("span", "choice__hint", hint));
     choice.addEventListener("click", async () => {
+      for (const other of node.children) other.setAttribute("aria-checked", String(other === choice));
       await setPref(key, value);
       onChange?.(value);
     });
