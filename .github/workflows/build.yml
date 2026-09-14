@@ -51,21 +51,17 @@ jobs:
             "file://$PWD/scripts/test/passwords-script.html" | tee /tmp/passwords.html | grep -o '<pre id="out"[^<]*</pre>'
           grep -q 'data-ok="true"' /tmp/passwords.html
 
-  # Движковая часть собирается только под Windows (WebView2 COM).
-  build-windows:
-    needs: checks
+  # Движковая часть собирается только под Windows (WebView2 COM). Проверки
+  # Rust — отдельной задачей: если упадёт сборка установщика или публикация,
+  # «Re-run failed jobs» перезапустит только их, без повторных тестов.
+  rust:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -96,6 +92,32 @@ jobs:
 
       - name: Test Rust
         run: cargo test --workspace
+
+  installer:
+    needs: [checks, rust]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Filter lists
+        run: pwsh scripts/fetch-lists.ps1
 
       - name: Build installer
         run: npx --yes @tauri-apps/cli@2.11.4 build
@@ -182,7 +204,7 @@ jobs:
 
   release-on-tag:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build-windows
+    needs: installer
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
