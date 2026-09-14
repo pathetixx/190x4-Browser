@@ -1027,11 +1027,13 @@ mod tests {
         assert!(engine_script(PASSWORDS_SCRIPT).contains("__190x4Passwords"));
     }
 
-    /// Движок обрезает скрипт на нулевом символе; прочие управляющие символы в
-    /// исходнике тоже не нужны — в строках для них есть `\u` и `\n`.
+    /// Движок обрезает скрипт на нулевом символе, прочие управляющие символы в
+    /// тексте тоже не нужны — в строках для них есть `\u` и `\n`. Проверяется
+    /// то, что уходит в движок: перевод строки Windows (`\r\n` после checkout с
+    /// autocrlf) `engine_script` уже убирает.
     #[test]
     fn password_script_has_no_control_characters() {
-        let bad = PASSWORDS_SCRIPT
+        let bad = engine_script(PASSWORDS_SCRIPT)
             .char_indices()
             .find(|(_, ch)| ch.is_control() && *ch != '\n');
         assert_eq!(bad, None);
