@@ -12,10 +12,12 @@
 //!    контендится, потому что читатель один (UI-поток);
 //! 2. в `check` нет ни одной аллокации сверх той, что делает `Request::new`.
 
+mod cosmetic;
 mod engine;
 mod lists;
 mod stats;
 
-pub use engine::{Decision, Guard, ResourceKind};
+pub use cosmetic::{document_host, document_script, Cosmetics};
+pub use engine::{Decision, FilterList, Guard, ResourceKind};
 pub use lists::{ListSource, ListSpec, Subscriptions};
 pub use stats::{Snapshot, Stats};

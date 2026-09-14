@@ -6,6 +6,7 @@
 //! * [`browser190x4_webview`] — вкладки поверх того же HWND, из того же Environment;
 //! * [`browser190x4_adblock`] — сетевой фильтр на горячем пути WebResourceRequested.
 
+mod filters;
 pub mod ipc;
 mod passwords;
 mod popup;
@@ -126,6 +127,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             updates::spawn_checker(handle.clone());
+            filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
 
             #[cfg(windows)]
@@ -358,14 +360,37 @@ fn init_logging() {
 }
 
 /// Какие списки фильтров включены: из настроек, иначе — стартовый набор.
+/// Какие списки фильтров включены. `adblock_lists` хранит включённые списки;
+/// в сохранённом до версии 2 наборе нет списков, появившихся позже, и они не
+/// должны оказаться выключенными молча.
 pub(crate) fn enabled_lists(store: &Store) -> Vec<String> {
+    let defaults = browser190x4_adblock::Subscriptions::default().lists;
     match store.setting("adblock_lists").ok().flatten() {
-        Some(serde_json::Value::Array(ids)) => ids
-            .into_iter()
-            .filter_map(|id| id.as_str().map(str::to_string))
-            .collect(),
-        _ => browser190x4_adblock::Subscriptions::default()
-            .lists
+        Some(serde_json::Value::Array(ids)) => {
+            let mut enabled: Vec<String> = ids
+                .into_iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect();
+            let version = store
+                .setting("adblock_lists_version")
+                .ok()
+                .flatten()
+                .and_then(|value| value.as_u64())
+                .unwrap_or(1);
+            if version < 2 {
+                const FIRST: [&str; 3] = ["easylist", "easyprivacy", "ruadlist"];
+                for spec in defaults
+                    .iter()
+                    .filter(|spec| spec.enabled && !FIRST.contains(&spec.id.as_str()))
+                {
+                    if !enabled.contains(&spec.id) {
+                        enabled.push(spec.id.clone());
+                    }
+                }
+            }
+            enabled
+        }
+        _ => defaults
             .into_iter()
             .filter(|spec| spec.enabled)
             .map(|spec| spec.id)
@@ -378,37 +403,64 @@ pub(crate) fn enabled_lists(store: &Store) -> Vec<String> {
 /// До этого момента браузер уже работает — просто без блокировок (или со
 /// старым набором правил). Первый запуск не должен ждать разбор сотен тысяч
 /// правил.
+/// Скачанные фильтры: расширенные списки и ресурсы скриптлетов.
+pub(crate) fn filters_dir() -> std::path::PathBuf {
+    profile_dir().join("filters")
+}
+
 pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::AppHandle) {
+    use browser190x4_adblock::{FilterList, ListSource, Subscriptions};
+
     std::thread::spawn(move || {
-        let dir = match app.path().resource_dir() {
+        let bundled = match app.path().resource_dir() {
             Ok(dir) => dir.join("lists"),
             Err(err) => {
                 tracing::warn!(%err, "нет каталога ресурсов — фильтр остаётся пустым");
                 return;
             }
         };
+        let downloaded = filters_dir();
 
         let enabled = enabled_lists(&store);
-        let mut raw = Vec::new();
-        for spec in browser190x4_adblock::Subscriptions::default()
+        let mut lists = Vec::new();
+        for spec in Subscriptions::default()
             .lists
             .iter()
             .filter(|spec| enabled.contains(&spec.id))
         {
-            if let browser190x4_adblock::ListSource::Bundled(name) = &spec.source {
-                match std::fs::read_to_string(dir.join(name)) {
-                    Ok(text) => raw.push(text),
-                    Err(err) => tracing::warn!(list = %spec.id, %err, "список не прочитан"),
-                }
+            let path = match &spec.source {
+                ListSource::Bundled(name) => bundled.join(name),
+                ListSource::Downloaded(name) => downloaded.join(name),
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(text) => lists.push(FilterList {
+                    text,
+                    trusted: spec.trusted,
+                }),
+                // Скачанного списка нет до первого обновления фильтров.
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::NotFound
+                        && matches!(spec.source, ListSource::Downloaded(_)) => {}
+                Err(err) => tracing::warn!(list = %spec.id, %err, "список не прочитан"),
             }
         }
 
+        let resources = match std::fs::read_to_string(downloaded.join("resources.json")) {
+            Ok(json) => Guard::parse_resources(&json).unwrap_or_else(|err| {
+                tracing::warn!(%err, "ресурсы скриптлетов не разобраны");
+                Vec::new()
+            }),
+            Err(_) => Vec::new(),
+        };
+
         let started = std::time::Instant::now();
-        let count = raw.len();
-        let engine = Guard::build(raw);
+        let count = lists.len();
+        let scriptlets = resources.len();
+        let engine = Guard::build(lists, resources);
         guard.swap(engine);
         tracing::info!(
             lists = count,
+            scriptlets,
             ms = started.elapsed().as_millis(),
             "фильтр собран"
         );

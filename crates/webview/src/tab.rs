@@ -548,7 +548,8 @@ impl Tab {
 
         configure(&core)?;
         inject_scripts(&core)?;
-        filter::install(&core, env, guard, source.clone())?;
+        filter::install(&core, env, guard.clone(), source.clone())?;
+        filter::install_cosmetics(&core, guard)?;
         wire_accelerators(id, &controller, sink.clone())?;
         downloads::wire(id, &core, downloads, sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;

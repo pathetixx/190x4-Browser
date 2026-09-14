@@ -2,10 +2,22 @@ use std::sync::Arc;
 
 use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
+use adblock::resources::{PermissionMask, Resource};
 use adblock::Engine;
 use arc_swap::ArcSwap;
 
+use crate::cosmetic::Cosmetics;
 use crate::stats::Stats;
+
+/// Текст списка и доверие к нему.
+pub struct FilterList {
+    pub text: String,
+    pub trusted: bool,
+}
+
+/// Права доверенного списка. Скриптлеты `trusted-*` помечены в ресурсах тем же
+/// битом, и из недоверенного списка движок их не встраивает.
+const TRUSTED: PermissionMask = PermissionMask::from_bits(0b0000_0001);
 
 /// Тип ресурса в терминах фильтр-списков (`$script`, `$image`, `$xhr`, …).
 ///
@@ -80,12 +92,45 @@ impl Guard {
     ///
     /// Берёт `Vec<String>` по значению: `FilterSet::add_filter_list` требует
     /// владения текстом, и лишний `clone` здесь — это лишние мегабайты.
-    pub fn build(lists: Vec<String>) -> Engine {
+    pub fn build(lists: Vec<FilterList>, resources: Vec<Resource>) -> Engine {
         let mut set = FilterSet::new(false);
-        for raw in lists {
-            set.add_filter_list(raw, ParseOptions::default());
+        for list in lists {
+            let permissions = if list.trusted {
+                TRUSTED
+            } else {
+                PermissionMask::default()
+            };
+            set.add_filter_list(
+                list.text,
+                ParseOptions {
+                    permissions,
+                    ..ParseOptions::default()
+                },
+            );
         }
-        Engine::new_with_filter_set(set)
+        let mut engine = Engine::new_with_filter_set(set);
+        engine.use_resources(resources);
+        engine
+    }
+
+    /// Ресурсы скриптлетов из `resources.json`.
+    pub fn parse_resources(json: &str) -> anyhow::Result<Vec<Resource>> {
+        Ok(serde_json::from_str(json)?)
+    }
+
+    /// Косметика документа по адресу: что скрыть и какие скриптлеты запустить.
+    /// Пусто, если фильтр выключен. Звать на навигацию, не на каждый запрос.
+    pub fn cosmetics(&self, url: &str) -> Cosmetics {
+        if !**self.enabled.load() {
+            return Cosmetics::default();
+        }
+        let resources = self.engine.load().url_cosmetic_resources(url);
+        let mut hide: Vec<String> = resources.hide_selectors.into_iter().collect();
+        hide.sort_unstable();
+        Cosmetics {
+            hide,
+            script: resources.injected_script,
+        }
     }
 
     /// Подменить движок целиком. Читатели, которые уже внутри `check`,
@@ -144,10 +189,91 @@ impl Default for Guard {
 mod tests {
     use super::*;
 
+    fn list(text: &str, trusted: bool) -> FilterList {
+        FilterList {
+            text: text.to_string(),
+            trusted,
+        }
+    }
+
     fn guard_with(rules: &str) -> Guard {
         let guard = Guard::empty();
-        guard.swap(Guard::build(vec![rules.to_string()]));
+        guard.swap(Guard::build(vec![list(rules, false)], Vec::new()));
         guard
+    }
+
+    fn b64(input: &str) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in input.as_bytes().chunks(3) {
+            let bytes = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    fn scriptlet_guard(trusted: bool) -> Guard {
+        let json = serde_json::json!([
+            {"name": "mark.js", "aliases": [], "kind": {"mime": "application/javascript"},
+             "content": b64("function mark(value) { window.__mark = value; }"), "dependencies": [], "permission": 0},
+            {"name": "trusted-mark.js", "aliases": [], "kind": {"mime": "application/javascript"},
+             "content": b64("function trustedMark(value) { window.__trusted = value; }"), "dependencies": [], "permission": 1},
+        ])
+        .to_string();
+        let resources = Guard::parse_resources(&json).unwrap();
+        let guard = Guard::empty();
+        guard.swap(Guard::build(
+            vec![list(
+                "example.com##+js(mark, 1)\nexample.com##+js(trusted-mark, 2)",
+                trusted,
+            )],
+            resources,
+        ));
+        guard
+    }
+
+    #[test]
+    fn hides_elements_by_cosmetic_rule() {
+        let guard = guard_with("example.com##.promo");
+        assert_eq!(
+            guard.cosmetics("https://example.com/page").hide,
+            vec![".promo".to_string()]
+        );
+        assert!(guard.cosmetics("https://other.example/").hide.is_empty());
+    }
+
+    #[test]
+    fn trusted_scriptlets_need_a_trusted_list() {
+        let plain = scriptlet_guard(false)
+            .cosmetics("https://example.com/")
+            .script;
+        assert!(plain.contains("function mark"));
+        assert!(!plain.contains("function trustedMark"));
+
+        let trusted = scriptlet_guard(true)
+            .cosmetics("https://example.com/")
+            .script;
+        assert!(trusted.contains("function mark"));
+        assert!(trusted.contains("function trustedMark"));
+    }
+
+    #[test]
+    fn disabled_guard_has_no_cosmetics() {
+        let guard = guard_with("example.com##.promo");
+        guard.set_enabled(false);
+        assert!(guard.cosmetics("https://example.com/").is_empty());
     }
 
     #[test]

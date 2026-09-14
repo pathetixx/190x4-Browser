@@ -1,0 +1,68 @@
+name: Filters
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: filters
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Build filters
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/filters/build.mjs filters-out
+
+      # Основной источник. manifest.json — последним: браузер сверяет файлы с
+      # ним, и неполная выкладка не должна выглядеть готовой.
+      - name: Publish to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(date -u +%Y.%m.%d).${{ github.run_number }}"
+          upload() {
+            for channel in "$version" stable; do
+              curl --fail --silent --show-error --retry 3 \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --upload-file "$1" \
+                "https://gitlab.com/api/v4/projects/86438976/packages/generic/filters/$channel/$(basename "$1")" > /dev/null
+            done
+          }
+          for file in filters-out/*; do
+            [ "$(basename "$file")" = manifest.json ] || upload "$file"
+          done
+          upload filters-out/manifest.json
+
+      # Резервный источник. Prerelease: иначе релиз фильтров стал бы Latest и
+      # сломал обновления самого браузера.
+      - name: Publish to GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release view filters > /dev/null 2>&1; then
+            gh release create filters --prerelease --latest=false --title "Filters" \
+              --notes "Обновляемые фильтры и ресурсы скриптлетов для 190x4 Browser. Лицензии — NOTICE.txt."
+          fi
+          find filters-out -maxdepth 1 -type f ! -name manifest.json -print0 | xargs -0 gh release upload filters --clobber
+          gh release upload filters filters-out/manifest.json --clobber

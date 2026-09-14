@@ -466,6 +466,15 @@ if (Press-Like $LIGHT $CT::RadioButton "theme light") {
   Shot "13e-settings-dark"
 }
 
+# 7d. YouTube: extended filters arrive about 30 s after start; feed ad slots
+# and ads in the player must be gone.
+Go "https://www.youtube.com/"
+Start-Sleep -Seconds 12
+Shot "13f-youtube-feed"
+Go "https://www.youtube.com/watch?v=kJQP7kiw5Fk"
+Start-Sleep -Seconds 15
+Shot "13g-youtube-video"
+
 # 8. Taskbar icon.
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bmp = New-Object System.Drawing.Bitmap $screen.Width, 56

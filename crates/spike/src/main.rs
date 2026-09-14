@@ -22,6 +22,8 @@ fn main() {
 #[cfg(windows)]
 mod bench_adblock;
 #[cfg(windows)]
+mod cosmetics;
+#[cfg(windows)]
 mod drm;
 #[cfg(windows)]
 mod host;
@@ -88,6 +90,19 @@ enum Command {
         #[arg(long)]
         inject: Option<std::path::PathBuf>,
     },
+    /// Скрипт документа для адреса: скриптлеты и косметика из списков фильтров.
+    Cosmetics {
+        #[arg(long, default_value = "https://www.youtube.com/")]
+        url: String,
+        /// Встроенные списки (easylist.txt и другие).
+        #[arg(long, default_value = "src-tauri/lists")]
+        bundled: std::path::PathBuf,
+        /// Скачанные фильтры: ubo-*.txt и resources.json.
+        #[arg(long)]
+        downloaded: std::path::PathBuf,
+        #[arg(long, default_value = "spike-out/cosmetics.js")]
+        out: std::path::PathBuf,
+    },
     /// Все три подряд.
     All,
 }
@@ -126,6 +141,12 @@ fn main() -> anyhow::Result<()> {
             variants,
             inject,
         } => script::run(&url, &variants, inject.as_deref()),
+        Command::Cosmetics {
+            url,
+            bundled,
+            downloaded,
+            out,
+        } => cosmetics::run(&url, &bundled, &downloaded, &out),
         Command::All => {
             let memory = mem::run(20, None, 20)?;
             report::write(&cli.out, "memory", &memory)?;

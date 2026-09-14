@@ -621,6 +621,10 @@ const BUILDERS = {
       easylist: "Основной список рекламы",
       easyprivacy: "Счётчики, пиксели и трекеры",
       ruadlist: "Реклама на русскоязычных сайтах",
+      extended: "Реклама в видео, всплывающие окна и пустые места от баннеров",
+      "quick-fixes": "Свежие правила против новых видов рекламы",
+      privacy: "Скрытые счётчики и слежка между сайтами",
+      unbreak: "Исключения, чтобы фильтры не ломали сайты",
     };
     invoke("adblock_lists")
       .then((items) => {
@@ -633,6 +637,7 @@ const BUILDERS = {
               item.enabled = !item.enabled;
               node.setAttribute("aria-checked", String(item.enabled));
               const enabled = items.filter((list) => list.enabled).map((list) => list.id);
+              await setPref("adblock_lists_version", 2);
               await setPref("adblock_lists", enabled);
               hooks.toast("Списки фильтров пересобираются");
             });
@@ -793,7 +798,7 @@ const BUILDERS = {
 
     const licenses = setting(
       "Сторонние компоненты",
-      "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0).",
+      "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0). Расширенные фильтры и скриптлеты — uBlock Origin и uAssets (GPL-3.0), скачиваются отдельно.",
       null
     );
 

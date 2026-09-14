@@ -6,11 +6,11 @@
 //! только `Guard::check` (микросекунды) и, в случае блока, создание пустого
 //! ответа. Ни логов, ни каналов, ни аллокаций строк сверх необходимого.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use browser190x4_adblock::{Decision, Guard, ResourceKind};
+use browser190x4_adblock::{document_host, document_script, Decision, Guard, ResourceKind};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Environment, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
@@ -20,7 +20,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
 };
-use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+use webview2_com::{
+    take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
+    NavigationStartingEventHandler, WebResourceRequestedEventHandler,
+};
 use windows_core::{h, HSTRING, PWSTR};
 
 /// Источник, относительно которого считается third-party. Обновляется при
@@ -112,4 +115,67 @@ pub fn install(
     }
 
     Ok(token)
+}
+
+/// Косметика и скриптлеты: у каждого адреса свой скрипт документа.
+///
+/// Скрипт регистрируется в `NavigationStarting` — до создания документа, — а
+/// прежний снимается. Регистрация асинхронная: если к её завершению началась
+/// следующая навигация, запоздавший скрипт тут же снимается.
+pub fn install_cosmetics(core: &ICoreWebView2, guard: Arc<Guard>) -> windows_core::Result<()> {
+    let registered: Rc<RefCell<Option<String>>> = Rc::default();
+    let generation = Rc::new(Cell::new(0u64));
+    let mut token = 0i64;
+
+    unsafe {
+        core.add_NavigationStarting(
+            &NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                let (Some(core), Some(args)) = (sender, args) else {
+                    return Ok(());
+                };
+                let url = {
+                    let mut raw = PWSTR::null();
+                    args.Uri(&mut raw)?;
+                    take_pwstr(raw)
+                };
+
+                let current = generation.get().wrapping_add(1);
+                generation.set(current);
+                if let Some(id) = registered.borrow_mut().take() {
+                    let _ = core.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                }
+
+                let Some(host) = document_host(&url) else {
+                    return Ok(());
+                };
+                let Some(script) = document_script(&host, &guard.cosmetics(&url)) else {
+                    return Ok(());
+                };
+
+                let registered = registered.clone();
+                let generation = generation.clone();
+                let owner = core.clone();
+                core.AddScriptToExecuteOnDocumentCreated(
+                    &HSTRING::from(script.as_str()),
+                    &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                        move |code, id| {
+                            if code.is_err() {
+                                return Ok(());
+                            }
+                            if generation.get() == current {
+                                *registered.borrow_mut() = Some(id);
+                            } else {
+                                let _ = owner
+                                    .RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                            }
+                            Ok(())
+                        },
+                    )),
+                )
+            })),
+            &mut token,
+        )?;
+    }
+
+    Ok(())
 }

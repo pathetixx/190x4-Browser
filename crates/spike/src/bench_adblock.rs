@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use browser190x4_adblock::{Decision, Guard, ResourceKind};
+use browser190x4_adblock::{Decision, FilterList, Guard, ResourceKind};
 use serde::Serialize;
 use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
 use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
@@ -42,7 +42,10 @@ pub fn run(url: &str, lists_dir: &std::path::Path) -> anyhow::Result<AdblockRepo
     let mut raw = Vec::new();
     for name in ["easylist.txt", "easyprivacy.txt", "ruadlist.txt"] {
         match std::fs::read_to_string(lists_dir.join(name)) {
-            Ok(text) => raw.push(text),
+            Ok(text) => raw.push(FilterList {
+                text,
+                trusted: false,
+            }),
             Err(err) => eprintln!("нет списка {name}: {err}"),
         }
     }
@@ -55,7 +58,7 @@ pub fn run(url: &str, lists_dir: &std::path::Path) -> anyhow::Result<AdblockRepo
     let started = std::time::Instant::now();
     let guard = Arc::new(Guard::empty());
     let lists_count = raw.len();
-    guard.swap(Guard::build(raw));
+    guard.swap(Guard::build(raw, Vec::new()));
     let build_ms = started.elapsed().as_millis();
 
     let mut host = Host::create(r".\spike-userdata-adblock")?;
