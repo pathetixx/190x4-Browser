@@ -52,8 +52,9 @@ const normalizedNotes = (value) => String(value ?? "")
   .filter((line) => !/^#{1,6}\s+/u.test(line))
   .join("\n");
 
-// OTA-адреса и CDN догоняют публикацию за несколько секунд.
-async function retry(fn, tries = 8, delayMs = 5000) {
+// OTA-адреса догоняют публикацию не сразу: GitHub по releases/latest ещё около
+// минуты после публикации отдаёт прежний latest.json. Ждём до пяти минут.
+async function retry(fn, tries = 60, delayMs = 5000) {
   for (let i = 0; i < tries; i++) {
     try { if (await fn()) return true; } catch { /* transient */ }
     if (i < tries - 1) await sleep(delayMs);
