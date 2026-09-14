@@ -1,0 +1,37 @@
+{
+  "tabs_requested": 20,
+  "settle_seconds": 20,
+  "steps": [
+    {
+      "tabs": 0,
+      "processes": 1,
+      "private_mb": 2.3,
+      "working_set_mb": 15.3
+    },
+    {
+      "tabs": 1,
+      "processes": 9,
+      "private_mb": 550.3,
+      "working_set_mb": 764.1
+    },
+    {
+      "tabs": 5,
+      "processes": 15,
+      "private_mb": 1220.2,
+      "working_set_mb": 1687.3
+    },
+    {
+      "tabs": 10,
+      "processes": 23,
+      "private_mb": 2056.9,
+      "working_set_mb": 2872.8
+    },
+    {
+      "tabs": 20,
+      "processes": 36,
+      "private_mb": 3387.8,
+      "working_set_mb": 4719.1
+    }
+  ],
+  "marginal_mb_per_tab": 169.3
+}

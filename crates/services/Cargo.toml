@@ -1,0 +1,17 @@
+[package]
+name = "browser190x4-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Переводчик и загрузчик медиа: клиент к сервисам 190x4"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+# rustls, а не schannel: одинаковое поведение TLS на всех машинах и никакой
+# зависимости от системного хранилища сертификатов.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

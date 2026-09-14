@@ -1,0 +1,152 @@
+/**
+ * Мелкие помощники DOM и форматирования. Общие для окна браузера,
+ * встроенных страниц и всплывающего окна.
+ */
+
+export const SPRITE = "./assets/icons.svg";
+
+export function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+/** Иконка из спрайта Fluent. `id` — без префикса: "back", "star-16". */
+export function icon(id, size = 16, className = "") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("aria-hidden", "true");
+  if (className) svg.setAttribute("class", className);
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `${SPRITE}#i-${id}`);
+  svg.append(use);
+  return svg;
+}
+
+/** Кнопка-иконка с подсказкой. */
+export function iconButton(id, title, onClick, { size = 16, className = "btn btn--ghost btn--icon btn--sm" } = {}) {
+  const button = el("button", className);
+  button.type = "button";
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.append(icon(id, size));
+  if (onClick) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick(event);
+    });
+  }
+  return button;
+}
+
+export function textButton(label, onClick, className = "btn") {
+  const button = el("button", className, label);
+  button.type = "button";
+  if (onClick) button.addEventListener("click", onClick);
+  return button;
+}
+
+/**
+ * Иконка сайта. Если картинка не загрузилась (сайт без favicon, http на
+ * https-странице), на её месте остаётся глобус — пустое место в списке
+ * выглядит как поломка.
+ */
+export function favicon(src, className = "favicon") {
+  if (!src || !/^(https:|data:image\/)/.test(src)) return icon("globe-16", 16, className);
+  const img = el("img", className);
+  img.alt = "";
+  img.decoding = "async";
+  img.referrerPolicy = "no-referrer";
+  img.src = src;
+  img.addEventListener("error", () => img.replaceWith(icon("globe-16", 16, className)), { once: true });
+  return img;
+}
+
+export function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+export function fileName(path) {
+  return String(path ?? "").split(/[\\/]/).pop() || String(path ?? "");
+}
+
+/** Русские числительные: «1 файл», «3 файла», «11 файлов». */
+export function plural(count, one, few, many) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+export function formatBytes(bytes) {
+  if (!bytes || bytes < 0) return "0 Б";
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 ? 0 : value < 10 ? 1 : 0;
+  return `${value.toFixed(digits).replace(".", ",")} ${units[unit]}`;
+}
+
+export function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${Math.ceil(seconds)} с`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} мин`;
+  const hours = Math.floor(seconds / 3600);
+  return `${hours} ч ${Math.round((seconds - hours * 3600) / 60)} мин`;
+}
+
+/** «Сегодня», «Вчера», «12 сентября» — заголовки групп по дням. */
+export function dayLabel(stampSeconds) {
+  const date = new Date(stampSeconds * 1000);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "Сегодня";
+  if (date.toDateString() === yesterday.toDateString()) return "Вчера";
+  return date.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  });
+}
+
+export function clock(stampSeconds) {
+  return new Date(stampSeconds * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Иконка файла по расширению — чтобы список загрузок читался глазами. */
+export function fileIcon(path) {
+  const ext = fileName(path).split(".").pop()?.toLowerCase() ?? "";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "image";
+  if (["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus"].includes(ext)) return "music";
+  if (["mp4", "mkv", "webm", "mov", "avi"].includes(ext)) return "video";
+  if (["zip", "rar", "7z", "tar", "gz", "xz"].includes(ext)) return "archive";
+  if (["exe", "msi", "msix", "appx"].includes(ext)) return "app";
+  if (["pdf", "doc", "docx", "txt", "rtf", "odt", "xls", "xlsx", "csv", "ppt", "pptx", "md"].includes(ext)) return "doc-text";
+  return "document";
+}
+
+export function debounce(fn, ms) {
+  let timer = 0;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/** Элемент под курсором → прямоугольник в CSS-пикселях окна для попапа. */
+export function anchorOf(node) {
+  const rect = node.getBoundingClientRect();
+  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+}

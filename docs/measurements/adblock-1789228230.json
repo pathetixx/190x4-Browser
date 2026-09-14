@@ -1,0 +1,23 @@
+{
+  "url": "https://www.kinopoisk.ru/",
+  "rules_lists": 3,
+  "build_ms": 144,
+  "blocked": 243,
+  "cold": {
+    "count": 266,
+    "p50_micros": 30.8,
+    "p95_micros": 162.2,
+    "p99_micros": 802.9,
+    "max_micros": 4656.2,
+    "total_ms": 18.4593
+  },
+  "warm": {
+    "count": 194,
+    "p50_micros": 29.1,
+    "p95_micros": 82.9,
+    "p99_micros": 178.8,
+    "max_micros": 259.5,
+    "total_ms": 7.1912
+  },
+  "verdict": "синхронный матчинг приемлем: суммарная цена мала, хвост — прогрев regex-кэша"
+}

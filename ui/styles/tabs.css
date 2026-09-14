@@ -1,0 +1,230 @@
+/* ─────────────────────────────────────────────────────────────
+   Строка вкладок.
+
+   Устроена как в Chrome и Edge: активная вкладка одного цвета с панелью
+   инструментов и «перетекает» в неё скруглёнными ушками снизу; «+» стоит
+   сразу за последней вкладкой, а всё пустое место правее остаётся ручкой
+   окна. Когда вкладкам тесно, они сжимаются, а «+» прижимается к краю.
+   ───────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Место под кнопки окна и хотя бы немного ручки для перетаскивания. */
+  max-width: calc(100% - 3 * 46px - 96px);
+  padding-inline: 8px 0;
+}
+
+.tabstrip {
+  display: flex;
+  align-items: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  /* Ушки активной вкладки выходят за её края на 8px — не обрезаем их. */
+  padding-inline: 8px;
+  margin-inline: -8px;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 var(--tab-max);
+  min-width: var(--tab-min);
+  height: var(--tab-h);
+  padding: 0 6px 0 10px;
+  border-radius: 8px 8px 0 0;
+  color: var(--text-lo);
+  text-align: start;
+  /* Разделитель между соседними неактивными вкладками. */
+  background-image: linear-gradient(var(--line-3), var(--line-3));
+  background-size: 1px 16px;
+  background-position: right center;
+  background-repeat: no-repeat;
+  transition: background-color 0.14s var(--ease-out), color 0.14s var(--ease-out);
+  animation: tab-in 0.2s var(--ease-emph);
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.tab:last-child,
+.tab:hover,
+.tab[data-active="true"],
+.tab:has(+ .tab:hover),
+.tab:has(+ .tab[data-active="true"]) {
+  background-image: none;
+}
+
+.tab:hover {
+  background-color: var(--overlay-2);
+  color: var(--text-mid);
+}
+
+.tab[data-active="true"] {
+  z-index: 1;
+  background-color: var(--ink-2);
+  color: var(--text-hi);
+  /* Тонкая акцентная риска по верхнему краю — единственный цветной штрих
+     строки вкладок. inset-тень повторяет скругление вкладки. */
+  box-shadow: inset 0 2px 0 -0.5px var(--accent);
+}
+
+/* Ушки: вогнутые скругления, которыми вкладка переходит в тулбар. */
+.tab[data-active="true"]::before,
+.tab[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+
+.tab[data-active="true"]::before {
+  left: -8px;
+  background: radial-gradient(circle at 0 0, transparent 7.5px, var(--ink-2) 8px);
+}
+
+.tab[data-active="true"]::after {
+  right: -8px;
+  background: radial-gradient(circle at 100% 0, transparent 7.5px, var(--ink-2) 8px);
+}
+
+.tab__favicon,
+.tab__glyph {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.tab__favicon {
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.tab__glyph {
+  color: var(--text-lo);
+}
+
+.tab[data-active="true"] .tab__glyph {
+  color: var(--text-mid);
+}
+
+/* Встроенные страницы браузера помечены знаком 190x4. */
+.tab__glyph--brand {
+  color: var(--accent-bright);
+}
+
+.tab__spinner {
+  width: 14px;
+  height: 14px;
+  margin: 1px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--line-3);
+  border-top-color: var(--accent-bright);
+  animation: tab-spin 0.7s linear infinite;
+}
+
+@keyframes tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tab__title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  /* Заголовок гаснет к краю вместо многоточия: три точки на узкой
+     вкладке съедают треть полезного текста. */
+  mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent 100%);
+}
+
+.tab__audio,
+.tab__close {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.tab__audio {
+  color: var(--text-mid);
+}
+
+.tab__audio:hover,
+.tab__close:hover {
+  background: var(--overlay-4);
+  color: var(--text-hi);
+}
+
+.tab__close {
+  color: var(--text-lo);
+  opacity: 0;
+  transition: opacity 0.1s var(--ease-out);
+}
+
+.tab:hover .tab__close,
+.tab[data-active="true"] .tab__close {
+  opacity: 1;
+}
+
+/* Узкая вкладка: остаётся только иконка. Крестик у неактивной прячем —
+   на 48px он попадает под курсор случайно. */
+.tab[data-narrow="true"] {
+  justify-content: center;
+  padding: 0 4px;
+}
+
+.tab[data-narrow="true"] .tab__title,
+.tab[data-narrow="true"] .tab__audio,
+.tab[data-narrow="true"]:not([data-active="true"]) .tab__close {
+  display: none;
+}
+
+.tab[data-muted="true"] .tab__audio {
+  color: var(--text-faint);
+}
+
+.tab[data-dragging="true"] {
+  opacity: 0.5;
+}
+
+/* «+» — сразу за последней вкладкой, по центру её высоты. */
+.tabs__new {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 2px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-mid);
+  transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+
+.tabs__new:hover {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.tabs__new:active {
+  background: var(--overlay-4);
+}

@@ -1,0 +1,27 @@
+[package]
+name = "browser190x4-adblock"
+# Имя пакета начинается с буквы, потому что Rust-идентификатор цифрой начинаться
+# не может; бренд при этом сохранён целиком, без сокращений.
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Тот же движок, что у Brave. Матчинг синхронный — поэтому его можно звать
+# прямо из WebResourceRequested, не отпуская COM-поток.
+#
+# Фича `single-thread` (она в default!) выключена намеренно: с ней кэш
+# скомпилированных регулярок лежит в `RefCell`, `Engine` перестаёт быть `Sync`,
+# и `ArcSwap<Engine>` со сменой списков из фонового потока просто не соберётся
+# (в самом adblock на это есть тест `assert_engine_sync`). Ценой остаётся
+# `Mutex` вокруг regex-кэша — неконтендящийся, потому что читатель один.
+adblock = { version = "0.13", default-features = false, features = ["full-regex-handling", "embedded-domain-resolver"] }
+arc-swap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }

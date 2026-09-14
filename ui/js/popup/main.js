@@ -1,0 +1,842 @@
+/**
+ * Всплывающее окно браузера: меню, пузыри, расширение «Загрузчик видео».
+ *
+ * Окно одно и живёт всё время работы браузера, скрываясь между показами.
+ * Окно браузера присылает `popup-render` с видом и данными; попап рисует,
+ * меряет себя и просит Rust показать его нужной высоты. Выбор пользователя
+ * уходит обратно событием `popup-action`.
+ */
+
+import { emit, invoke, isNative, listen } from "../bridge.js";
+import {
+  el,
+  favicon,
+  fileIcon,
+  formatBytes,
+  hostOf,
+  icon,
+  iconButton,
+  plural,
+  textButton,
+} from "../dom.js";
+import * as model from "../downloads-model.js";
+import { applyTheme, loadPrefs } from "../prefs.js";
+
+const root = document.getElementById("popup");
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+
+let current = null;
+let visible = false;
+
+await loadPrefs();
+applyTheme();
+listen("settings", () => applyTheme());
+
+listen("popup-render", (message) => render(message));
+listen("popup-closed", () => {
+  visible = false;
+  current?.cleanup?.();
+  current = null;
+});
+
+const pending = await invoke("popup_pending").catch(() => null);
+if (pending) render(pending);
+
+document.addEventListener("contextmenu", (event) => {
+  if (!event.target.closest("input, textarea")) event.preventDefault();
+});
+document.addEventListener("keydown", onKey);
+
+if (!isNative) demo();
+
+/* ── Жизненный цикл ────────────────────────────────────────── */
+
+function render({ kind, payload, reuse = false }) {
+  // Тот же попап на прежнем месте (подсказки на каждую клавишу): окно уже на
+  // экране, нужно только подогнать высоту, а не показывать его заново.
+  const keep = reuse && visible && current?.kind === kind;
+  current?.cleanup?.();
+  const view = VIEWS[kind];
+  if (!view) return;
+  root.replaceChildren();
+  root.className = `popup popup--${kind}`;
+  current = { kind, payload, cleanup: null };
+  current.cleanup = view(payload ?? {}) ?? null;
+  visible = keep;
+  requestAnimationFrame(fit);
+}
+
+/**
+ * Подогнать окно под содержимое; первый вызов после рендера — показать.
+ *
+ * Меряем естественную высоту без ограничений: окно в этот момент ещё
+ * прежнего размера, и всё, что привязано к нему (100vh), дало бы его высоту,
+ * а не высоту содержимого. Rust возвращает высоту, которая досталась окну, —
+ * по ней прокручиваемые части сжимаются, а не обрезаются.
+ */
+function fit() {
+  root.style.maxHeight = "";
+  const height = Math.ceil(root.getBoundingClientRect().height);
+  if (!isNative) return;
+  const apply = (applied) => {
+    if (Number.isFinite(applied)) root.style.maxHeight = `${applied}px`;
+  };
+  if (visible) {
+    invoke("popup_resize", { height }).then(apply).catch(() => {});
+  } else {
+    visible = true;
+    // Подсказки адресной строки не забирают фокус: курсор остаётся в строке.
+    const focus = current?.kind !== "suggest";
+    invoke("popup_show", { height, focus })
+      .then((applied) => {
+        apply(applied);
+        root.querySelector("[autofocus]")?.focus();
+      })
+      .catch(() => {});
+  }
+}
+
+function close() {
+  current?.cleanup?.();
+  current = null;
+  visible = false;
+  if (isNative) invoke("popup_hide").catch(() => {});
+}
+
+/** Сообщить окну браузера о выборе. */
+function act(kind, action, extra = {}, { keepOpen = false } = {}) {
+  emit("popup-action", { kind, action, ...extra });
+  if (!keepOpen) close();
+}
+
+function onKey(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    close();
+    return;
+  }
+  const items = [...root.querySelectorAll(".menu__item:not([disabled])")];
+  if (!items.length || !["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+  if (event.target.matches("input, select")) return;
+
+  const index = items.findIndex((item) => item.dataset.selected === "true");
+  if (event.key === "Enter") {
+    if (index >= 0) {
+      event.preventDefault();
+      items[index].click();
+    }
+    return;
+  }
+  event.preventDefault();
+  const next = event.key === "ArrowDown" ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
+  items.forEach((item, i) => (item.dataset.selected = String(i === next)));
+  items[next].scrollIntoView({ block: "nearest" });
+}
+
+function sizeOf(id) {
+  return /-(16|12)(-filled)?$/.test(id) ? 16 : 20;
+}
+
+/* ── Виды ──────────────────────────────────────────────────── */
+
+const VIEWS = {
+  /** Обычное меню: пункты, разделители, строка масштаба, флажки. */
+  menu({ menu, items = [] }) {
+    const kind = `menu:${menu}`;
+    const list = el("div", "menu scroll");
+
+    for (const item of items) {
+      if (item.separator) {
+        list.append(el("div", "menu__sep"));
+        continue;
+      }
+      if (item.type === "header") {
+        list.append(el("div", "menu__head", item.label));
+        continue;
+      }
+      if (item.type === "zoom") {
+        list.append(zoomRow(kind, item));
+        continue;
+      }
+
+      const row = el("button", "menu__item");
+      row.type = "button";
+      row.disabled = Boolean(item.disabled);
+      const slot = el("span", "menu__icon");
+      if (item.image) slot.append(favicon(item.image));
+      else if (item.icon) slot.append(icon(item.icon, sizeOf(item.icon)));
+      row.append(slot, el("span", "menu__label", item.label));
+
+      if (item.checked) row.append(icon("checkmark-16", 16, "menu__check"));
+      else if (item.keys) row.append(el("span", "menu__keys", item.keys));
+
+      if (item.trailing) {
+        const pinned = item.trailing === "pinned";
+        const pin = iconButton(pinned ? "pin-16-filled" : "pin-16", pinned ? "Открепить от панели" : "Закрепить на панели", () => {
+          act(kind, `${item.id}:pin`);
+        });
+        if (pinned) pin.style.color = "var(--accent-bright)";
+        row.append(pin);
+      }
+
+      row.addEventListener("mouseenter", () => {
+        for (const other of list.querySelectorAll(".menu__item")) other.dataset.selected = "false";
+        row.dataset.selected = "true";
+      });
+      row.addEventListener("click", () => act(kind, item.id));
+      list.append(row);
+    }
+    root.append(list);
+  },
+
+  /** Пузырь загрузок под кнопкой на панели инструментов. */
+  downloads() {
+    const head = el("div", "panel-head");
+    head.append(
+      el("span", "panel-head__title", "Загрузки"),
+      iconButton("folder-open", "Открыть папку загрузок", () => invoke("downloads_folder_open").catch(() => {}), {
+        size: 20,
+        className: "btn btn--ghost btn--icon",
+      }),
+      iconButton("more", "Страница загрузок", () => act("downloads", "open-page"), {
+        size: 20,
+        className: "btn btn--ghost btn--icon",
+      })
+    );
+
+    const list = el("div", "dl-list scroll");
+    const foot = el("div", "panel-foot");
+    const all = textButton("Все загрузки", () => act("downloads", "open-page"), "btn btn--ghost btn--sm");
+    foot.append(el("span"), all);
+    root.append(head, list, foot);
+
+    const rows = new Map();
+    let order = "";
+
+    const draw = () => {
+      const items = model.downloads().slice(0, 8);
+      const key = items.map((item) => `${item.id}:${item.state}`).join(",");
+      if (key !== order) {
+        order = key;
+        rows.clear();
+        list.replaceChildren();
+        if (!items.length) list.append(el("div", "empty", "Здесь появятся файлы, которые вы скачаете"));
+        for (const item of items) {
+          const row = downloadRow(item);
+          rows.set(item.id, row);
+          list.append(row.node);
+        }
+        fit();
+      }
+      for (const item of items) updateDownloadRow(rows.get(item.id), item);
+    };
+
+    const off = model.onDownloads(() => requestAnimationFrame(draw));
+    model.initDownloads().then(draw);
+    draw();
+    return off;
+  },
+
+  /** Пузырь закладки: название, папка, удалить — как в Chrome по Ctrl+D. */
+  bookmark({ mode, node, created, folders = [], parent }) {
+    const bubble = el("div", "bubble");
+    const head = el("div", "bubble__head");
+    const title =
+      mode === "folder" ? "Новая папка" : node?.kind === "folder" ? "Переименовать папку" : created ? "Закладка добавлена" : "Изменить закладку";
+    head.append(el("h2", "bubble__title", title), iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" }));
+    bubble.append(head);
+
+    const nameField = el("input", "field");
+    nameField.value = mode === "folder" ? "Новая папка" : node?.title ?? "";
+    nameField.setAttribute("autofocus", "");
+    const nameRow = el("div", "form__row");
+    nameRow.append(el("label", "label", "Название"), nameField);
+    bubble.append(nameRow);
+
+    const folderSelect = el("select", "field");
+    const selectedParent = mode === "folder" ? parent : node?.parent_id;
+    for (const folder of folders) {
+      if (node?.kind === "folder" && folder.id === node.id) continue;
+      const option = el("option", null, folder.title);
+      option.value = folder.id;
+      option.selected = folder.id === selectedParent;
+      folderSelect.append(option);
+    }
+    const folderRow = el("div", "form__row");
+    folderRow.append(el("label", "label", "Папка"), folderSelect);
+    bubble.append(folderRow);
+
+    let finished = false;
+    const save = async () => {
+      finished = true;
+      const titleValue = nameField.value.trim();
+      if (mode === "folder") {
+        if (titleValue) await invoke("bookmark_folder_add", { parent: Number(folderSelect.value), title: titleValue }).catch(() => {});
+      } else if (node) {
+        await invoke("bookmark_update", {
+          id: node.id,
+          title: titleValue || node.title,
+          url: null,
+          parent: Number(folderSelect.value),
+        }).catch(() => {});
+      }
+      close();
+    };
+
+    const actions = el("div", "bubble__actions");
+    if (mode !== "folder" && node) {
+      actions.append(
+        textButton(
+          "Удалить",
+          async () => {
+            finished = true;
+            await invoke("bookmark_remove", { id: node.id }).catch(() => {});
+            close();
+          },
+          "btn btn--ghost"
+        ),
+        textButton("Ещё…", () => act("bookmark", "manage"), "btn")
+      );
+    } else {
+      actions.append(textButton("Отмена", close, "btn btn--ghost"));
+    }
+    actions.append(textButton(mode === "folder" ? "Создать" : "Готово", save, "btn btn--primary"));
+    bubble.append(actions);
+
+    bubble.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && event.target.tagName !== "BUTTON") {
+        event.preventDefault();
+        save();
+      }
+    });
+    root.append(bubble);
+
+    // Пузырь закрыли щелчком мимо — правки не теряем, как в Chrome.
+    return () => {
+      if (finished || mode === "folder" || !node) return;
+      const titleValue = nameField.value.trim();
+      const parentValue = Number(folderSelect.value);
+      if ((titleValue && titleValue !== node.title) || parentValue !== node.parent_id) {
+        invoke("bookmark_update", { id: node.id, title: titleValue || node.title, url: null, parent: parentValue }).catch(() => {});
+      }
+    };
+  },
+
+  /** Расширение «Загрузчик видео 190x4». */
+  media(payload) {
+    return mediaView(payload);
+  },
+
+  /** «Сохранить пароль?» после входа на сайт. */
+  password({ tab, origin, username, update }) {
+    const bubble = el("div", "bubble");
+    const head = el("div", "bubble__head");
+    head.append(
+      el("h2", "bubble__title", update ? "Обновить пароль?" : "Сохранить пароль?"),
+      iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" })
+    );
+    bubble.append(head);
+    bubble.append(
+      el(
+        "p",
+        "bubble__text",
+        update
+          ? "Пароль для этого логина изменился. Сохранённый будет заменён новым."
+          : "Пароль будет зашифрован и подставится при следующем входе."
+      )
+    );
+
+    const site = el("div", "site");
+    site.append(favicon(`${origin}/favicon.ico`), el("span", null, hostOf(origin)));
+    bubble.append(site);
+
+    const userRow = el("div", "form__row");
+    const userField = el("input", "field");
+    userField.value = username || "без логина";
+    userField.readOnly = true;
+    const secret = el("input", "field field--mono");
+    secret.value = "••••••••••";
+    secret.readOnly = true;
+    userRow.append(el("label", "label", "Имя пользователя"), userField);
+    const secretRow = el("div", "form__row");
+    secretRow.append(el("label", "label", "Пароль"), secret);
+    bubble.append(el("div", "form__row"), userRow, secretRow);
+
+    const answer = async (action) => {
+      await invoke("password_offer_answer", { tab, action }).catch(() => {});
+      act("password", action);
+    };
+    const actions = el("div", "bubble__actions");
+    if (!update) {
+      const never = textButton("Никогда", () => answer("never"), "btn btn--ghost");
+      never.title = "Никогда не сохранять пароли для этого сайта";
+      actions.append(never);
+    }
+    actions.append(textButton("Не сейчас", () => answer("dismiss"), "btn"));
+    const primary = textButton(update ? "Обновить" : "Сохранить", () => answer("save"), "btn btn--primary");
+    primary.setAttribute("autofocus", "");
+    actions.append(primary);
+    bubble.append(actions);
+    root.append(bubble);
+  },
+
+  /** Ключ в адресной строке: выбрать учётку для входа. */
+  accounts({ tab, origin, accounts = [] }) {
+    const head = el("div", "panel-head");
+    head.append(el("span", "panel-head__title", `Пароли · ${hostOf(origin)}`));
+    const list = el("div", "menu");
+    for (const account of accounts) {
+      const row = el("button", "menu__item");
+      const slot = el("span", "menu__icon");
+      slot.append(icon("person-16", 16));
+      row.append(slot, el("span", "menu__label", account.username || "без логина"), el("span", "menu__keys", "заполнить"));
+      row.addEventListener("click", async () => {
+        await invoke("password_fill", { tab, id: account.id }).catch(() => {});
+        close();
+      });
+      list.append(row);
+    }
+    list.append(el("div", "menu__sep"));
+    const manage = el("button", "menu__item");
+    const slot = el("span", "menu__icon");
+    slot.append(icon("key", 20));
+    manage.append(slot, el("span", "menu__label", "Управление паролями"));
+    manage.addEventListener("click", () => act("accounts", "manage"));
+    list.append(manage);
+    root.append(head, list);
+  },
+
+  /** Сведения о сайте из значка слева в адресной строке. */
+  site({ host, secure, blocked, adblock, passwords }) {
+    const bubble = el("div", "bubble");
+    const head = el("div", "bubble__head");
+    head.append(el("h2", "bubble__title", host), iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" }));
+    bubble.append(head);
+
+    const list = el("div", "menu");
+    list.style.padding = "0";
+    list.style.margin = "0 -8px";
+    const info = (iconId, label, hint, action) => {
+      const row = el(action ? "button" : "div", "menu__item");
+      row.style.height = "auto";
+      row.style.padding = "8px 10px";
+      const slot = el("span", "menu__icon");
+      slot.append(icon(iconId, sizeOf(iconId)));
+      const text = el("span", "menu__label");
+      text.append(el("div", null, label));
+      if (hint) {
+        const hintNode = el("div", null, hint);
+        hintNode.style.cssText = "font-size:12px;color:var(--text-lo);white-space:normal";
+        text.append(hintNode);
+      }
+      row.append(slot, text);
+      if (action) {
+        row.append(icon("chevron-right-16", 16));
+        row.addEventListener("click", () => act("site", action));
+      }
+      list.append(row);
+    };
+
+    info(
+      secure ? "lock-16" : "warning-16",
+      secure ? "Подключение защищено" : "Подключение не защищено",
+      secure
+        ? "Данные, которые вы вводите, передаются в зашифрованном виде."
+        : "Не вводите здесь пароли и данные карт: их могут перехватить."
+    );
+    info(
+      "shield-16",
+      adblock ? `Заблокировано: ${blocked} ${plural(blocked, "запрос", "запроса", "запросов")}` : "Блокировка рекламы выключена",
+      "Реклама и трекеры на этой странице",
+      "privacy"
+    );
+    info(
+      "key-16",
+      passwords ? `Сохранено паролей: ${passwords}` : "Паролей для сайта нет",
+      null,
+      "passwords"
+    );
+    bubble.append(list);
+    root.append(bubble);
+  },
+};
+
+/** Подсказки адресной строки. Клавиатура — у окна браузера, сюда приходит
+ *  только выбранная строка. */
+VIEWS.suggest = function suggest({ rows = [], selected = 0 }) {
+  const list = el("div", "suggest");
+  rows.forEach((row, index) => {
+    const node = el("button", "suggest__row");
+    node.type = "button";
+    node.dataset.selected = String(index === selected);
+    const iconNode = row.image ? favicon(row.image, "favicon suggest__icon") : icon(row.iconId, 16, "suggest__icon");
+    node.append(iconNode, el("span", "suggest__text", row.text), el("span", "suggest__hint", row.hint));
+    // mousedown, а не click: на клике фокус уже ушёл бы из адресной строки.
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      act("suggest", "pick", { value: row.value });
+    });
+    list.append(node);
+  });
+  root.append(list);
+
+  const off = listen("suggest-select", ({ selected: index }) => {
+    [...list.children].forEach((node, i) => (node.dataset.selected = String(i === index)));
+  });
+  return () => off.then((stop) => stop?.());
+};
+
+/** Содержимое папки закладок: меню с переходом во вложенные папки. */
+VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) {
+  const stack = [{ id: folder, skip, title }];
+  let nodes = [];
+
+  const draw = () => {
+    const level = stack[stack.length - 1];
+    const children = nodes
+      .filter((node) => node.parent_id === level.id)
+      .sort((a, b) => a.position - b.position)
+      .slice(level.skip);
+
+    root.replaceChildren();
+    const list = el("div", "menu scroll");
+    list.style.maxHeight = "480px";
+
+    if (stack.length > 1) {
+      const headRow = el("div", "menu__head");
+      const back = iconButton("back", "Назад", () => {
+        stack.pop();
+        draw();
+      }, { size: 20 });
+      headRow.append(back, el("span", null, level.title));
+      list.append(headRow);
+    }
+
+    if (!children.length) list.append(el("div", "empty", "Папка пуста"));
+
+    for (const node of children) {
+      const row = el("button", "menu__item");
+      row.type = "button";
+      const slot = el("span", "menu__icon");
+      if (node.kind === "folder") {
+        slot.append(icon("folder-16", 16));
+        row.append(slot, el("span", "menu__label", node.title), icon("chevron-right-16", 16));
+        row.addEventListener("click", () => {
+          stack.push({ id: node.id, skip: 0, title: node.title });
+          draw();
+        });
+      } else {
+        slot.append(favicon(node.icon));
+        row.append(slot, el("span", "menu__label", node.title || node.url));
+        row.title = node.url;
+        row.addEventListener("click", (event) =>
+          act("bookmark-folder", event.ctrlKey ? "open-new" : "open", { url: node.url })
+        );
+        row.addEventListener("auxclick", (event) => {
+          if (event.button === 1) act("bookmark-folder", "open-new", { url: node.url }, { keepOpen: true });
+        });
+      }
+      row.addEventListener("mouseenter", () => {
+        for (const other of list.querySelectorAll(".menu__item")) other.dataset.selected = "false";
+        row.dataset.selected = "true";
+      });
+      list.append(row);
+    }
+
+    const urls = children.filter((node) => node.kind === "url").map((node) => node.url);
+    if (urls.length > 1) {
+      list.append(el("div", "menu__sep"));
+      const all = el("button", "menu__item");
+      const slot = el("span", "menu__icon");
+      slot.append(icon("tab-add", 20));
+      all.append(slot, el("span", "menu__label", `Открыть все (${urls.length})`));
+      all.addEventListener("click", () => act("bookmark-folder", "open-all", { urls }));
+      list.append(all);
+    }
+    root.append(list);
+    fit();
+  };
+
+  invoke("bookmarks_tree")
+    .then((items) => {
+      nodes = items;
+      draw();
+    })
+    .catch(() => {});
+};
+
+/* ── Строка масштаба ───────────────────────────────────────── */
+
+function zoomRow(kind, item) {
+  let value = item.value ?? 1;
+  const row = el("div", "menu__zoom");
+  const label = el("span", "menu__label", item.label);
+  const valueNode = el("span", "menu__zoom-value", `${Math.round(value * 100)}%`);
+
+  const step = (direction) => {
+    const next =
+      direction > 0
+        ? ZOOM_STEPS.find((z) => z > value + 0.001) ?? value
+        : [...ZOOM_STEPS].reverse().find((z) => z < value - 0.001) ?? value;
+    value = next;
+    valueNode.textContent = `${Math.round(value * 100)}%`;
+    act(kind, direction > 0 ? "zoom_in" : "zoom_out", {}, { keepOpen: true });
+  };
+
+  const minus = iconButton("zoom-out", "Уменьшить (Ctrl+−)", () => step(-1), { size: 20, className: "btn btn--ghost btn--icon" });
+  const plus = iconButton("zoom-in", "Увеличить (Ctrl++)", () => step(1), { size: 20, className: "btn btn--ghost btn--icon" });
+  minus.disabled = plus.disabled = Boolean(item.disabled);
+  row.append(label, minus, valueNode, plus);
+  return row;
+}
+
+/* ── Строки загрузок ───────────────────────────────────────── */
+
+function downloadRow(item) {
+  const node = el("div", "dl");
+  node.dataset.state = item.state;
+  const tile = el("div", "dl__icon");
+  tile.append(icon(fileIcon(item.path), 20));
+
+  const body = el("div");
+  body.style.minWidth = "0";
+  const name = el("div", "dl__name", model.displayName(item));
+  const status = el("div", "dl__status");
+  body.append(name, status);
+
+  let meter = null;
+  let fill = null;
+  if (model.isActive(item)) {
+    meter = el("div", "meter");
+    fill = el("div", "meter__fill");
+    meter.append(fill);
+    body.append(meter);
+  }
+
+  const actions = el("div", "dl__actions");
+  const control = (action) => model.control(item.id, action).catch(() => {});
+  const media = item.kind === "media";
+  switch (item.state) {
+    case "running":
+      if (!media) actions.append(iconButton("pause-16", "Приостановить", () => control("pause")));
+      actions.append(iconButton("dismiss-16", "Отменить", () => control("cancel")));
+      break;
+    case "paused":
+      actions.append(iconButton("play-16", "Продолжить", () => control("resume")), iconButton("dismiss-16", "Отменить", () => control("cancel")));
+      break;
+    case "done":
+      actions.append(iconButton("folder-open-16", "Показать в папке", () => control("show").then(close)));
+      break;
+    default:
+      if (!media) actions.append(iconButton("retry-16", "Повторить", () => control("retry")));
+      actions.append(iconButton("dismiss-16", "Убрать из списка", () => control("remove")));
+  }
+
+  if (item.state === "done") {
+    node.style.cursor = "pointer";
+    node.title = "Открыть файл";
+    node.addEventListener("click", (event) => {
+      if (event.target.closest(".dl__actions")) return;
+      control("open").then(close);
+    });
+  }
+
+  node.append(tile, body, actions);
+  return { node, status, meter, fill };
+}
+
+function updateDownloadRow(row, item) {
+  if (!row) return;
+  row.status.textContent = model.statusText(item);
+  if (row.meter) {
+    const share = model.progressOf(item);
+    row.meter.dataset.paused = String(item.state === "paused");
+    row.meter.dataset.indeterminate = String(share == null);
+    row.fill.style.width = `${Math.round((share ?? 0) * 100)}%`;
+  }
+}
+
+/* ── Расширение: загрузчик видео ───────────────────────────── */
+
+/** Состояние расширения переживает закрытие окна: загрузка идёт дальше. */
+const media = { url: "", info: null, busy: false, error: null, job: null, progress: null, done: null };
+
+function mediaView({ url, services }) {
+  const head = el("div", "ext-head");
+  const logo = el("div", "ext-head__logo");
+  logo.append(icon("video-filled", 20));
+  const name = el("div", "ext-head__name");
+  name.append(document.createTextNode("Загрузчик видео"), el("small", null, "Расширение 190x4"));
+  head.append(
+    logo,
+    name,
+    iconButton("settings", "Настройки расширения", () => act("media", "settings"), { size: 20, className: "btn btn--ghost btn--icon" })
+  );
+
+  const body = el("div", "media scroll");
+  body.style.maxHeight = "520px";
+  root.append(head, body);
+
+  if (url && url !== media.url && !media.job) {
+    Object.assign(media, { url, info: null, error: null, done: null });
+  }
+
+  const draw = () => {
+    body.replaceChildren();
+
+    if (!services?.media) {
+      body.append(el("div", "error-card", "Сервис загрузки 190x4 не настроен на этом компьютере."));
+      fit();
+      return;
+    }
+
+    if (media.progress) {
+      const card = el("div", "progress-card");
+      const top = el("div", "progress-card__row");
+      top.append(
+        icon("download-16", 16),
+        el("span", "progress-card__name", media.progress.file_name || "Сервер готовит файл…"),
+        textButton("Отменить", () => invoke("media_cancel", { job: media.job }).catch(() => {}), "btn btn--ghost btn--sm")
+      );
+      const meter = el("div", "meter");
+      const fill = el("div", "meter__fill");
+      const percent = Number(media.progress.percent) || 0;
+      meter.dataset.indeterminate = String(!percent);
+      fill.style.width = `${Math.min(100, percent)}%`;
+      meter.append(fill);
+      const meta = el(
+        "div",
+        "progress-card__meta",
+        media.progress.total > 0
+          ? `${formatBytes(media.progress.downloaded)} из ${formatBytes(media.progress.total)} · ${Math.round(percent)}%`
+          : percent
+            ? `${Math.round(percent)}%`
+            : "Ожидание сервера"
+      );
+      card.append(top, meter, meta);
+      body.append(card);
+    }
+
+    if (media.done) {
+      const card = el("div", "progress-card");
+      const top = el("div", "progress-card__row");
+      top.append(icon("checkmark-16", 16), el("span", "progress-card__name", media.done.name));
+      const buttons = el("div", "bubble__actions");
+      buttons.style.marginTop = "8px";
+      buttons.append(
+        textButton("Показать в папке", () => media.done.id && model.control(media.done.id, "show").then(close), "btn btn--sm"),
+        textButton("Открыть", () => media.done.id && model.control(media.done.id, "open").then(close), "btn btn--primary btn--sm")
+      );
+      card.append(top, el("div", "progress-card__meta", "Скачано в папку загрузок"), buttons);
+      body.append(card);
+    }
+
+    if (media.error) body.append(el("div", "error-card", media.error));
+
+    if (!media.url) {
+      body.append(el("div", "empty", "Откройте страницу с видео — YouTube, VK Видео, Rutube, Дзен — и нажмите на значок ещё раз."));
+      fit();
+      return;
+    }
+
+    if (media.busy) {
+      body.append(el("div", "spinner"), el("div", "empty", "Ищем видео на странице…"));
+      fit();
+      return;
+    }
+
+    if (media.info) {
+      const card = el("div", "media__card");
+      const thumb = el("img", "media__thumb");
+      if (/^https:/.test(media.info.thumbnail ?? "")) thumb.src = media.info.thumbnail;
+      thumb.alt = "";
+      const text = el("div");
+      text.append(
+        el("div", "media__title", media.info.title || media.url),
+        el("div", "media__meta", [media.info.uploader, media.info.duration_str].filter(Boolean).join(" · ") || hostOf(media.url))
+      );
+      card.append(thumb, text);
+      body.append(card);
+
+      const video = (media.info.formats ?? []).filter((format) => format.spec.startsWith("video"));
+      const audio = (media.info.formats ?? []).filter((format) => format.spec.startsWith("audio"));
+      if (video.length) body.append(el("div", "formats__label", "Видео"), ...video.map(formatRow));
+      if (audio.length) body.append(el("div", "formats__label", "Только звук"), ...audio.map(formatRow));
+      if (!video.length && !audio.length) body.append(el("div", "empty", "Сервер не нашёл доступных форматов"));
+    }
+    fit();
+  };
+
+  const formatRow = (format) => {
+    const row = el("button", "format");
+    row.type = "button";
+    row.disabled = Boolean(media.job);
+    row.append(icon("download-16", 16), el("span", "format__label", format.label || format.spec));
+    row.append(el("span", "format__size", format.approx_mb ? `≈ ${String(format.approx_mb).replace(".", ",")} МБ` : ""));
+    row.addEventListener("click", () => start(format.spec));
+    return row;
+  };
+
+  const probe = async () => {
+    media.busy = true;
+    media.error = null;
+    draw();
+    try {
+      media.info = await invoke("media_probe", { url: media.url });
+    } catch (error) {
+      media.error = String(error?.message ?? error);
+    } finally {
+      media.busy = false;
+      draw();
+    }
+  };
+
+  const start = async (spec) => {
+    if (media.job) return;
+    media.error = null;
+    media.done = null;
+    media.progress = { percent: 0, file_name: "" };
+    draw();
+    try {
+      media.job = await invoke("media_download", { url: media.url, format: spec });
+    } catch (error) {
+      media.progress = null;
+      media.error = String(error?.message ?? error);
+    }
+    draw();
+  };
+
+  if (services?.media && media.url && !media.info && !media.busy && !media.job) probe();
+  else draw();
+
+  const offMedia = listen("media", (event) => {
+    if (event.job !== media.job) return;
+    if (event.phase === "progress") {
+      media.progress = event;
+    } else {
+      media.progress = null;
+      media.job = null;
+      if (event.phase === "done") {
+        const item = model.downloads().find((d) => d.kind === "media" && d.path === event.path);
+        media.done = { name: event.path.split(/[\\/]/).pop(), id: item?.id ?? null };
+      } else if (event.phase === "failed") {
+        media.error = event.error || "Загрузка прервалась";
+      }
+    }
+    draw();
+  });
+  model.initDownloads();
+
+  return () => offMedia.then((off) => off?.());
+}
+
+/* ── Демо для ревью вёрстки без Rust ───────────────────────── */
+
+async function demo() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("motion") === "off") document.documentElement.dataset.motion = "off";
+  const mock = await import("../mock.js");
+  const kind = params.get("kind") ?? "menu";
+  const payload = mock.popupDemo(kind);
+  render({ kind: payload.kind ?? kind, payload: payload.payload ?? payload });
+}

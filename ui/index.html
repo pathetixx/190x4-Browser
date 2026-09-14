@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ru" data-theme="kurogane">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>190x4</title>
+    <link rel="stylesheet" href="./styles/fonts.css" />
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/chrome.css" />
+    <link rel="stylesheet" href="./styles/controls.css" />
+    <link rel="stylesheet" href="./styles/tabs.css" />
+    <link rel="stylesheet" href="./styles/omnibox.css" />
+    <link rel="stylesheet" href="./styles/bookmarks.css" />
+    <link rel="stylesheet" href="./styles/overlay.css" />
+    <link rel="stylesheet" href="./styles/internal.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <!-- ── Заголовок окна: знак, вкладки, кнопки окна ── -->
+      <header class="titlebar">
+        <div class="titlebar__drag" data-tauri-drag-region></div>
+
+        <div class="brand" title="190x4 Browser">
+          <img class="brand__mark" src="./assets/brand/mark-72.png" alt="" width="18" height="18" />
+        </div>
+
+        <div class="tabs" id="tabs">
+          <div class="tabstrip" id="tabstrip" role="tablist" aria-label="Вкладки"></div>
+          <button class="tabs__new" id="new-tab" title="Новая вкладка (Ctrl+T)" aria-label="Новая вкладка">
+            <svg width="16" height="16"><use href="./assets/icons.svg#i-add-16" /></svg>
+          </button>
+        </div>
+
+        <div class="winctl">
+          <button class="winctl__btn" data-window="minimize" title="Свернуть" aria-label="Свернуть">
+            <svg width="10" height="10"><use href="./assets/icons.svg#i-cap-min" /></svg>
+          </button>
+          <button class="winctl__btn" data-window="toggle_maximize" id="win-max" title="Развернуть" aria-label="Развернуть">
+            <svg width="10" height="10"><use href="./assets/icons.svg#i-cap-max" /></svg>
+          </button>
+          <button class="winctl__btn winctl__btn--close" data-window="close" title="Закрыть" aria-label="Закрыть">
+            <svg width="10" height="10"><use href="./assets/icons.svg#i-cap-close" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- ── Панель инструментов ── -->
+      <div class="toolbar">
+        <div class="toolbar__group">
+          <button class="iconbtn" id="nav-back" title="Назад (Alt+←)" aria-label="Назад" disabled>
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-back" /></svg>
+          </button>
+          <button class="iconbtn" id="nav-forward" title="Вперёд (Alt+→)" aria-label="Вперёд" disabled>
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-forward" /></svg>
+          </button>
+          <button class="iconbtn" id="nav-reload" title="Обновить (Ctrl+R)" aria-label="Обновить">
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-reload" /></svg>
+          </button>
+          <button class="iconbtn" id="nav-home" title="Домашняя страница" aria-label="Домашняя страница" hidden>
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-home" /></svg>
+          </button>
+        </div>
+
+        <div class="omni" id="omni">
+          <button class="omni__site" id="omni-site" title="Сведения о сайте">
+            <svg width="16" height="16"><use href="./assets/icons.svg#i-lock-16" /></svg>
+            <span class="omni__site-label" id="omni-site-label" hidden></span>
+          </button>
+          <span class="omni__url" id="omni-url"></span>
+          <input
+            class="omni__field"
+            id="omni-field"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="Введите запрос или адрес"
+            hidden
+          />
+          <div class="omni__actions">
+            <button class="omni__chip" id="omni-zoom" hidden title="Масштаб">
+              <svg width="16" height="16"><use href="./assets/icons.svg#i-zoom-16" /></svg>
+              <span id="omni-zoom-value">100%</span>
+            </button>
+            <button class="omni__btn" id="omni-key" hidden title="Сохранённые пароли для этого сайта">
+              <svg width="16" height="16"><use href="./assets/icons.svg#i-key-16" /></svg>
+            </button>
+            <button class="omni__chip omni__chip--accent" id="omni-shield" hidden title="Заблокировано на этой странице">
+              <svg width="16" height="16"><use href="./assets/icons.svg#i-shield-16" /></svg>
+              <span id="omni-shield-count">0</span>
+            </button>
+            <button class="omni__btn" id="omni-translate" title="Перевести выделенное">
+              <svg width="16" height="16"><use href="./assets/icons.svg#i-translate-16" /></svg>
+            </button>
+            <button class="omni__btn" id="omni-star" title="Добавить в закладки (Ctrl+D)" aria-pressed="false">
+              <svg width="16" height="16" class="when-off"><use href="./assets/icons.svg#i-star-16" /></svg>
+              <svg width="16" height="16" class="when-on"><use href="./assets/icons.svg#i-star-16-filled" /></svg>
+            </button>
+          </div>
+          <div class="suggest" id="suggest" hidden></div>
+        </div>
+
+        <div class="toolbar__group">
+          <button class="iconbtn iconbtn--ext" id="ext-media" title="Загрузчик видео 190x4 (Ctrl+Shift+D)" aria-label="Загрузчик видео">
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-video" /></svg>
+            <span class="iconbtn__badge" id="ext-media-badge" hidden></span>
+          </button>
+          <button class="iconbtn" id="ext-menu" title="Расширения" aria-label="Расширения">
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-puzzle" /></svg>
+          </button>
+          <span class="toolbar__sep" aria-hidden="true"></span>
+          <button class="iconbtn iconbtn--downloads" id="downloads-btn" title="Загрузки (Ctrl+J)" aria-label="Загрузки" hidden>
+            <svg class="ring" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+              <circle class="ring__track" cx="15" cy="15" r="13" />
+              <circle class="ring__fill" id="downloads-ring" cx="15" cy="15" r="13" />
+            </svg>
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-download" /></svg>
+          </button>
+          <button class="iconbtn" id="open-menu" title="Настройки и прочее (Alt+F)" aria-label="Настройки и прочее">
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-more" /></svg>
+          </button>
+        </div>
+
+        <div class="progress" id="progress"></div>
+      </div>
+
+      <!-- ── Панель закладок ── -->
+      <nav class="bookmarks" id="bookmarks" aria-label="Панель закладок" hidden>
+        <div class="bookmarks__items" id="bookmarks-items"></div>
+        <button class="bookmark bookmark--icon" id="bookmarks-overflow" title="Остальные закладки" hidden>
+          <svg width="16" height="16"><use href="./assets/icons.svg#i-chevron-double-16" /></svg>
+        </button>
+        <span class="bookmarks__spacer"></span>
+        <button class="bookmark" id="bookmarks-other" hidden>
+          <svg width="16" height="16"><use href="./assets/icons.svg#i-folder-16" /></svg>
+          <span class="bookmark__title">Другие закладки</span>
+        </button>
+      </nav>
+
+      <!-- ── Поиск по странице ── -->
+      <div class="findbar" id="findbar" hidden>
+        <svg width="16" height="16" class="findbar__icon"><use href="./assets/icons.svg#i-search-16" /></svg>
+        <input
+          class="findbar__field"
+          id="find-field"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="Найти на странице"
+        />
+        <span class="findbar__count" id="find-count">0/0</span>
+        <button class="iconbtn iconbtn--sm" id="find-prev" title="Предыдущее (Shift+Enter)">
+          <svg width="16" height="16"><use href="./assets/icons.svg#i-chevron-up-16" /></svg>
+        </button>
+        <button class="iconbtn iconbtn--sm" id="find-next" title="Следующее (Enter)">
+          <svg width="16" height="16"><use href="./assets/icons.svg#i-chevron-down-16" /></svg>
+        </button>
+        <button class="iconbtn iconbtn--sm" id="find-close" title="Закрыть (Esc)">
+          <svg width="16" height="16"><use href="./assets/icons.svg#i-dismiss-16" /></svg>
+        </button>
+      </div>
+
+      <!-- ── Рельс инструментов ── -->
+      <nav class="rail" aria-label="Инструменты">
+        <button class="rail__btn" data-panel="shield" title="Блокировка рекламы" aria-pressed="false">
+          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-shield" /></svg>
+          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-shield-filled" /></svg>
+          <span class="rail__badge" id="rail-blocked" hidden>0</span>
+        </button>
+        <button class="rail__btn" data-panel="bookmarks" title="Закладки" aria-pressed="false">
+          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-favorites" /></svg>
+          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-favorites-filled" /></svg>
+        </button>
+        <button class="rail__btn" data-panel="history" title="История (Ctrl+H)" aria-pressed="false">
+          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-history" /></svg>
+          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-history-filled" /></svg>
+        </button>
+        <button class="rail__btn" data-panel="translate" title="Переводчик" aria-pressed="false">
+          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-translate" /></svg>
+          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-translate-filled" /></svg>
+        </button>
+        <span class="rail__spacer"></span>
+        <button class="rail__btn" id="rail-settings" title="Настройки" aria-pressed="false">
+          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-settings" /></svg>
+          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-settings-filled" /></svg>
+        </button>
+      </nav>
+
+      <!-- ── Выдвижная панель ── -->
+      <aside class="panel" id="panel" data-open="false" aria-hidden="true">
+        <div class="panel__inner">
+          <div class="panel__head">
+            <span class="panel__title" id="panel-title">Блокировка рекламы</span>
+            <button class="iconbtn iconbtn--sm" id="panel-close" aria-label="Закрыть панель">
+              <svg width="16" height="16"><use href="./assets/icons.svg#i-dismiss-16" /></svg>
+            </button>
+          </div>
+          <div class="panel__body" id="panel-body"></div>
+        </div>
+      </aside>
+
+      <!-- ── Вырез под нативную страницу и встроенные страницы ── -->
+      <main class="stage" id="stage">
+        <div class="stage__fallback" id="stage-fallback"></div>
+        <div class="internal" id="internal" hidden></div>
+      </main>
+
+      <!-- ── Статусная строка ── -->
+      <footer class="statusbar" id="statusbar">
+        <span class="status__cell">
+          <span class="status__dot" id="status-dot" data-state="idle"></span>
+          <span class="status__value" id="status-state">готов</span>
+        </span>
+        <span class="status__cell status__cell--grow">
+          <span class="status__value" id="status-target"></span>
+        </span>
+        <span class="status__cell">
+          <span class="status__label">блок</span>
+          <span class="status__value" id="status-blocked">0</span>
+        </span>
+        <span class="status__cell">
+          <span class="status__label">фильтр</span>
+          <span class="status__value" id="status-latency" data-grade="good">—</span>
+        </span>
+        <span class="status__cell">
+          <span class="status__label">вкладок</span>
+          <span class="status__value" id="status-tabs">0</span>
+        </span>
+      </footer>
+    </div>
+
+    <!-- ── Оверлеи ── -->
+    <div class="scrim" id="scrim" hidden></div>
+
+    <div class="palette" id="palette" hidden role="dialog" aria-label="Командная палитра">
+      <div class="palette__head">
+        <svg width="20" height="20" class="palette__glyph"><use href="./assets/icons.svg#i-find" /></svg>
+        <input class="palette__input" id="palette-input" type="text" spellcheck="false" placeholder="Команда или раздел" />
+      </div>
+      <div class="palette__list" id="palette-list"></div>
+      <div class="palette__foot">
+        <span><span class="kbd">↑↓</span> выбор</span>
+        <span><span class="kbd">Enter</span> выполнить</span>
+        <span><span class="kbd">Esc</span> закрыть</span>
+      </div>
+    </div>
+
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

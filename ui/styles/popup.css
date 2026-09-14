@@ -1,0 +1,614 @@
+/* ─────────────────────────────────────────────────────────────
+   Всплывающее окно: меню, пузыри, расширение-загрузчик.
+
+   Отдельное окно без рамки с системной тенью и скруглением Windows 11.
+   Размер подгоняется под содержимое: окно само сообщает свою высоту.
+   ───────────────────────────────────────────────────────────── */
+
+html,
+body {
+  margin: 0;
+  height: auto;
+  overflow: hidden;
+  background: var(--ink-1);
+}
+
+body {
+  color: var(--text-hi);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+svg {
+  display: block;
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: -2px;
+}
+
+input,
+.bookmark__title {
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0;
+}
+
+.popup {
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: popup-in 0.12s var(--ease-out);
+}
+
+@keyframes popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* ── Меню ──────────────────────────────────────────────────── */
+
+.menu,
+.dl-list,
+.media {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.menu {
+  padding: 4px;
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 5px;
+  text-align: start;
+  color: var(--text-hi);
+  white-space: nowrap;
+}
+
+.menu__item:hover,
+.menu__item[data-selected="true"] {
+  background: var(--overlay-3);
+}
+
+.menu__item[disabled] {
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.menu__item[disabled] .menu__icon {
+  color: var(--text-faint);
+}
+
+.menu__icon {
+  width: 20px;
+  height: 20px;
+  color: var(--text-mid);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.menu__icon img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.menu__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu__keys {
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
+.menu__check {
+  color: var(--accent-bright);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: 4px -4px;
+  background: var(--line-2);
+}
+
+.menu__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px 0 4px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mid);
+}
+
+.menu__zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 4px 0 10px;
+}
+
+.menu__zoom .menu__label {
+  margin-inline-start: 32px;
+}
+
+.menu__zoom-value {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-hi);
+}
+
+/* ── Пузырь: заголовок, форма, кнопки ──────────────────────── */
+
+.bubble {
+  padding: 16px 16px 14px;
+}
+
+.bubble__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.bubble__title {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.bubble__text {
+  margin: -6px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-mid);
+}
+
+.bubble__close {
+  width: 28px;
+  height: 28px;
+  margin: -6px -8px 0 0;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--text-mid);
+}
+
+.bubble__close:hover {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.form__row + .form__row {
+  margin-top: 10px;
+}
+
+.bubble__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.bubble__actions .btn--ghost:first-child {
+  margin-inline-end: auto;
+}
+
+.site {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--ink-0);
+  border: 1px solid var(--line-1);
+  font-size: 12.5px;
+  color: var(--text-mid);
+}
+
+.secret {
+  position: relative;
+}
+
+.secret .field {
+  padding-inline-end: 36px;
+}
+
+.secret button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text-lo);
+}
+
+.secret button:hover {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+/* ── Пузырь загрузок ───────────────────────────────────────── */
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 6px 0 16px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.panel-head__title {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel-head .btn--icon {
+  color: var(--text-mid);
+}
+
+.dl-list {
+  padding: 4px;
+  overflow-y: auto;
+  max-height: 420px;
+}
+
+.dl {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 6px 8px 10px;
+  border-radius: 6px;
+}
+
+.dl:hover {
+  background: var(--overlay-2);
+}
+
+.dl__icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--overlay-2);
+  color: var(--text-mid);
+}
+
+.dl__name {
+  font-size: 13px;
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl[data-state="cancelled"] .dl__name {
+  color: var(--text-lo);
+  text-decoration: line-through;
+}
+
+.dl__status {
+  font-size: 12px;
+  color: var(--text-lo);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl[data-state="failed"] .dl__status {
+  color: #ff8a8f;
+}
+
+.dl .meter {
+  margin-top: 5px;
+}
+
+.dl__actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s var(--ease-out);
+}
+
+.dl:hover .dl__actions,
+.dl:focus-within .dl__actions,
+.dl[data-state="running"] .dl__actions,
+.dl[data-state="paused"] .dl__actions {
+  opacity: 1;
+}
+
+.panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 8px 16px;
+  border-top: 1px solid var(--line-1);
+}
+
+.empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-lo);
+}
+
+/* ── Расширение: загрузчик видео ───────────────────────────── */
+
+.ext-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.ext-head__logo {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: linear-gradient(160deg, var(--accent-bright), var(--accent-deep));
+  color: #fff;
+}
+
+.ext-head__name {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.ext-head__name small {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-lo);
+}
+
+.media {
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.media__card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.media__thumb {
+  width: 96px;
+  height: 54px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--ink-3);
+}
+
+.media__title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.media__meta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-lo);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.formats__label {
+  margin: 12px 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mid);
+}
+
+.format {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 6px;
+  text-align: start;
+}
+
+.format:hover {
+  background: var(--overlay-3);
+}
+
+.format svg {
+  color: var(--text-lo);
+}
+
+.format:hover svg {
+  color: var(--accent-bright);
+}
+
+.format__label {
+  flex: 1;
+  font-size: 13px;
+}
+
+.format__size {
+  font-size: 12px;
+  color: var(--text-lo);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-card {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--ink-0);
+  border: 1px solid var(--line-1);
+  margin-bottom: 10px;
+}
+
+.progress-card__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.progress-card__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-card__meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-lo);
+  font-variant-numeric: tabular-nums;
+}
+
+.error-card {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--err) 25%, transparent);
+  font-size: 12.5px;
+  color: #ffb3b6;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  margin: 20px auto 8px;
+  border-radius: 50%;
+  border: 2px solid var(--line-3);
+  border-top-color: var(--accent-bright);
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Подсказки адресной строки ─────────────────────────────── */
+
+.popup--suggest {
+  border-radius: 12px;
+}
+
+.suggest {
+  padding: 6px 0;
+}
+
+.suggest__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  text-align: start;
+  color: var(--text-mid);
+}
+
+.suggest__row:hover,
+.suggest__row[data-selected="true"] {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.suggest__icon {
+  color: var(--text-lo);
+}
+
+.suggest__row[data-selected="true"] .suggest__icon {
+  color: var(--accent-bright);
+}
+
+.suggest__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggest__hint {
+  font-size: 12px;
+  color: var(--text-lo);
+  white-space: nowrap;
+}

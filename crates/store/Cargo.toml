@@ -1,0 +1,17 @@
+[package]
+name = "browser190x4-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "История, закладки, сессия и загрузки браузера 190x4"
+
+[dependencies]
+# bundled: не зависим от системного sqlite3.dll, которого на Windows нет.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Импорт и экспорт паролей: CSV из Chrome, Firefox, Bitwarden.
+csv = "1"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true

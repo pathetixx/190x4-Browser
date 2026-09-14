@@ -1,0 +1,166 @@
+/* ─────────────────────────────────────────────────────────────
+   190x4 Browser — токены.
+   Наследуют систему Ninety: чёрный лак, тонкая линия, один акцент.
+   Здесь добавлены только размеры каркаса браузера — всё, что задаёт
+   геометрию «дырки» под страницу, обязано быть переменной: её значение
+   уезжает в Rust и превращается в SetBounds нативной поверхности.
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  --font-display: "Inter Tight", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --ink-0: #08080A;
+  --ink-1: #0E0E11;
+  --ink-2: #15151A;
+  --ink-3: #1D1D24;
+  --ink-4: #25252D;
+
+  --line-1: rgba(255, 255, 255, 0.04);
+  --line-2: rgba(255, 255, 255, 0.07);
+  --line-3: rgba(255, 255, 255, 0.11);
+
+  --edge-top: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0) 50%);
+
+  --overlay-1: rgba(255, 255, 255, 0.025);
+  --overlay-2: rgba(255, 255, 255, 0.04);
+  --overlay-3: rgba(255, 255, 255, 0.06);
+  --overlay-4: rgba(255, 255, 255, 0.10);
+
+  --shine-1: rgba(255, 255, 255, 0.05);
+  --shine-2: rgba(255, 255, 255, 0.08);
+  --shadow-strong: rgba(0, 0, 0, 0.70);
+
+  --text-hi: #F5F5F2;
+  --text-mid: #A3A3A8;
+  --text-lo: #6B6B72;
+  --text-faint: #46464C;
+
+  --ok: #4ADE80;
+  --warn: #F5B544;
+  --err: #E5484D;
+
+  --on-accent: #FFFFFF;
+  --accent: #C0304A;
+  --accent-bright: #DE5772;
+  --accent-deep: #6E1A28;
+  --accent-soft: rgba(192, 48, 74, 0.14);
+  --accent-glow: rgba(192, 48, 74, 0.32);
+
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-emph: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ─── Каркас. Эти числа определяют, где живёт страница. ─── */
+  --h-titlebar: 40px;
+  --h-toolbar: 44px;
+  /* Панель закладок и строка поиска: 0, пока скрыты — сетка сама отдаёт
+     высоту странице. */
+  --h-bookmarks: 0px;
+  --h-find: 0px;
+  --h-status: 24px;
+  --w-rail: 48px;
+  --w-panel: 328px;
+
+  /* Вкладки */
+  --tab-min: 48px;
+  --tab-max: 240px;
+  --tab-h: 32px;
+
+  /* Кнопка «закрыть окно» — системный красный Windows, а не акцент: это
+     деталь ОС, и во всех приложениях она одинаковая. */
+  --caption-close: #C42B1C;
+}
+
+:root[data-find="open"] {
+  --h-find: 40px;
+}
+
+:root[data-bookmarks="shown"] {
+  --h-bookmarks: 32px;
+}
+
+:root[data-statusbar="hidden"] {
+  --h-status: 0px;
+}
+
+/* Светлый лак (Shiro). Переключатель темы ставит data-theme на <html>;
+   отдельного «светлого интерфейса» не пишем — меняются только токены. */
+:root[data-theme="shiro"] {
+  --ink-0: #FAFAF8;
+  --ink-1: #F5F4F0;
+  --ink-2: #EEECE6;
+  --ink-3: #E0DDD5;
+  --ink-4: #D1CDC3;
+
+  --line-1: rgba(35, 31, 26, 0.055);
+  --line-2: rgba(35, 31, 26, 0.10);
+  --line-3: rgba(35, 31, 26, 0.15);
+
+  --edge-top: linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0) 55%);
+
+  --overlay-1: rgba(35, 31, 26, 0.022);
+  --overlay-2: rgba(35, 31, 26, 0.04);
+  --overlay-3: rgba(35, 31, 26, 0.06);
+  --overlay-4: rgba(35, 31, 26, 0.10);
+
+  --shine-1: rgba(255, 255, 255, 0.38);
+  --shine-2: rgba(255, 255, 255, 0.52);
+  --shadow-strong: rgba(48, 42, 34, 0.17);
+
+  --text-hi: #24211D;
+  --text-mid: #625D55;
+  --text-lo: #91897D;
+  --text-faint: #B7B0A4;
+
+  --accent: #B52F48;
+  --accent-bright: #CC5268;
+  --accent-deep: #7A1F31;
+  --accent-soft: rgba(181, 47, 72, 0.11);
+  --accent-glow: rgba(181, 47, 72, 0.18);
+}
+
+/* Приватное окно: тот же лак, другой стежок. Единственный случай, когда
+   акцент меняется не по воле пользователя — чтобы окно нельзя было спутать. */
+:root[data-mode="private"] {
+  --accent: #7E96FF;
+  --accent-bright: #B8C6FF;
+  --accent-deep: #354A9B;
+  --accent-soft: rgba(126, 150, 255, 0.14);
+  --accent-glow: rgba(126, 150, 255, 0.30);
+}
+
+/* Детерминированный режим для скриншотов и ревью вёрстки: анимации гасим
+   полностью. В headless-браузере виртуальное время не продвигает
+   transitions, и снимок ловит первый кадр — интерфейс на нём выглядит
+   пустым, хотя DOM правильный. */
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Гасим только декоративное движение. Индикатор загрузки и появление
+     вкладки остаются: это обратная связь, а не украшение. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.08s !important;
+  }
+}

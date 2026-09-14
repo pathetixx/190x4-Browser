@@ -1,0 +1,46 @@
+[package]
+name = "browser190x4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "190x4 Browser — chrome на Tauri 2, вкладки на сыром WebView2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+browser190x4-adblock = { path = "../crates/adblock" }
+browser190x4-webview = { path = "../crates/webview" }
+browser190x4-store = { path = "../crates/store" }
+browser190x4-services = { path = "../crates/services" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Только таймер: опрос прогресса загрузки идёт в фоновой задаче Tauri.
+tokio = { version = "1", features = ["time"] }
+parking_lot.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+webview2-com.workspace = true
+windows-core.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+[lib]
+name = "browser190x4"
+crate-type = ["lib"]
+
+[[bin]]
+# Так называется процесс в диспетчере задач.
+name = "190x4-browser"
+path = "src/main.rs"

@@ -1,0 +1,7 @@
+/target
+**/target
+/src-tauri/gen
+node_modules
+*.log
+/spike-out
+.DS_Store

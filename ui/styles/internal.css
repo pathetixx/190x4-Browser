@@ -1,0 +1,667 @@
+/* ─────────────────────────────────────────────────────────────
+   Встроенные страницы: 190x4://settings и 190x4://downloads.
+
+   Это не веб-страницы во вкладке, а часть chrome-а, нарисованная на месте
+   страницы (подход Vivaldi): пока встроенная вкладка активна, нативная
+   поверхность скрыта. Так настройкам и загрузкам доступны команды браузера
+   напрямую, а чужой сайт до них не дотянется ни фреймом, ни переходом.
+   ───────────────────────────────────────────────────────────── */
+
+.internal {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow-y: auto;
+  background: var(--ink-0);
+  user-select: text;
+}
+
+.page {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 760px);
+  gap: 40px;
+  justify-content: center;
+  padding: 28px 32px 80px;
+}
+
+.page--single {
+  grid-template-columns: minmax(0, 820px);
+}
+
+/* ── Навигация страницы настроек ───────────────────────────── */
+
+.page__nav {
+  position: sticky;
+  top: 28px;
+  align-self: start;
+  user-select: none;
+}
+
+.page__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  margin: 0 0 16px 10px;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.page__brand img {
+  width: 26px;
+  height: 26px;
+}
+
+.search {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.search svg {
+  position: absolute;
+  top: 50%;
+  inset-inline-start: 11px;
+  transform: translateY(-50%);
+  color: var(--text-lo);
+  pointer-events: none;
+}
+
+.search .field {
+  height: 36px;
+  padding-inline-start: 36px;
+  border-radius: 18px;
+  background: var(--ink-1);
+}
+
+.nav__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  text-align: start;
+  font-size: 13.5px;
+  color: var(--text-mid);
+  transition: background 0.1s var(--ease-out), color 0.1s var(--ease-out);
+}
+
+.nav__item svg {
+  color: var(--text-lo);
+}
+
+.nav__item:hover {
+  background: var(--overlay-2);
+  color: var(--text-hi);
+}
+
+.nav__item[aria-current="true"] {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.nav__item[aria-current="true"] svg {
+  color: var(--accent-bright);
+}
+
+.nav__item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent-bright);
+}
+
+/* ── Содержимое ────────────────────────────────────────────── */
+
+.page__main {
+  min-width: 0;
+}
+
+.page__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  margin-bottom: 20px;
+  user-select: none;
+}
+
+.page__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.page__header .search {
+  flex: 1;
+  max-width: 360px;
+  margin: 0 0 0 auto;
+}
+
+.section {
+  scroll-margin-top: 24px;
+}
+
+.section + .section {
+  margin-top: 36px;
+}
+
+.section__title {
+  margin: 0 0 12px 2px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.group {
+  border-radius: 10px;
+  background: var(--ink-1);
+  border: 1px solid var(--line-1);
+  overflow: hidden;
+}
+
+.group + .group {
+  margin-top: 12px;
+}
+
+.group__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+
+.group__title {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+
+.group__hint {
+  padding: 0 16px 12px;
+  margin-top: -6px;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 16px;
+}
+
+.setting + .setting,
+.group__head + .setting,
+.group__hint + .setting,
+.setting + .choices,
+.choices + .setting {
+  border-top: 1px solid var(--line-1);
+}
+
+.setting--action {
+  width: 100%;
+  text-align: start;
+}
+
+.setting--action:hover {
+  background: var(--overlay-1);
+}
+
+.setting__icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--overlay-2);
+  color: var(--text-mid);
+}
+
+.setting__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting__label {
+  font-size: 13.5px;
+  color: var(--text-hi);
+}
+
+.setting__hint {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-lo);
+}
+
+.setting__value {
+  font-size: 12.5px;
+  color: var(--text-mid);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting .field {
+  width: 240px;
+}
+
+.setting__chevron {
+  color: var(--text-lo);
+}
+
+.choices {
+  padding: 4px 0;
+}
+
+.choices .choice {
+  padding-inline-start: 16px;
+}
+
+/* ── Таблицы: пароли, сайты, закладки ──────────────────────── */
+
+.rows {
+  border-top: 1px solid var(--line-1);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 10px 6px 16px;
+  font-size: 13px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--line-1);
+}
+
+.row:hover {
+  background: var(--overlay-1);
+}
+
+.row--simple {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+}
+
+.row__primary {
+  min-width: 0;
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__secondary {
+  min-width: 0;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__sub {
+  display: block;
+  font-size: 12px;
+  color: var(--text-lo);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row__secret {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.55;
+  transition: opacity 0.12s var(--ease-out);
+}
+
+.row:hover .row__actions,
+.row:focus-within .row__actions {
+  opacity: 1;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 16px 10px;
+  font-size: 12.5px;
+  color: var(--text-lo);
+}
+
+.crumbs button {
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-mid);
+}
+
+.crumbs button:hover {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.crumbs button[aria-current="true"] {
+  color: var(--text-hi);
+  font-weight: 500;
+}
+
+.empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-lo);
+}
+
+.notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-mid);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-top: 1px solid var(--line-1);
+}
+
+.notice svg {
+  color: var(--warn);
+  margin-top: 1px;
+}
+
+/* ── О браузере ────────────────────────────────────────────── */
+
+.about {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 20px 16px;
+}
+
+.about img {
+  width: 64px;
+  height: 64px;
+}
+
+.about__name {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.about__meta {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--text-lo);
+  line-height: 1.6;
+}
+
+/* ── Страница загрузок ─────────────────────────────────────── */
+
+.day {
+  margin: 24px 2px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-mid);
+  user-select: none;
+}
+
+.day:first-child {
+  margin-top: 0;
+}
+
+.download {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 14px 12px 14px 16px;
+  border-radius: 10px;
+  background: var(--ink-1);
+  border: 1px solid var(--line-1);
+}
+
+.download + .download {
+  margin-top: 8px;
+}
+
+.download__icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--overlay-2);
+  color: var(--text-mid);
+}
+
+.download__name {
+  display: block;
+  max-width: 100%;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-hi);
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.download__name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.download[data-state="cancelled"] .download__name,
+.download[data-missing="true"] .download__name {
+  color: var(--text-lo);
+  text-decoration: line-through;
+}
+
+.download__url {
+  display: block;
+  /* Кнопка ужимается под текст и без ограничения растягивает карточку. */
+  max-width: 100%;
+  margin-top: 1px;
+  text-align: start;
+  font-size: 12px;
+  color: var(--text-lo);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download__status {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-mid);
+}
+
+.download[data-state="failed"] .download__status {
+  color: #ff8a8f;
+}
+
+.download .meter {
+  margin-top: 8px;
+}
+
+.download__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+}
+
+.link {
+  font-size: 12.5px;
+  color: var(--accent-bright);
+}
+
+.link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ── Диалог внутри страницы ────────────────────────────────── */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  animation: fade-in 0.14s var(--ease-out);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.modal {
+  width: min(460px, calc(100vw - 48px));
+  border-radius: 12px;
+  background: var(--ink-1);
+  border: 1px solid var(--line-2);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
+  animation: modal-in 0.18s var(--ease-emph);
+  user-select: none;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+.modal__body {
+  padding: 22px 22px 8px;
+}
+
+.modal__title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.modal__text {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-mid);
+}
+
+.modal__body .label + .field,
+.modal__body .field + .label {
+  margin-bottom: 12px;
+}
+
+.modal__body .field {
+  margin-bottom: 12px;
+}
+
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 22px 18px;
+  margin-top: 8px;
+  background: var(--ink-0);
+  border-top: 1px solid var(--line-1);
+  border-radius: 0 0 12px 12px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  text-align: start;
+  font-size: 13px;
+  color: var(--text-hi);
+}
+
+.check::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid var(--text-lo);
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.check[aria-checked="true"]::before {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M9.85 3.15a.5.5 0 0 1 0 .7l-5 5a.5.5 0 0 1-.7 0l-2-2a.5.5 0 1 1 .7-.7L4.5 7.79l4.65-4.64a.5.5 0 0 1 .7 0z' fill='white'/%3E%3C/svg%3E");
+}
+
+.check__hint {
+  margin-inline-start: auto;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
+/* ── Всплывающее сообщение ─────────────────────────────────── */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 80;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 48px));
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--ink-3);
+  border: 1px solid var(--line-2);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  color: var(--text-hi);
+  animation: toast-in 0.18s var(--ease-emph);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}

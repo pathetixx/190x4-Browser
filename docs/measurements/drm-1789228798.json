@@ -1,0 +1,28 @@
+{
+  "url": "https://www.kinopoisk.ru/",
+  "eme": {
+    "supported": {
+      "clearkey": {
+        "HW_SECURE_ALL": "NotSupportedError",
+        "SW_SECURE_CRYPTO": "NotSupportedError",
+        "SW_SECURE_DECODE": "NotSupportedError",
+        "default": "ok"
+      },
+      "playready": {
+        "HW_SECURE_ALL": "ok",
+        "SW_SECURE_CRYPTO": "ok",
+        "SW_SECURE_DECODE": "ok",
+        "default": "ok"
+      },
+      "widevine": {
+        "HW_SECURE_ALL": "NotSupportedError",
+        "SW_SECURE_CRYPTO": "ok",
+        "SW_SECURE_DECODE": "ok",
+        "default": "ok"
+      }
+    },
+    "videoElement": true
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+  "note": "«ok» на widevine/SW_SECURE_DECODE — необходимое условие. Достаточное — только глазами."
+}
