@@ -1,0 +1,5 @@
+# Исходники — с LF на любой платформе: без этого checkout на Windows с autocrlf
+# меняет байты файлов, которые крейты встраивают через include_str!.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
