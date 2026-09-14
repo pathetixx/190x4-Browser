@@ -121,6 +121,13 @@ export function dayLabel(stampSeconds) {
   });
 }
 
+/** День из даты «ГГГГ-ММ-ДД» — как пишут по-русски: «20 сентября 2026». */
+export function formatDay(isoDate) {
+  const date = new Date(`${isoDate}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return isoDate;
+  return date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" }).replace(/\s*г\.$/, "");
+}
+
 export function clock(stampSeconds) {
   return new Date(stampSeconds * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }

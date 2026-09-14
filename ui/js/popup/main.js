@@ -13,6 +13,7 @@ import {
   favicon,
   fileIcon,
   formatBytes,
+  formatDay,
   hostOf,
   icon,
   iconButton,
@@ -235,6 +236,75 @@ const VIEWS = {
     model.initDownloads().then(draw);
     draw();
     return off;
+  },
+
+  /** Пузырь обновления: версия, заметки к ней, установка с прогрессом. */
+  update({ version, current, notes = "", date, installing = false }) {
+    const bubble = el("div", "bubble");
+    const head = el("div", "bubble__head");
+    head.append(
+      el("h2", "bubble__title", "Доступно обновление"),
+      iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" })
+    );
+    bubble.append(head);
+    bubble.append(
+      el("p", "bubble__text", `190x4 Browser ${version}${date ? ` от ${formatDay(date)}` : ""}. Сейчас установлена версия ${current}.`)
+    );
+
+    const lines = notes
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !/^#{1,6}\s/.test(line));
+    if (lines.length) {
+      const list = el("div", "update-notes scroll");
+      for (const line of lines) list.append(el("p", null, line.replace(/^[-*]\s+/, "")));
+      bubble.append(list);
+    }
+
+    const status = el("div", "update-status");
+    const meter = el("div", "meter");
+    const fill = el("div", "meter__fill");
+    meter.append(fill);
+    const label = el("div", "update-status__label", "Скачивание…");
+    status.append(meter, label);
+    status.hidden = !installing;
+    bubble.append(status);
+
+    const actions = el("div", "bubble__actions");
+    const later = textButton("Позже", close, "btn");
+    const start = () => {
+      primary.disabled = true;
+      later.disabled = true;
+      status.hidden = false;
+      fit();
+    };
+    const primary = textButton(
+      "Обновить и перезапустить",
+      () => {
+        start();
+        act("update", "install", {}, { keepOpen: true });
+      },
+      "btn btn--primary"
+    );
+    primary.setAttribute("autofocus", "");
+    actions.append(later, primary);
+    bubble.append(actions);
+    root.append(bubble);
+    if (installing) start();
+
+    const off = listen("update-progress", ({ phase, downloaded, total }) => {
+      if (status.hidden) start();
+      if (phase === "install") {
+        fill.style.width = "100%";
+        label.textContent = "Установка — браузер перезапустится";
+        return;
+      }
+      fill.style.width = total ? `${Math.round(Math.min(1, downloaded / total) * 100)}%` : "30%";
+      label.textContent = total
+        ? `Скачано ${formatBytes(downloaded)} из ${formatBytes(total)}`
+        : `Скачано ${formatBytes(downloaded)}`;
+    });
+    return () => off.then((stop) => stop?.());
   },
 
   /** Пузырь закладки: название, папка, удалить — как в Chrome по Ctrl+D. */

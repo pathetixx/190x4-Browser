@@ -19,6 +19,7 @@ export const hooks = {
   openPanel: (_name) => {},
   openFind: () => {},
   toast: (_text) => {},
+  saveSession: async () => {},
 };
 
 export function isNewTabUrl(url) {

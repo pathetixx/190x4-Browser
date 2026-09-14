@@ -193,6 +193,14 @@ function seed() {
 /** Данные для скриншотов всплывающего окна: popup.html?kind=… */
 export function popupDemo(kind) {
   switch (kind) {
+    case "update":
+      return {
+        version: "0.2.0",
+        current: "0.1.0",
+        date: "2026-09-20",
+        notes:
+          "Пароли сохраняются и подставляются на сайтах со входом во встроенном окне.\nСтраница целиком переводится одной кнопкой в адресной строке.",
+      };
     case "menu":
       return {
         menu: "main",

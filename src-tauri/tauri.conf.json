@@ -34,6 +34,7 @@
     "targets": [
       "nsis"
     ],
+    "createUpdaterArtifacts": true,
     "copyright": "© 2026 pathetixx · 190x4",
     "icon": [
       "icons/icon.ico",
@@ -47,6 +48,26 @@
       "allowDowngrades": false,
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": [
+          "Russian"
+        ],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFNUE4NUMwQzk1NkMxOUEKUldTYXdWYkp3SVZhN2hnYm1mUWJOZlpnRk9zY3NrVkR6WTNjRlN5MHB5K2t5d3FRZnBGL0NVejgK",
+      "endpoints": [
+        "https://gitlab.com/api/v4/projects/86438976/packages/generic/190x4-browser/stable/latest.json",
+        "https://github.com/pathetixx/190x4-Browser/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   },

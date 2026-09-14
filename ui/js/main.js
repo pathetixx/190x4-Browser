@@ -26,6 +26,7 @@ import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
 import { activeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
 import { activate, close, cycle, initTabs, open, renderTabs, reopenClosed } from "./tabs.js";
 import { initToolbar, loadWindowState, renderToolbar, syncWindowState } from "./toolbar.js";
+import { initUpdates } from "./updates.js";
 
 const progress = document.getElementById("progress");
 const statusDot = document.getElementById("status-dot");
@@ -57,6 +58,7 @@ hooks.openFind = () => {
   if (tab && !tab.internal) openFind();
 };
 hooks.toast = toast;
+hooks.saveSession = saveSessionNow;
 
 initLayout(document.getElementById("stage"));
 initPopups();
@@ -67,6 +69,7 @@ initOmnibox();
 initToolbar();
 initBookmarksBar();
 initDownloads();
+initUpdates();
 
 const web = () => {
   const tab = activeTab();
@@ -556,15 +559,23 @@ async function restoreSession() {
   sessionReady = true;
 }
 
+function sessionTabs() {
+  return [...state.tabs.values()]
+    .filter((tab) => tab.internal || (tab.url && !isNewTabUrl(tab.url) && !tab.url.startsWith("about:")))
+    .map((tab) => ({ url: tab.url, title: tab.title ?? "", active: tab.id === state.activeId }));
+}
+
 function scheduleSessionSave() {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
-  sessionTimer = setTimeout(() => {
-    const tabs = [...state.tabs.values()]
-      .filter((tab) => tab.internal || (tab.url && !isNewTabUrl(tab.url) && !tab.url.startsWith("about:")))
-      .map((tab) => ({ url: tab.url, title: tab.title ?? "", active: tab.id === state.activeId }));
-    invoke("session_save", { tabs }).catch(() => {});
-  }, 800);
+  sessionTimer = setTimeout(() => invoke("session_save", { tabs: sessionTabs() }).catch(() => {}), 800);
+}
+
+/** Перед обновлением браузер закроется — сессию пишем сразу, без отложенного таймера. */
+async function saveSessionNow() {
+  if (!sessionReady) return;
+  clearTimeout(sessionTimer);
+  await invoke("session_save", { tabs: sessionTabs() }).catch(() => {});
 }
 
 /* ── Режим без Rust: макет для ревью вёрстки ───────────────── */

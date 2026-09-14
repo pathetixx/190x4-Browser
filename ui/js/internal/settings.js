@@ -7,10 +7,11 @@
  */
 
 import { invoke, listen } from "../bridge.js";
-import { clock, dayLabel, el, favicon, hostOf, icon, iconButton, plural, textButton } from "../dom.js";
+import { clock, dayLabel, el, favicon, formatDay, hostOf, icon, iconButton, plural, textButton } from "../dom.js";
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
+import { checkUpdates, installUpdate, onUpdate, update } from "../updates.js";
 
 const SECTIONS = [
   { id: "appearance", title: "Внешний вид", icon: "paint" },
@@ -744,13 +745,46 @@ const BUILDERS = {
       })
       .catch(() => {});
 
+    // Обновления: состояние живёт в updates.js, строка перерисовывается по нему.
+    const updates = setting("Обновления", "…", el("div"));
+    const updatesHint = updates.querySelector(".setting__hint");
+    const updatesSlot = updates.lastElementChild;
+    const drawUpdates = () => {
+      let text = "Браузер проверяет обновления сам";
+      let control = button("Проверить обновления", () => checkUpdates(), { kind: "btn btn--ghost" });
+      if (update.installing) {
+        text = `Устанавливается версия ${update.info?.version ?? ""} — браузер перезапустится сам`;
+        control = null;
+      } else if (update.info) {
+        text = `Доступна версия ${update.info.version}${update.info.date ? ` от ${formatDay(update.info.date)}` : ""}`;
+        control = button("Обновить и перезапустить", () => installUpdate(), { kind: "btn btn--primary" });
+      } else if (update.checking) {
+        text = "Проверка…";
+        control = null;
+      } else if (update.error) {
+        text = `Проверить не удалось: ${update.error}`;
+        control = button("Проверить снова", () => checkUpdates(), { kind: "btn btn--ghost" });
+      } else if (update.checked) {
+        text = "Установлена последняя версия";
+      }
+      updatesHint.textContent = text;
+      updatesSlot.replaceChildren(...(control ? [control] : []));
+    };
+    drawUpdates();
+    const stopUpdates = onUpdate(() => (updates.isConnected ? drawUpdates() : stopUpdates()));
+    const autoUpdates = switchSetting(
+      "updates_auto",
+      "Проверять обновления автоматически",
+      "После запуска и раз в шесть часов, пока браузер открыт"
+    );
+
     const licenses = setting(
       "Сторонние компоненты",
       "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0).",
       null
     );
 
-    return [group([card]), group([profile, licenses])];
+    return [group([card]), group([updates, autoUpdates], { title: "Обновления" }), group([profile, licenses])];
   },
 };
 

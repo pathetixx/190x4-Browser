@@ -9,6 +9,7 @@ import { openMenu } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
 import { hasClosedTabs, open, reopenClosed } from "./tabs.js";
+import { openUpdateBubble, update } from "./updates.js";
 import {
   closeBrowser,
   goHome,
@@ -88,6 +89,9 @@ function showMainMenu(button) {
   const web = Boolean(tab && !tab.internal);
 
   const items = [
+    ...(update.info
+      ? [{ id: "update", label: `Обновить 190x4 до версии ${update.info.version}`, icon: "reload" }, { separator: true }]
+      : []),
     { id: "new-tab", label: "Новая вкладка", icon: "tab-add", keys: "Ctrl+T" },
     { id: "reopen", label: "Открыть закрытую вкладку", icon: "history", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
     { separator: true },
@@ -115,6 +119,8 @@ function showMainMenu(button) {
     items,
     (action) => {
       switch (action) {
+        case "update":
+          return openUpdateBubble();
         case "new-tab":
           return open("about:newtab");
         case "reopen":

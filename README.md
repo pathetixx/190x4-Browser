@@ -45,7 +45,7 @@ python3 -m http.server 8777 --directory ui
 ## Сервисы
 
 Переводчик и загрузчик ходят на сервер 190x4. Ключи лежат в
-`%LOCALAPPDATA%\190x4 Browser\services.json` и в репозиторий не попадают:
+`%LOCALAPPDATA%\pw.x190x4.browser\services.json` и в репозиторий не попадают:
 
 ```json
 { "base_url": "https://190x4.pw", "translate_key": "…", "media_key": "…" }
@@ -58,8 +58,12 @@ python3 -m http.server 8777 --directory ui
 
 ```bash
 pwsh scripts/fetch-lists.ps1     # фильтр-списки не хранятся в репозитории
-cargo tauri build                # только Windows
+npx @tauri-apps/cli@2.11.4 build # только Windows; установщик NSIS в target/release/bundle/nsis
 ```
+
+Установщик для релиза подписывается ключом обновлений (`TAURI_SIGNING_PRIVATE_KEY`).
+Без ключа локальная сборка — с `-c '{"bundle":{"createUpdaterArtifacts":false}}'`.
+Релизы собирает `.github/workflows/build.yml` по тегу; порядок — `RELEASING.md`.
 
 ## Замеры
 

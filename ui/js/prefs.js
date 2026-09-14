@@ -30,6 +30,7 @@ export const DEFAULTS = {
   translate_button: true,
   ext_media_enabled: true,
   ext_media_pinned: true,
+  updates_auto: true,
 };
 
 const values = { ...DEFAULTS };

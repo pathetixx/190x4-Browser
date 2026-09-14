@@ -11,6 +11,7 @@ mod passwords;
 mod popup;
 mod state;
 mod transfers;
+mod updates;
 mod vault;
 
 use std::sync::Arc;
@@ -26,6 +27,8 @@ use state::App;
 pub fn run() {
     init_logging();
 
+    migrate_profile();
+
     let guard = Arc::new(Guard::empty());
     let store = Arc::new(open_store());
     let services = Arc::new(open_services());
@@ -39,6 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(App {
             guard: guard.clone(),
             store: store.clone(),
@@ -47,6 +51,7 @@ pub fn run() {
             transfers: Default::default(),
             popup: Default::default(),
         })
+        .manage(updates::Updates::default())
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
             ipc::tab_close,
@@ -114,9 +119,13 @@ pub fn run() {
             ipc::media_download,
             ipc::media_cancel,
             ipc::services_state,
+            updates::update_check,
+            updates::update_state,
+            updates::update_install,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            updates::spawn_checker(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
 
             #[cfg(windows)]
@@ -260,11 +269,57 @@ fn open_store() -> Store {
     }
 }
 
-pub(crate) fn profile_dir() -> std::path::PathBuf {
+/// Идентификатор приложения из `tauri.conf.json`: под ним WebView2 держит свои
+/// данные (`EBWebView`), и там же живёт профиль браузера.
+const IDENTIFIER: &str = "pw.x190x4.browser";
+
+fn local_app_data() -> std::path::PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("190x4 Browser")
+}
+
+/// Профиль — в папке данных приложения, а не в `%LOCALAPPDATA%\190x4 Browser`:
+/// туда установщик ставит саму программу. Флажок «удалить данные» при удалении
+/// программы чистит именно папку данных приложения.
+pub(crate) fn profile_dir() -> std::path::PathBuf {
+    local_app_data().join(IDENTIFIER)
+}
+
+/// Профиль до установщика лежал в `%LOCALAPPDATA%\190x4 Browser`. Переносим его
+/// один раз, пока база не открыта. База и её журналы переезжают только вместе:
+/// если хоть один файл не перенёсся, уже перенесённые возвращаются назад.
+fn migrate_profile() {
+    const FILES: [&str; 4] = [
+        "browser.db",
+        "browser.db-wal",
+        "browser.db-shm",
+        "services.json",
+    ];
+
+    let old = local_app_data().join("190x4 Browser");
+    let new = profile_dir();
+    if new.join("browser.db").exists() || !old.join("browser.db").exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&new);
+
+    let mut moved = Vec::new();
+    for name in FILES {
+        let from = old.join(name);
+        if !from.exists() {
+            continue;
+        }
+        if let Err(err) = std::fs::rename(&from, new.join(name)) {
+            tracing::error!(%err, file = name, "профиль не перенесён, остаётся на месте");
+            for done in moved.iter().rev() {
+                let _ = std::fs::rename(new.join(done), old.join(done));
+            }
+            return;
+        }
+        moved.push(name);
+    }
+    tracing::info!(from = %old.display(), to = %new.display(), "профиль перенесён");
 }
 
 /// Клиент сервисов 190x4. Ключи — из профиля, не из кода.
