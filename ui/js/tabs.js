@@ -326,9 +326,14 @@ export function renderTabs() {
 /** Узкий режим — по фактической ширине плитки: при открытой панели места меньше при том же счёте. */
 function updateNarrow() {
   for (const node of strip.children) {
+    const width = node.getBoundingClientRect().width;
     // Подпись прячем, только когда от неё остались бы две-три буквы.
-    const narrow = node.getBoundingClientRect().width < 64 ? "true" : "false";
+    const narrow = width < 64 ? "true" : "false";
+    // Тесная вкладка: крестик неактивной не держит место под себя — как в
+    // Chrome, иначе подписи не остаётся уже на 70 px.
+    const compact = width < 110 ? "true" : "false";
     if (node.dataset.narrow !== narrow) node.dataset.narrow = narrow;
+    if (node.dataset.compact !== compact) node.dataset.compact = compact;
   }
 }
 

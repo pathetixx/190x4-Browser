@@ -215,7 +215,7 @@ function setSite(kind, iconId) {
 
 function brandMark() {
   const img = el("img");
-  img.src = "./assets/brand/mark-72.png";
+  img.src = "./assets/brand/mark-32.png";
   img.width = 16;
   img.height = 16;
   img.alt = "";

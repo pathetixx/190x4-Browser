@@ -188,6 +188,16 @@
   opacity: 1;
 }
 
+/* Тесная вкладка: крестик у неактивной не занимает места, подписи остаётся
+   больше. У активной крестик на месте. */
+.tab[data-compact="true"]:not([data-active="true"]) .tab__close {
+  display: none;
+}
+
+.tab[data-compact="true"] {
+  padding-inline-end: 8px;
+}
+
 /* Узкая вкладка: остаётся только иконка. Крестик у неактивной прячем —
    на 48px он попадает под курсор случайно. */
 .tab[data-narrow="true"] {

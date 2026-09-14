@@ -48,7 +48,7 @@ export function createSettingsPage(root, { section, onSection }) {
   /* ── Навигация ── */
   const brand = el("div", "page__brand");
   const mark = el("img");
-  mark.src = "./assets/brand/mark-72.png";
+  mark.src = "./assets/brand/mark-32.png";
   mark.alt = "";
   brand.append(mark, el("span", null, "Настройки"));
   nav.append(brand);
