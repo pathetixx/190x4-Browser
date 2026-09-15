@@ -40,12 +40,21 @@ pub fn run() {
     // Повторный запуск передаёт адреса первому процессу и выходит (плагин
     // single-instance). Профиль ему не трогать: лог открывается с обрезкой, а
     // незавершённые загрузки при старте помечаются прерванными.
-    let secondary = launch::already_running();
+    let separate = separate_profile();
+    if let Some(dir) = &separate {
+        // Данные движка — тоже при отдельном профиле, а не в общей папке.
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.join("EBWebView"));
+        }
+    }
+    let secondary = separate.is_none() && launch::already_running();
     if secondary {
         launch::allow_foreground();
     } else {
         init_logging();
-        migrate_profile();
+        if separate.is_none() {
+            migrate_profile();
+        }
     }
 
     let guard = Arc::new(Guard::empty());
@@ -62,11 +71,14 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if separate.is_none() {
         // Первым: второй процесс должен выйти раньше, чем проснутся другие плагины.
-        .plugin(tauri_plugin_single_instance::init(
+        builder = builder.plugin(tauri_plugin_single_instance::init(
             launch::on_second_instance,
-        ))
+        ));
+    }
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -161,6 +173,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            create_chrome_window(app)?;
             updates::spawn_checker(handle.clone());
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
@@ -276,6 +289,41 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
     let _ = app.emit_to("chrome", "tab", &event);
 }
 
+/// Окно браузера — из `tauri.conf.json`, но создаётся здесь: пробе с отдельным
+/// профилем движку нужен порт отладки.
+fn create_chrome_window(app: &tauri::App) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "chrome")
+        .expect("окно chrome описано в tauri.conf.json")
+        .clone();
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+    if let Some(args) = debug_browser_args() {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder.build()?;
+    Ok(())
+}
+
+/// Аргументы движка с портом отладки (CDP) — только при отдельном профиле и
+/// заданном `BROWSER190X4_DEBUG_PORT`. Окна браузера делят одно окружение
+/// WebView2, поэтому попап получает те же аргументы. Первые два — те, что wry
+/// передаёт по умолчанию.
+pub(crate) fn debug_browser_args() -> Option<String> {
+    separate_profile()?;
+    let port: u16 = std::env::var("BROWSER190X4_DEBUG_PORT")
+        .ok()?
+        .parse()
+        .ok()?;
+    Some(format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+         --autoplay-policy=no-user-gesture-required --remote-debugging-port={port}"
+    ))
+}
+
 /// Главное окно: состояние «развёрнуто» для кнопки окна и закрытие попапа,
 /// когда окно уехало из-под него.
 fn wire_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
@@ -372,7 +420,13 @@ fn local_app_data() -> std::path::PathBuf {
 /// туда установщик ставит саму программу. Флажок «удалить данные» при удалении
 /// программы чистит именно папку данных приложения.
 pub(crate) fn profile_dir() -> std::path::PathBuf {
-    local_app_data().join(IDENTIFIER)
+    separate_profile().unwrap_or_else(|| local_app_data().join(IDENTIFIER))
+}
+
+/// Отдельный профиль для проверок рядом с основным браузером: своя база и свои
+/// данные движка, и с уже запущенным браузером этот не объединяется.
+fn separate_profile() -> Option<std::path::PathBuf> {
+    std::env::var_os("BROWSER190X4_PROFILE").map(std::path::PathBuf::from)
 }
 
 /// Профиль до установщика лежал в `%LOCALAPPDATA%\190x4 Browser`. Переносим его

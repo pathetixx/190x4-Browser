@@ -56,7 +56,11 @@ pub fn ensure(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .get_webview_window("chrome")
         .ok_or(tauri::Error::WindowNotFound)?;
 
-    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("popup.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("popup.html".into()));
+    if let Some(args) = crate::debug_browser_args() {
+        builder = builder.additional_browser_args(&args);
+    }
+    let window = builder
         .title("190x4")
         .decorations(false)
         .resizable(false)

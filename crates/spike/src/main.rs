@@ -22,6 +22,8 @@ fn main() {
 #[cfg(windows)]
 mod bench_adblock;
 #[cfg(windows)]
+mod check;
+#[cfg(windows)]
 mod cosmetics;
 #[cfg(windows)]
 mod drm;
@@ -103,6 +105,19 @@ enum Command {
         #[arg(long, default_value = "spike-out/cosmetics.js")]
         out: std::path::PathBuf,
     },
+    /// Какие запросы страницы блокирует фильтр: запросы из JSON (`url`, `type` —
+    /// как в CDP) против тех же списков, что у браузера.
+    Check {
+        /// Адрес документа, с которого шли запросы.
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        requests: std::path::PathBuf,
+        #[arg(long, default_value = "src-tauri/lists")]
+        bundled: std::path::PathBuf,
+        #[arg(long)]
+        downloaded: std::path::PathBuf,
+    },
     /// Все три подряд.
     All,
 }
@@ -147,6 +162,12 @@ fn main() -> anyhow::Result<()> {
             downloaded,
             out,
         } => cosmetics::run(&url, &bundled, &downloaded, &out),
+        Command::Check {
+            url,
+            requests,
+            bundled,
+            downloaded,
+        } => check::run(&url, &requests, &bundled, &downloaded),
         Command::All => {
             let memory = mem::run(20, None, 20)?;
             report::write(&cli.out, "memory", &memory)?;

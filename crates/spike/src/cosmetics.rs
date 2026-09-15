@@ -10,7 +10,8 @@ use browser190x4_adblock::{
     document_host, document_script, FilterList, Guard, ListSource, Subscriptions,
 };
 
-pub fn run(url: &str, bundled: &Path, downloaded: &Path, out: &Path) -> anyhow::Result<()> {
+/// Фильтр из тех же списков, что у браузера: встроенных и скачанных.
+pub fn load_guard(bundled: &Path, downloaded: &Path) -> anyhow::Result<Guard> {
     let mut lists = Vec::new();
     for spec in Subscriptions::default().lists {
         let path = match &spec.source {
@@ -42,7 +43,11 @@ pub fn run(url: &str, bundled: &Path, downloaded: &Path, out: &Path) -> anyhow::
         "lists {count}, scriptlets {scriptlets}, build {} ms",
         started.elapsed().as_millis()
     );
+    Ok(guard)
+}
 
+pub fn run(url: &str, bundled: &Path, downloaded: &Path, out: &Path) -> anyhow::Result<()> {
+    let guard = load_guard(bundled, downloaded)?;
     let cosmetics = guard.cosmetics(url);
     println!(
         "hide {} selectors, scriptlets {} bytes",

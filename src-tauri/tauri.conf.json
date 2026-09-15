@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "chrome",
+        "create": false,
         "title": "190x4",
         "width": 1440,
         "height": 900,
