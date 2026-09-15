@@ -11,12 +11,14 @@
 //!   навигация или исчезнувшая форма. Неверный пароль, после которого форма
 //!   осталась на месте, сохранять не предлагаем;
 //! * **пароль в открытом виде** не попадает ни в базу (DPAPI), ни в интерфейс
-//!   браузера — туда уходят только сайт и логин.
+//!   браузера — туда уходят только сайт и логин;
+//! * **учётки сайта** — сохранённые для этого адреса и для других адресов того
+//!   же сайта по https (`google.com` на `accounts.google.com`), свой адрес первым.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use browser190x4_store::passwords_csv::origin_of;
+use browser190x4_store::passwords_csv::{origin_of, same_site};
 use browser190x4_webview::{TabId, PAGES_HOST};
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -33,6 +35,9 @@ struct Candidate {
     username: String,
     password: String,
     at: Instant,
+    /// Учётка того же сайта с этим логином, но другим паролем: «Обновить»
+    /// меняет её, а не заводит копию под новым адресом.
+    replaces: Option<i64>,
 }
 
 #[derive(Default)]
@@ -88,6 +93,7 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
                     username,
                     password,
                     at: Instant::now(),
+                    replaces: None,
                 },
             );
             let navigated = state
@@ -153,13 +159,17 @@ fn commit(app: &AppHandle, tab: u32) {
             .into_iter()
             .find(|saved| saved.username == candidate.username);
 
+        let mut candidate = candidate;
         let update = match existing {
             Some(saved) => match vault::reveal(&saved.secret) {
                 Ok(password) if password == candidate.password => {
                     let _ = store.touch_password(saved.id);
                     return;
                 }
-                _ => true,
+                _ => {
+                    candidate.replaces = Some(saved.id);
+                    true
+                }
             },
             None => false,
         };
@@ -197,9 +207,19 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
     match action {
         "save" => {
             let secret = vault::protect(&candidate.password)?;
-            let id = state
-                .store
-                .save_password(&candidate.origin, &candidate.username, &secret)?;
+            let id = match candidate.replaces {
+                Some(id) => {
+                    state
+                        .store
+                        .update_password(id, &candidate.username, Some(&secret))?;
+                    id
+                }
+                None => {
+                    state
+                        .store
+                        .save_password(&candidate.origin, &candidate.username, &secret)?
+                }
+            };
             state.store.touch_password(id)?;
             let _ = app.emit("passwords", ());
         }
@@ -227,15 +247,22 @@ fn offer_accounts(app: &AppHandle, tab: u32, origin: &str) {
             "origin": origin,
             "accounts": accounts
                 .iter()
-                .map(|account| serde_json::json!({ "id": account.id, "username": account.username }))
+                .map(|account| {
+                    serde_json::json!({
+                        "id": account.id,
+                        "username": account.username,
+                        "origin": account.origin,
+                    })
+                })
                 .collect::<Vec<_>>(),
         }),
     );
 
     if state.store.setting_bool("passwords_autofill", true) {
         let first = &accounts[0];
-        if let Ok(password) = vault::reveal(&first.secret) {
-            fill_tab(app, tab, origin, &first.username, password);
+        match vault::reveal(&first.secret) {
+            Ok(password) => fill_tab(app, tab, &first.origin, &first.username, password),
+            Err(err) => tracing::warn!(%err, "пароль не расшифрован"),
         }
     }
 }
@@ -252,14 +279,20 @@ pub fn fill(app: &AppHandle, tab: u32, id: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fill_tab(app: &AppHandle, tab: u32, origin: &str, username: &str, password: String) {
-    let origin = origin.to_string();
+/// `saved` — адрес, для которого сохранена учётка: документ вкладки должен
+/// быть тем же сайтом.
+fn fill_tab(app: &AppHandle, tab: u32, saved: &str, username: &str, password: String) {
+    let saved = saved.to_string();
     let username = username.to_string();
     with_host_later(app, move |host| {
         host.with_tab(TabId(tab), |view| {
             // Проверяем адрес документа прямо перед отправкой: пока мы ходили
             // в базу, вкладка могла уйти на другой сайт.
-            if origin_of(&view.source_url()).as_deref() != Some(origin.as_str()) {
+            let Some(origin) = origin_of(&view.source_url()) else {
+                return;
+            };
+            if !same_site(&origin, &saved) {
+                tracing::debug!(tab, %origin, "вкладка ушла на другой сайт, форму не заполняем");
                 return;
             }
             let message = serde_json::json!({
@@ -268,8 +301,9 @@ fn fill_tab(app: &AppHandle, tab: u32, origin: &str, username: &str, password: S
                 "username": username,
                 "password": password,
             });
-            if let Err(err) = view.post(&message.to_string()) {
-                tracing::warn!(%err, "форма не заполнена");
+            match view.post(&message.to_string()) {
+                Ok(()) => tracing::debug!(tab, %origin, "учётка отправлена в форму"),
+                Err(err) => tracing::warn!(%err, "форма не заполнена"),
             }
         });
     });

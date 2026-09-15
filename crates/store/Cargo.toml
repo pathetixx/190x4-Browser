@@ -10,6 +10,8 @@ description = "История, закладки, сессия и загрузк�
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Импорт и экспорт паролей: CSV из Chrome, Firefox, Bitwarden.
 csv = "1"
+# Учётки сайта: google.com и accounts.google.com — один регистрируемый домен.
+psl = "2"
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

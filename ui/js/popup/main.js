@@ -475,7 +475,9 @@ const VIEWS = {
       const row = el("button", "menu__item");
       const slot = el("span", "menu__icon");
       slot.append(icon("person-16", 16));
-      row.append(slot, el("span", "menu__label", account.username || "без логина"), el("span", "menu__keys", "заполнить"));
+      // Учётка другого адреса того же сайта подписана своим адресом.
+      const from = account.origin && account.origin !== origin ? hostOf(account.origin) : "заполнить";
+      row.append(slot, el("span", "menu__label", account.username || "без логина"), el("span", "menu__keys", from));
       row.addEventListener("click", async () => {
         await invoke("password_fill", { tab, id: account.id }).catch(() => {});
         close();

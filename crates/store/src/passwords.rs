@@ -8,6 +8,7 @@
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 
+use crate::passwords_csv::{same_site, site_of};
 use crate::Store;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +23,7 @@ pub struct PasswordEntry {
 #[derive(Debug, Clone)]
 pub struct PasswordSecret {
     pub id: i64,
+    pub origin: String,
     pub username: String,
     pub secret: Vec<u8>,
 }
@@ -54,23 +56,40 @@ impl Store {
         })
     }
 
-    /// Учётки сайта, свежие первыми: автозаполнение берёт первую.
+    /// Учётки для страницы: сохранённые для этого же адреса, затем для других
+    /// адресов того же сайта (`google.com` для `accounts.google.com`), свежие
+    /// первыми. Автозаполнение берёт первую.
     pub fn password_secrets_for(&self, origin: &str) -> anyhow::Result<Vec<PasswordSecret>> {
+        // SQL отбирает кандидатов по окончанию адреса, сайт сверяет same_site.
+        let pattern = site_of(origin)
+            .map(|site| {
+                let site = site
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                format!("https://%{site}")
+            })
+            .unwrap_or_default();
         self.with(|db| {
             let mut stmt = db.prepare(
-                "SELECT id, username, secret FROM passwords WHERE origin = ?1
-                 ORDER BY COALESCE(used_at, created_at) DESC, id DESC",
+                "SELECT id, origin, username, secret FROM passwords
+                 WHERE origin = ?1 OR (?2 <> '' AND origin LIKE ?2 ESCAPE '\\')
+                 ORDER BY origin = ?1 DESC, COALESCE(used_at, created_at) DESC, id DESC",
             )?;
             let rows: Vec<PasswordSecret> = stmt
-                .query_map([origin], |row| {
+                .query_map([origin, pattern.as_str()], |row| {
                     Ok(PasswordSecret {
                         id: row.get(0)?,
-                        username: row.get(1)?,
-                        secret: row.get(2)?,
+                        origin: row.get(1)?,
+                        username: row.get(2)?,
+                        secret: row.get(3)?,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
-            Ok(rows)
+            Ok(rows
+                .into_iter()
+                .filter(|secret| same_site(origin, &secret.origin))
+                .collect())
         })
     }
 
@@ -241,6 +260,34 @@ mod tests {
         );
 
         assert!(store.update_password(other, "me", None).is_err());
+    }
+
+    #[test]
+    fn site_logins_follow_exact_ones() {
+        let store = Store::memory().unwrap();
+        store
+            .save_password("https://google.com", "me@gmail.com", b"site")
+            .unwrap();
+        store
+            .save_password("https://accounts.google.com", "work@gmail.com", b"exact")
+            .unwrap();
+        store
+            .save_password("https://evilgoogle.com", "bad", b"no")
+            .unwrap();
+        store
+            .save_password("http://google.com", "plain", b"no")
+            .unwrap();
+
+        let secrets = store
+            .password_secrets_for("https://accounts.google.com")
+            .unwrap();
+        let names: Vec<&str> = secrets.iter().map(|s| s.username.as_str()).collect();
+        assert_eq!(names, ["work@gmail.com", "me@gmail.com"]);
+        assert_eq!(secrets[1].origin, "https://google.com");
+        assert!(store
+            .password_secrets_for("https://mail.proton.me")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

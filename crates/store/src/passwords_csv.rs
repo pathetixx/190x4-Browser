@@ -111,6 +111,22 @@ pub fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{host}"))
 }
 
+/// Сайт адреса для общих учёток: регистрируемый домен по списку публичных
+/// суффиксов (`accounts.google.com` → `google.com`). Только https и без порта:
+/// по http и на IP-адресах учётка остаётся за своим адресом.
+pub fn site_of(origin: &str) -> Option<&str> {
+    let host = origin.strip_prefix("https://")?;
+    if host.contains(':') || host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return None;
+    }
+    psl::domain_str(host)
+}
+
+/// Учётку, сохранённую для `saved`, можно подставить на странице `page`.
+pub fn same_site(page: &str, saved: &str) -> bool {
+    page == saved || site_of(page).is_some_and(|site| site_of(saved) == Some(site))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +184,34 @@ mod tests {
     #[test]
     fn unrelated_csv_is_rejected() {
         assert!(parse_logins("a,b,c\n1,2,3\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod site_tests {
+    use super::{same_site, site_of};
+
+    #[test]
+    fn subdomains_share_logins_over_https_only() {
+        assert_eq!(site_of("https://accounts.google.com"), Some("google.com"));
+        assert!(same_site(
+            "https://accounts.google.com",
+            "https://google.com"
+        ));
+        assert!(same_site("https://id.vk.com", "https://vk.com"));
+        assert!(!same_site("https://evilgoogle.com", "https://google.com"));
+        assert!(!same_site(
+            "http://accounts.google.com",
+            "https://google.com"
+        ));
+        assert!(!same_site(
+            "https://alice.github.io",
+            "https://bob.github.io"
+        ));
+        assert!(!same_site("https://192.168.1.10", "https://192.168.1.11"));
+        assert!(same_site(
+            "http://router.local:8080",
+            "http://router.local:8080"
+        ));
     }
 }

@@ -15,7 +15,7 @@
   // заодно хранит этап установки и ошибку, если она случилась.
   const MARK = "__190x4Passwords";
   if (window[MARK]) return;
-  const status = { stage: "start", asked: false, posts: 0, error: "" };
+  const status = { stage: "start", asked: "", filled: "", posts: 0, error: "" };
   try {
     Object.defineProperty(window, MARK, { value: status, enumerable: false });
   } catch (_) {
@@ -51,6 +51,13 @@
   const passwordsIn = (scope) =>
     Array.from((scope || document).querySelectorAll('input[type="password"]')).filter(usable);
 
+  // Вход в два шага (Google, Яндекс, Microsoft): сначала только логин. Такое
+  // поле размечено autocomplete="username" — по нему шаг и узнаём.
+  const loginsIn = (scope) =>
+    Array.from((scope || document).querySelectorAll('input[autocomplete~="username"]')).filter(
+      (input) => usable(input) && input.type !== "password"
+    );
+
   // Где искать форму входа вокруг элемента: сама форма, а без неё — ближайший
   // предок, в котором есть поле пароля. Иначе на странице с несколькими
   // блоками логин и пароль собирались бы из разных мест.
@@ -79,15 +86,21 @@
 
   let pending = "";
   let lastSubmit = null;
+  let lastLogin = "";
   let watch = 0;
 
   const capture = (scope) => {
     const filled = passwordsIn(scope).filter((input) => input.value);
-    if (!filled.length) return;
+    if (!filled.length) {
+      // Шаг с одним логином: на шаге с паролем поля логина уже не видно.
+      const login = loginsIn(scope).find((input) => input.value);
+      if (login) lastLogin = login.value.trim();
+      return;
+    }
     // На формах смены пароля их два-три: сохранять нужно последний, новый.
     const password = filled[filled.length - 1];
     const user = usernameFor(filled[0], scope);
-    const username = user ? user.value.trim() : "";
+    const username = user ? user.value.trim() : lastLogin;
     const key = username + "\u0000" + password.value;
     if (key === pending) return;
     pending = key;
@@ -137,14 +150,16 @@
     true
   );
 
-  // Форма входа: спрашиваем один раз на документ. Одностраничные сайты
-  // рисуют её после загрузки, поэтому ещё несколько секунд следим за DOM.
-  let asked = false;
+  // Форма входа: спрашиваем раз на шаг — шаг с логином и шаг с паролем.
+  // Одностраничные сайты рисуют форму после загрузки, поэтому следим за DOM.
+  let asked = "";
   const ask = () => {
-    if (asked || !passwordsIn(document).length) return false;
-    asked = post({ evt: "password_form" });
-    status.asked = asked;
-    return asked;
+    const step = passwordsIn(document).length ? "password" : loginsIn(document).length ? "login" : "";
+    if (step && step !== asked && asked !== "password" && post({ evt: "password_form" })) {
+      asked = step;
+      status.asked = step;
+    }
+    return asked === "password";
   };
 
   const start = () => {
@@ -159,7 +174,11 @@
       }, 300);
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    setTimeout(() => observer.disconnect(), 15000);
+    // После шага с логином пароль появится, когда человек нажмёт «Далее».
+    setTimeout(() => {
+      if (asked === "login") setTimeout(() => observer.disconnect(), 120000);
+      else observer.disconnect();
+    }, 15000);
   };
 
   if (document.readyState === "loading") {
@@ -183,9 +202,15 @@
     const data = event.data;
     if (!data || data.cmd !== "password_fill" || data.origin !== location.origin) return;
     const password = passwordsIn(document)[0];
-    if (!password) return;
-    setValue(usernameFor(password, scopeFor(password)), data.username);
-    setValue(password, data.password);
+    if (password) {
+      setValue(usernameFor(password, scopeFor(password)), data.username);
+      setValue(password, data.password);
+      status.filled = "password";
+      return;
+    }
+    const login = loginsIn(document)[0];
+    if (login) setValue(login, data.username);
+    status.filled = login ? "login" : "no-form";
   };
 
   const subscribe = () => {

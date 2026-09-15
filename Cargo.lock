@@ -530,6 +530,7 @@ dependencies = [
  "anyhow",
  "csv",
  "parking_lot",
+ "psl",
  "rusqlite",
  "serde",
  "serde_json",
