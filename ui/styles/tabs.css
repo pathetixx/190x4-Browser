@@ -136,7 +136,7 @@
   border-radius: 50%;
   border: 2px solid var(--line-3);
   border-top-color: var(--accent-bright);
-  animation: tab-spin 0.7s linear infinite;
+  animation: tab-spin 1.2s linear infinite;
 }
 
 @keyframes tab-spin {
