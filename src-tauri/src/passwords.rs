@@ -15,16 +15,16 @@
 //! * **учётки сайта** — сохранённые для этого адреса и для других адресов того
 //!   же сайта по https (`google.com` на `accounts.google.com`), свой адрес первым.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use browser190x4_store::passwords_csv::{origin_of, same_site};
+use browser190x4_store::passwords_csv::{host_of, origin_of, same_site, shared_sign_in_sites};
 use browser190x4_webview::{TabId, PAGES_HOST};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::state::{with_host_later, App};
+use crate::state::{with_host, with_host_later, App};
 use crate::vault;
 
 /// Отправленный логин ждёт подтверждения входа не дольше этого.
@@ -40,12 +40,20 @@ struct Candidate {
     replaces: Option<i64>,
 }
 
+/// Учётки, показанные документу списком: выбрать можно только из них.
+struct PageOffer {
+    origin: String,
+    ids: Vec<i64>,
+}
+
 #[derive(Default)]
 pub struct Passwords {
     /// Отправлено, но вход ещё не подтверждён.
     candidates: Mutex<HashMap<u32, Candidate>>,
     /// Показано предложение сохранить, ждём ответа пользователя.
     offers: Mutex<HashMap<u32, Candidate>>,
+    /// Списки учёток по вкладке и фрейму.
+    pages: Mutex<HashMap<(u32, Option<u32>), PageOffer>>,
     /// Когда вкладка последний раз начала навигацию. Сообщение страницы и
     /// начало навигации приходят разными путями, и порядок между ними не
     /// гарантирован: логин может приехать уже после ухода со страницы.
@@ -67,15 +75,30 @@ enum PageEvent {
     #[serde(rename = "password_commit")]
     Commit,
     #[serde(rename = "password_form")]
-    Form,
+    Form {
+        /// Страница похожа на вход: единственную учётку можно подставить сразу.
+        #[serde(default)]
+        confident: bool,
+    },
+    #[serde(rename = "password_pick")]
+    Pick { id: i64 },
+    #[serde(rename = "password_manage")]
+    Manage,
 }
 
-/// Сообщение со страницы. `true` — оно наше и дальше не идёт.
-pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) -> bool {
+/// Сообщение со страницы или её фрейма (`frame`). `true` — оно наше и дальше
+/// не идёт.
+pub fn handle_message(
+    app: &AppHandle,
+    tab: u32,
+    frame: Option<u32>,
+    source: &str,
+    payload: &str,
+) -> bool {
     let Ok(event) = serde_json::from_str::<PageEvent>(payload) else {
         return false;
     };
-    tracing::debug!(tab, %source, "сообщение менеджера паролей");
+    tracing::debug!(tab, ?frame, %source, "сообщение менеджера паролей");
     let Some(origin) = origin_of(source).filter(|origin| !origin.ends_with(PAGES_HOST)) else {
         return true;
     };
@@ -107,9 +130,35 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
             }
         }
         PageEvent::Commit => commit(app, tab),
-        PageEvent::Form => {
+        PageEvent::Form { confident } => {
             let app = app.clone();
-            std::thread::spawn(move || offer_accounts(&app, tab, &origin));
+            std::thread::spawn(move || offer_accounts(&app, tab, frame, &origin, confident));
+        }
+        PageEvent::Pick { id } => {
+            // Выбрать можно только учётку из списка, показанного этому документу.
+            let offered = state
+                .passwords
+                .pages
+                .lock()
+                .get(&(tab, frame))
+                .is_some_and(|offer| offer.origin == origin && offer.ids.contains(&id));
+            if !offered {
+                tracing::debug!(tab, ?frame, id, "учётки нет в списке документа");
+                return true;
+            }
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Err(err) = fill_offered(&app, tab, frame, &origin, id) {
+                    tracing::warn!(%err, "учётка не подставлена");
+                }
+            });
+        }
+        PageEvent::Manage => {
+            let _ = app.emit_to(
+                "chrome",
+                "open-settings",
+                serde_json::json!({ "section": "passwords" }),
+            );
         }
     }
     true
@@ -131,6 +180,7 @@ pub fn forget_tab(app: &AppHandle, tab: u32) {
     state.passwords.candidates.lock().remove(&tab);
     state.passwords.offers.lock().remove(&tab);
     state.passwords.navigations.lock().remove(&tab);
+    state.passwords.pages.lock().retain(|(id, _), _| *id != tab);
 }
 
 fn commit(app: &AppHandle, tab: u32) {
@@ -229,70 +279,142 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// На странице есть форма входа: показать ключ в адресной строке и, если
-/// разрешено, заполнить свежей учёткой.
-fn offer_accounts(app: &AppHandle, tab: u32, origin: &str) {
+/// На странице форма входа: список учёток — документу, ключ — в адресную
+/// строку, единственную учётку своего сайта браузер подставляет сам.
+///
+/// В списке сначала учётки своего сайта, во фрейме — ещё и сайта вкладки (почта
+/// Mail.ru входит во фрейме VK ID), затем сайтов с общим входом. Из нескольких
+/// учёток выбирает человек, поэтому сам браузер подставляет только
+/// единственную учётку своего сайта — и только на странице входа.
+fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str, confident: bool) {
     let state = app.state::<App>();
-    let accounts = state.store.password_secrets_for(origin).unwrap_or_default();
-    tracing::debug!(tab, %origin, accounts = accounts.len(), "форма входа");
-    if accounts.is_empty() {
+    let store = &state.store;
+    let own = store.password_secrets_for(origin).unwrap_or_default();
+    let mut offered = own.clone();
+    if frame.is_some() {
+        if let Some(top) = tab_origin(app, tab).filter(|top| !same_site(top, origin)) {
+            offered.extend(store.password_secrets_for(&top).unwrap_or_default());
+        }
+    }
+    offered.extend(
+        store
+            .password_secrets_for_sites(shared_sign_in_sites(origin))
+            .unwrap_or_default(),
+    );
+    let mut seen = HashSet::new();
+    offered.retain(|account| seen.insert(account.id));
+    tracing::debug!(tab, ?frame, %origin, own = own.len(), offered = offered.len(), "форма входа");
+    if offered.is_empty() {
         return;
     }
 
-    let _ = app.emit_to(
-        "chrome",
-        "password-site",
+    state.passwords.pages.lock().insert(
+        (tab, frame),
+        PageOffer {
+            origin: origin.to_string(),
+            ids: offered.iter().map(|account| account.id).collect(),
+        },
+    );
+    post_to_page(
+        app,
+        tab,
+        frame,
         serde_json::json!({
-            "tab": tab,
+            "cmd": "password_accounts",
             "origin": origin,
-            "accounts": accounts
+            "theme": store.setting_str("theme").unwrap_or_default(),
+            "accounts": offered
                 .iter()
                 .map(|account| {
                     serde_json::json!({
                         "id": account.id,
                         "username": account.username,
-                        "origin": account.origin,
+                        "host": host_of(&account.origin),
                     })
                 })
                 .collect::<Vec<_>>(),
         }),
     );
 
-    if state.store.setting_bool("passwords_autofill", true) {
-        let first = &accounts[0];
-        match vault::reveal(&first.secret) {
-            Ok(password) => fill_tab(app, tab, &first.origin, &first.username, password),
+    if frame.is_none() {
+        let _ = app.emit_to(
+            "chrome",
+            "password-site",
+            serde_json::json!({
+                "tab": tab,
+                "origin": origin,
+                "accounts": offered
+                    .iter()
+                    .map(|account| {
+                        serde_json::json!({
+                            "id": account.id,
+                            "username": account.username,
+                            "origin": account.origin,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            }),
+        );
+    }
+
+    if confident && own.len() == 1 && store.setting_bool("passwords_autofill", true) {
+        let account = &own[0];
+        match vault::reveal(&account.secret) {
+            Ok(password) => fill_tab(app, tab, frame, origin, &account.username, password),
             Err(err) => tracing::warn!(%err, "пароль не расшифрован"),
         }
     }
 }
 
-/// Заполнить форму выбранной учёткой (ключ в адресной строке → логин).
+/// Учётка из ключа в адресной строке — в документ вкладки.
 pub fn fill(app: &AppHandle, tab: u32, id: i64) -> anyhow::Result<()> {
+    let origin = app
+        .state::<App>()
+        .passwords
+        .pages
+        .lock()
+        .get(&(tab, None))
+        .filter(|offer| offer.ids.contains(&id))
+        .map(|offer| offer.origin.clone())
+        .ok_or_else(|| anyhow::anyhow!("учётки нет среди учёток страницы"))?;
+    fill_offered(app, tab, None, &origin, id)
+}
+
+fn fill_offered(
+    app: &AppHandle,
+    tab: u32,
+    frame: Option<u32>,
+    origin: &str,
+    id: i64,
+) -> anyhow::Result<()> {
     let state = app.state::<App>();
     let (entry, secret) = state
         .store
         .password_secret(id)?
         .ok_or_else(|| anyhow::anyhow!("пароль удалён"))?;
     let password = vault::reveal(&secret)?;
-    fill_tab(app, tab, &entry.origin, &entry.username, password);
+    fill_tab(app, tab, frame, origin, &entry.username, password);
     Ok(())
 }
 
-/// `saved` — адрес, для которого сохранена учётка: документ вкладки должен
-/// быть тем же сайтом.
-fn fill_tab(app: &AppHandle, tab: u32, saved: &str, username: &str, password: String) {
-    let saved = saved.to_string();
+/// Учётку — в документ вкладки или во фрейм. `origin` — адрес документа,
+/// которому показали список: во вкладке он сверяется с документом прямо перед
+/// отправкой, во фрейме — скриптом страницы (`location.origin`).
+fn fill_tab(
+    app: &AppHandle,
+    tab: u32,
+    frame: Option<u32>,
+    origin: &str,
+    username: &str,
+    password: String,
+) {
+    let origin = origin.to_string();
     let username = username.to_string();
     with_host_later(app, move |host| {
         host.with_tab(TabId(tab), |view| {
-            // Проверяем адрес документа прямо перед отправкой: пока мы ходили
-            // в базу, вкладка могла уйти на другой сайт.
-            let Some(origin) = origin_of(&view.source_url()) else {
-                return;
-            };
-            if !same_site(&origin, &saved) {
-                tracing::debug!(tab, %origin, "вкладка ушла на другой сайт, форму не заполняем");
+            if frame.is_none() && origin_of(&view.source_url()).as_deref() != Some(origin.as_str())
+            {
+                tracing::debug!(tab, "вкладка ушла на другой адрес, форму не заполняем");
                 return;
             }
             let message = serde_json::json!({
@@ -301,12 +423,33 @@ fn fill_tab(app: &AppHandle, tab: u32, saved: &str, username: &str, password: St
                 "username": username,
                 "password": password,
             });
-            match view.post(&message.to_string()) {
-                Ok(()) => tracing::debug!(tab, %origin, "учётка отправлена в форму"),
+            match view.post_to(frame, &message.to_string()) {
+                Ok(()) => tracing::debug!(tab, ?frame, %origin, "учётка отправлена в форму"),
                 Err(err) => tracing::warn!(%err, "форма не заполнена"),
             }
         });
     });
+}
+
+fn post_to_page(app: &AppHandle, tab: u32, frame: Option<u32>, message: serde_json::Value) {
+    let json = message.to_string();
+    with_host_later(app, move |host| {
+        host.with_tab(TabId(tab), |view| {
+            if let Err(err) = view.post_to(frame, &json) {
+                tracing::warn!(%err, "список учёток не отправлен");
+            }
+        });
+    });
+}
+
+/// Адрес документа вкладки. Ждёт главный поток — звать только из фоновых.
+fn tab_origin(app: &AppHandle, tab: u32) -> Option<String> {
+    with_host(app, move |host| {
+        host.with_tab(TabId(tab), |view| view.source_url())
+    })
+    .ok()
+    .flatten()
+    .and_then(|url| origin_of(&url))
 }
 
 #[cfg(test)]
@@ -328,8 +471,20 @@ mod tests {
         ));
         assert!(matches!(
             serde_json::from_str::<PageEvent>(r#"{"evt":"password_form"}"#).unwrap(),
-            PageEvent::Form
+            PageEvent::Form { confident: false }
         ));
+        assert!(matches!(
+            serde_json::from_str::<PageEvent>(
+                r#"{"evt":"password_form","step":"login","confident":true}"#
+            )
+            .unwrap(),
+            PageEvent::Form { confident: true }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<PageEvent>(r#"{"evt":"password_pick","id":7}"#).unwrap(),
+            PageEvent::Pick { id: 7 }
+        ));
+        assert!(serde_json::from_str::<PageEvent>(r#"{"evt":"password_pick","id":"7"}"#).is_err());
 
         // Чужие сообщения — не наши: новая вкладка шлёт строку, загрузчик — media_found.
         assert!(serde_json::from_str::<PageEvent>(r#""{\"evt\":\"navigate\"}""#).is_err());

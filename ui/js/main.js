@@ -264,6 +264,9 @@ listen("password-site", ({ tab, origin, accounts }) => {
   if (tab === state.activeId) renderOmnibox();
 });
 
+// «Управление паролями» из списка учёток на странице: Rust просит открыть настройки.
+listen("open-settings", ({ section }) => openSettings(section));
+
 /* ── Действия из всплывающих окон ──────────────────────────── */
 
 onPopupAction("downloads", ({ action }) => {

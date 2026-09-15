@@ -268,10 +268,14 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
         }
         TabEvent::Message {
             id,
+            frame,
             source,
             payload,
         } => {
-            if passwords::handle_message(app, *id, source, payload)
+            // Фреймам доступен только менеджер паролей: новая вкладка и chrome
+            // принимают сообщения лишь от документа вкладки.
+            if passwords::handle_message(app, *id, *frame, source, payload)
+                || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)
             {
                 return;

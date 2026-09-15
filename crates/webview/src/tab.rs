@@ -1,6 +1,7 @@
 //! Одна вкладка = один `ICoreWebView2Controller` на общем HWND окна.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
@@ -9,11 +10,14 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2ContextMenuItemCollection,
     ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2ContextMenuTarget,
     ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2Find,
-    ICoreWebView2_15,
+    ICoreWebView2Frame, ICoreWebView2Frame2, ICoreWebView2Frame5, ICoreWebView2Frame7,
+    ICoreWebView2_15, ICoreWebView2_4,
 };
 use webview2_com::{
     take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
-    DocumentTitleChangedEventHandler, FaviconChangedEventHandler, HistoryChangedEventHandler,
+    DocumentTitleChangedEventHandler, FaviconChangedEventHandler,
+    FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler,
+    FrameWebMessageReceivedEventHandler, HistoryChangedEventHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
     ZoomFactorChangedEventHandler,
@@ -97,6 +101,9 @@ pub enum TabEvent {
     /// кому сообщение можно доверить: подделать его страница не может.
     Message {
         id: u32,
+        /// Фрейм, из которого пришло сообщение; `None` — документ вкладки.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frame: Option<u32>,
         source: String,
         payload: String,
     },
@@ -208,6 +215,9 @@ struct PendingMenu {
 
 type MenuSlot = Rc<RefCell<Option<PendingMenu>>>;
 
+/// Фреймы вкладки по номеру движка: ответ на сообщение уходит в тот же фрейм.
+type FrameMap = Rc<RefCell<HashMap<u32, ICoreWebView2Frame2>>>;
+
 pub type EventSink = Rc<dyn Fn(TabEvent)>;
 
 pub struct Tab {
@@ -217,6 +227,7 @@ pub struct Tab {
     source: SourceUrl,
     visible: bool,
     menu: MenuSlot,
+    frames: FrameMap,
 }
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
@@ -424,6 +435,87 @@ fn wire_context_menu(id: TabId, core: &ICoreWebView2, sink: EventSink, slot: Men
 
     if let Err(err) = result {
         tracing::warn!(%err, "контекстное меню не перехвачено");
+    }
+}
+
+/// Сообщения из фреймов. Форма входа часто живёт во фрейме (вход в почту
+/// Mail.ru — фрейм VK ID): у каждого фрейма свой канал сообщений, и ответ
+/// уходит в тот же фрейм.
+fn wire_frames(id: TabId, core: &ICoreWebView2, sink: EventSink, frames: FrameMap) {
+    let Ok(core4) = core.cast::<ICoreWebView2_4>() else {
+        return;
+    };
+    let tab = id.0;
+    let mut token = 0i64;
+    let result = unsafe {
+        core4.add_FrameCreated(
+            &FrameCreatedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                wire_frame(tab, args.Frame()?, sink.clone(), frames.clone());
+                Ok(())
+            })),
+            &mut token,
+        )
+    };
+    if let Err(err) = result {
+        tracing::warn!(%err, "фреймы вкладки не подключены");
+    }
+}
+
+fn wire_frame(tab: u32, frame: ICoreWebView2Frame, sink: EventSink, frames: FrameMap) {
+    let (Ok(frame2), Ok(frame5)) = (
+        frame.cast::<ICoreWebView2Frame2>(),
+        frame.cast::<ICoreWebView2Frame5>(),
+    ) else {
+        return;
+    };
+    let mut frame_id = 0u32;
+    if unsafe { frame5.FrameId(&mut frame_id) }.is_err() {
+        return;
+    }
+    frames.borrow_mut().insert(frame_id, frame2.clone());
+
+    let mut token = 0i64;
+    unsafe {
+        let s = sink.clone();
+        let _ = frame2.add_WebMessageReceived(
+            &FrameWebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut raw = PWSTR::null();
+                args.WebMessageAsJson(&mut raw)?;
+                let payload = take_pwstr(raw);
+                let mut raw = PWSTR::null();
+                args.Source(&mut raw)?;
+                s(TabEvent::Message {
+                    id: tab,
+                    frame: Some(frame_id),
+                    source: take_pwstr(raw),
+                    payload,
+                });
+                Ok(())
+            })),
+            &mut token,
+        );
+        let gone = frames.clone();
+        let _ = frame.add_Destroyed(
+            &FrameDestroyedEventHandler::create(Box::new(move |_, _| {
+                gone.borrow_mut().remove(&frame_id);
+                Ok(())
+            })),
+            &mut token,
+        );
+        // Фреймы внутри фрейма.
+        if let Ok(frame7) = frame.cast::<ICoreWebView2Frame7>() {
+            let nested = frames.clone();
+            let _ = frame7.add_FrameCreated(
+                &FrameChildFrameCreatedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    wire_frame(tab, args.Frame()?, sink.clone(), nested.clone());
+                    Ok(())
+                })),
+                &mut token,
+            );
+        }
     }
 }
 
@@ -711,6 +803,8 @@ impl Tab {
         wire_audio(id, &core, sink.clone());
         let menu = MenuSlot::default();
         wire_context_menu(id, &core, sink.clone(), menu.clone());
+        let frames = FrameMap::default();
+        wire_frames(id, &core, sink.clone(), frames.clone());
 
         let tab = Self {
             id,
@@ -719,6 +813,7 @@ impl Tab {
             source,
             visible,
             menu,
+            frames,
         };
         tab.wire_events(sink)?;
         tracing::debug!(?id, "вкладка готова");
@@ -860,6 +955,7 @@ impl Tab {
                     args.Source(&mut raw)?;
                     s(TabEvent::Message {
                         id,
+                        frame: None,
                         source: take_pwstr(raw),
                         payload,
                     });
@@ -915,6 +1011,18 @@ impl Tab {
     /// Chrome → страница. Обратное направление — `TabEvent::Message`.
     pub fn post(&self, json: &str) -> windows_core::Result<()> {
         unsafe { self.core.PostWebMessageAsJson(&HSTRING::from(json)) }
+    }
+
+    /// Сообщение в документ вкладки или в её фрейм (`frame` из
+    /// `TabEvent::Message`). Закрытому фрейму отправлять нечего.
+    pub fn post_to(&self, frame: Option<u32>, json: &str) -> windows_core::Result<()> {
+        let Some(frame) = frame else {
+            return self.post(json);
+        };
+        match self.frames.borrow().get(&frame) {
+            Some(frame) => unsafe { frame.PostWebMessageAsJson(&HSTRING::from(json)) },
+            None => Ok(()),
+        }
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> windows_core::Result<()> {

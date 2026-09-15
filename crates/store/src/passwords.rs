@@ -93,6 +93,37 @@ impl Store {
         })
     }
 
+    /// Учётки https-адресов любого из сайтов `sites`, свежие первыми: так
+    /// находятся учётки сайтов с общим входом.
+    pub fn password_secrets_for_sites(
+        &self,
+        sites: &[&str],
+    ) -> anyhow::Result<Vec<PasswordSecret>> {
+        if sites.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT id, origin, username, secret FROM passwords WHERE origin LIKE 'https://%'
+                 ORDER BY COALESCE(used_at, created_at) DESC, id DESC",
+            )?;
+            let rows: Vec<PasswordSecret> = stmt
+                .query_map([], |row| {
+                    Ok(PasswordSecret {
+                        id: row.get(0)?,
+                        origin: row.get(1)?,
+                        username: row.get(2)?,
+                        secret: row.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows
+                .into_iter()
+                .filter(|secret| site_of(&secret.origin).is_some_and(|site| sites.contains(&site)))
+                .collect())
+        })
+    }
+
     pub fn password_secret(&self, id: i64) -> anyhow::Result<Option<(PasswordEntry, Vec<u8>)>> {
         self.with(|db| {
             db.query_row(
@@ -288,6 +319,31 @@ mod tests {
             .password_secrets_for("https://mail.proton.me")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn shared_sign_in_sites_are_listed() {
+        let store = Store::memory().unwrap();
+        store
+            .save_password("https://e.mail.ru", "me@mail.ru", b"a")
+            .unwrap();
+        store.save_password("https://vk.com", "vk", b"b").unwrap();
+        store
+            .save_password("https://github.com", "gh", b"c")
+            .unwrap();
+        store
+            .save_password("http://mail.ru", "plain", b"d")
+            .unwrap();
+
+        let mut names: Vec<String> = store
+            .password_secrets_for_sites(&["vk.com", "vk.ru", "mail.ru", "ok.ru"])
+            .unwrap()
+            .into_iter()
+            .map(|secret| secret.username)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["me@mail.ru", "vk"]);
+        assert!(store.password_secrets_for_sites(&[]).unwrap().is_empty());
     }
 
     #[test]

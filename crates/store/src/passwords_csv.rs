@@ -127,6 +127,27 @@ pub fn same_site(page: &str, saved: &str) -> bool {
     page == saved || site_of(page).is_some_and(|site| site_of(saved) == Some(site))
 }
 
+/// Сайты с общим входом: учётки одного предлагаются и на остальных — списком,
+/// без автозаполнения. VK ID — вход во VK, ОК и почту Mail.ru.
+const SHARED_SIGN_IN: &[&[&str]] = &[&["vk.com", "vk.ru", "mail.ru", "ok.ru"]];
+
+/// Сайты с общим входом для адреса, включая его собственный; пусто, если таких нет.
+pub fn shared_sign_in_sites(origin: &str) -> &'static [&'static str] {
+    let Some(site) = site_of(origin) else {
+        return &[];
+    };
+    SHARED_SIGN_IN
+        .iter()
+        .find(|group| group.contains(&site))
+        .copied()
+        .unwrap_or(&[])
+}
+
+/// Хост адреса `scheme://host` — подпись учётки в списке.
+pub fn host_of(origin: &str) -> &str {
+    origin.split_once("://").map_or(origin, |(_, host)| host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,7 +210,16 @@ mod tests {
 
 #[cfg(test)]
 mod site_tests {
-    use super::{same_site, site_of};
+    use super::{host_of, same_site, shared_sign_in_sites, site_of};
+
+    #[test]
+    fn vk_id_sites_share_sign_in() {
+        assert!(shared_sign_in_sites("https://id.vk.ru").contains(&"mail.ru"));
+        assert!(shared_sign_in_sites("https://e.mail.ru").contains(&"vk.com"));
+        assert!(shared_sign_in_sites("https://github.com").is_empty());
+        assert!(shared_sign_in_sites("http://vk.com").is_empty());
+        assert_eq!(host_of("https://id.vk.ru"), "id.vk.ru");
+    }
 
     #[test]
     fn subdomains_share_logins_over_https_only() {
