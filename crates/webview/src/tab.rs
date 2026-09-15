@@ -384,15 +384,24 @@ fn wire_context_menu(id: TabId, core: &ICoreWebView2, sink: EventSink, slot: Men
                     let _ = stale.deferral.Complete();
                 }
 
-                let target = read_menu_target(&args.ContextMenuTarget()?)?;
-                let items = read_menu_items(&args.MenuItems()?)?;
-                let mut point = POINT::default();
-                args.Location(&mut point)?;
-
-                args.SetHandled(true)?;
-                let deferral = args.GetDeferral()?;
+                tracing::debug!(tab = tab_id, "запрошено меню страницы");
+                let (target, items, point, deferral) = match intercept_menu(&args) {
+                    Ok(parts) => parts,
+                    Err(err) => {
+                        // Ошибка до SetHandled оставляет меню движка: причину — в лог.
+                        tracing::warn!(tab = tab_id, %err, "меню страницы не перехвачено");
+                        return Ok(());
+                    }
+                };
                 let menu = counter.get().wrapping_add(1);
                 counter.set(menu);
+                tracing::debug!(
+                    tab = tab_id,
+                    menu,
+                    kind = target.kind,
+                    items = items.len(),
+                    "меню страницы"
+                );
                 *slot.borrow_mut() = Some(PendingMenu {
                     token: menu,
                     args: args.clone(),
@@ -418,12 +427,52 @@ fn wire_context_menu(id: TabId, core: &ICoreWebView2, sink: EventSink, slot: Men
     }
 }
 
+/// Цель и пункты меню, `SetHandled` и отсрочка ответа — всё, без чего своё меню
+/// не показать. Порядок важен: пока `SetHandled` не вызван, движок покажет своё.
+fn intercept_menu(
+    args: &ICoreWebView2ContextMenuRequestedEventArgs,
+) -> windows_core::Result<(MenuTarget, Vec<MenuItem>, POINT, ICoreWebView2Deferral)> {
+    // Шаг в тексте ошибки: по одному коду не понять, какой вызов не прошёл.
+    let step = |name: &'static str| {
+        move |err: windows_core::Error| {
+            windows_core::Error::new(err.code(), format!("{name}: {}", err.message()))
+        }
+    };
+    unsafe {
+        let target = args
+            .ContextMenuTarget()
+            .and_then(|target| read_menu_target(&target))
+            .map_err(step("цель"))?;
+        let items = args
+            .MenuItems()
+            .and_then(|items| read_menu_items(&items))
+            .map_err(step("пункты"))?;
+        let mut point = POINT::default();
+        args.Location(&mut point).map_err(step("место"))?;
+        args.SetHandled(true).map_err(step("SetHandled"))?;
+        let deferral = args.GetDeferral().map_err(step("отсрочка"))?;
+        Ok((target, items, point, deferral))
+    }
+}
+
 fn read_string(
     get: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>,
 ) -> windows_core::Result<String> {
     let mut raw = PWSTR::null();
     get(&mut raw)?;
     Ok(take_pwstr(raw))
+}
+
+/// Необязательное поле цели меню. Без флага `Has…` движок на геттер отвечает
+/// ошибкой 0x8000000E, а не пустой строкой, как обещает документация.
+fn read_optional(
+    has: bool,
+    get: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>,
+) -> Option<String> {
+    if !has {
+        return None;
+    }
+    read_string(get).ok().filter(|value| !value.is_empty())
 }
 
 fn read_flag(
@@ -448,7 +497,6 @@ fn read_menu_target(target: &ICoreWebView2ContextMenuTarget) -> windows_core::Re
     unsafe {
         let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
         target.Kind(&mut kind)?;
-        let optional = |has: bool, value: String| (has && !value.is_empty()).then_some(value);
 
         Ok(MenuTarget {
             kind: match kind {
@@ -462,25 +510,19 @@ fn read_menu_target(target: &ICoreWebView2ContextMenuTarget) -> windows_core::Re
             frame_url: read_string(|out| target.FrameUri(out))?,
             main_frame: read_flag(|out| target.IsRequestedForMainFrame(out))?,
             editable: read_flag(|out| target.IsEditable(out))?,
-            link_url: optional(
-                read_flag(|out| target.HasLinkUri(out))?,
-                read_string(|out| target.LinkUri(out))?,
-            ),
-            link_text: optional(
-                read_flag(|out| target.HasLinkText(out))?,
-                read_string(|out| target.LinkText(out))?,
-            ),
-            source_url: optional(
-                read_flag(|out| target.HasSourceUri(out))?,
-                read_string(|out| target.SourceUri(out))?,
-            ),
-            selection: optional(
-                read_flag(|out| target.HasSelection(out))?,
-                read_string(|out| target.SelectionText(out))?
-                    .chars()
-                    .take(MENU_SELECTION_LIMIT)
-                    .collect(),
-            ),
+            link_url: read_optional(read_flag(|out| target.HasLinkUri(out))?, |out| {
+                target.LinkUri(out)
+            }),
+            link_text: read_optional(read_flag(|out| target.HasLinkText(out))?, |out| {
+                target.LinkText(out)
+            }),
+            source_url: read_optional(read_flag(|out| target.HasSourceUri(out))?, |out| {
+                target.SourceUri(out)
+            }),
+            selection: read_optional(read_flag(|out| target.HasSelection(out))?, |out| {
+                target.SelectionText(out)
+            })
+            .map(|text| text.chars().take(MENU_SELECTION_LIMIT).collect()),
         })
     }
 }
