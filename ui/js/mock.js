@@ -128,6 +128,10 @@ export async function invoke(command, args = {}) {
       emit("bookmarks", null);
       return node;
     }
+    case "bookmark_remove":
+      BOOKMARKS = BOOKMARKS.filter((node) => node.id !== args.id);
+      emit("bookmarks", null);
+      return null;
     case "passwords_list":
       return PASSWORDS;
     case "password_reveal":

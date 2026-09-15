@@ -33,6 +33,8 @@ const otherButton = document.getElementById("bookmarks-other");
 
 let nodes = [];
 let firstHidden = -1;
+/** Кнопка, которой открыли папку: у неё встаёт пузырь правки закладки из папки. */
+let folderAnchor = null;
 
 export async function initBookmarksBar() {
   listen("bookmarks", reloadBookmarks);
@@ -40,7 +42,11 @@ export async function initBookmarksBar() {
     if (key === "bookmarks_bar") renderBarVisibility();
   });
 
-  onPopupAction("bookmark-folder", ({ action, url, urls }) => {
+  onPopupAction("bookmark-folder", ({ action, url, urls, id }) => {
+    if (action === "edit") {
+      const node = nodes.find((item) => item.id === id);
+      if (node) editBookmark(node, folderAnchor?.isConnected ? folderAnchor : overflowButton);
+    }
     if (action === "open") navigate(url);
     if (action === "open-new") navigate(url, { newTab: true, background: true });
     if (action === "open-all") {
@@ -172,6 +178,7 @@ function layoutOverflow() {
 }
 
 function openFolder(folder, anchor, { skip = 0, title = "" } = {}) {
+  folderAnchor = anchor;
   return openPopup("bookmark-folder", anchor, {
     width: 320,
     payload: { folder, skip: Math.max(0, skip), title },

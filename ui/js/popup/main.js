@@ -127,12 +127,15 @@ function act(kind, action, extra = {}, { keepOpen = false } = {}) {
 }
 
 function onKey(event) {
+  // Меню поверх списка (правый клик по закладке): клавиши сначала ему.
+  const float = root.querySelector(".menu--float");
   if (event.key === "Escape") {
     event.preventDefault();
-    close();
+    if (float) float.dispatchEvent(new Event("dismiss"));
+    else close();
     return;
   }
-  const items = [...root.querySelectorAll(".menu__item:not([disabled])")];
+  const items = [...(float ?? root).querySelectorAll(".menu__item:not([disabled])")];
   if (!items.length || !["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
   if (event.target.matches("input, select")) return;
 
@@ -653,6 +656,95 @@ VIEWS.suggest = function suggest({ rows = [], selected = 0 }) {
 VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) {
   const stack = [{ id: folder, skip, title }];
   let nodes = [];
+  // Меню закладки по правому клику. Второе всплывающее окно поверх этого не
+  // открыть, поэтому меню рисуется внутри списка, у курсора.
+  let menu = null;
+  let swallowClick = false;
+
+  const closeMenu = () => {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    root.style.minHeight = "";
+    fit();
+  };
+
+  const pick = async (node, action) => {
+    closeMenu();
+    if (action === "open" || action === "open-new") {
+      act("bookmark-folder", action, { url: node.url });
+    } else if (action === "edit") {
+      act("bookmark-folder", "edit", { id: node.id });
+    } else if (action === "remove") {
+      await invoke("bookmark_remove", { id: node.id }).catch(() => {});
+      nodes = await invoke("bookmarks_tree").catch(() => nodes);
+      draw();
+    }
+  };
+
+  const openMenu = (node, event) => {
+    closeMenu();
+    const items =
+      node.kind === "url"
+        ? [["open", "Открыть", "globe"], ["open-new", "Открыть в новой вкладке", "tab-add"], null, ["edit", "Изменить…", "edit-16"], ["remove", "Удалить", "delete-16"]]
+        : [["edit", "Переименовать…", "edit-16"], ["remove", "Удалить", "delete-16"]];
+    menu = el("div", "menu menu--float");
+    menu.setAttribute("role", "menu");
+    for (const item of items) {
+      if (!item) {
+        menu.append(el("div", "menu__sep"));
+        continue;
+      }
+      const [id, label, iconId] = item;
+      const row = el("button", "menu__item");
+      row.type = "button";
+      const slot = el("span", "menu__icon");
+      slot.append(icon(iconId, sizeOf(iconId)));
+      row.append(slot, el("span", "menu__label", label));
+      row.addEventListener("mouseenter", () => {
+        for (const other of menu.querySelectorAll(".menu__item")) other.dataset.selected = "false";
+        row.dataset.selected = "true";
+      });
+      row.addEventListener("click", () => pick(node, id));
+      menu.append(row);
+    }
+    menu.addEventListener("dismiss", closeMenu);
+    root.append(menu);
+
+    // Короткий список ниже меню — окно подрастает под него.
+    const { offsetWidth: width, offsetHeight: height } = menu;
+    const need = height + 8;
+    if (root.clientHeight < need) {
+      root.style.minHeight = `${need}px`;
+      fit();
+    }
+    const room = Math.max(root.clientHeight, need);
+    const left = Math.max(4, Math.min(event.clientX, root.clientWidth - width - 4));
+    const top = event.clientY + height + 4 <= room ? event.clientY : Math.max(4, event.clientY - height);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  };
+
+  // Щелчок мимо меню только закрывает его и не открывает закладку под курсором.
+  root.addEventListener(
+    "mousedown",
+    (event) => {
+      if (!menu || menu.contains(event.target)) return;
+      swallowClick = event.button === 0;
+      closeMenu();
+    },
+    true
+  );
+  root.addEventListener(
+    "click",
+    (event) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    true
+  );
 
   const draw = () => {
     const level = stack[stack.length - 1];
@@ -661,9 +753,12 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
       .sort((a, b) => a.position - b.position)
       .slice(level.skip);
 
+    menu = null;
+    root.style.minHeight = "";
     root.replaceChildren();
     const list = el("div", "menu scroll");
     list.style.maxHeight = "480px";
+    list.addEventListener("scroll", closeMenu);
 
     if (stack.length > 1) {
       const headRow = el("div", "menu__head");
@@ -699,6 +794,10 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
           if (event.button === 1) act("bookmark-folder", "open-new", { url: node.url }, { keepOpen: true });
         });
       }
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openMenu(node, event);
+      });
       row.addEventListener("mouseenter", () => {
         for (const other of list.querySelectorAll(".menu__item")) other.dataset.selected = "false";
         row.dataset.selected = "true";
