@@ -337,6 +337,9 @@ function updateNarrow() {
   }
 }
 
+/** Оборот колеса загрузки — `tab-spin` в tabs.css. */
+const SPIN_MS = 1570;
+
 function updateTab(node, tab) {
   const active = state.activeId === tab.id;
   setAttr(node, "data-active", String(active));
@@ -361,6 +364,9 @@ function updateTab(node, tab) {
       iconNode = icon(`${INTERNAL[tab.internal].icon}`, 16, "tab__glyph tab__glyph--brand");
     } else if (tab.loading) {
       iconNode = el("span", "tab__spinner");
+      // Фаза — от общих часов: колесо не начинает оборот заново каждый раз,
+      // когда вкладка снова грузится (редирект, перезагрузка), и не дёргается.
+      iconNode.style.animationDelay = `${-(performance.now() % SPIN_MS)}ms`;
     } else if (tab.favicon) {
       iconNode = favicon(tab.favicon, "tab__favicon");
     } else {

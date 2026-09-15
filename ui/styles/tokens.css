@@ -155,12 +155,26 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Гасим только декоративное движение. Индикатор загрузки и появление
-     вкладки остаются: это обратная связь, а не украшение. */
+  /* Декоративное движение гасим: разовые анимации проигрываются мгновенно. */
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.08s !important;
+  }
+
+  /* Бесконечная анимация с периодом 0,01 мс не пропадает, а мельтешит: колесо
+     загрузки крутилось с бешеной скоростью. Индикаторы загрузки — обратная
+     связь, а не украшение, у них свой период. */
+  .tab__spinner {
+    animation-duration: 1.57s !important;
+  }
+
+  .spinner {
+    animation-duration: 0.7s !important;
+  }
+
+  .meter[data-indeterminate="true"] .meter__fill {
+    animation-duration: 1.2s !important;
   }
 }

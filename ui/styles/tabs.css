@@ -136,7 +136,8 @@
   border-radius: 50%;
   border: 2px solid var(--line-3);
   border-top-color: var(--accent-bright);
-  animation: tab-spin 1.2s linear infinite;
+  /* Оборот — как у колеса загрузки Chromium; фазу задаёт tabs.js. */
+  animation: tab-spin 1.57s linear infinite;
 }
 
 @keyframes tab-spin {
