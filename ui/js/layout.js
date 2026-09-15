@@ -66,13 +66,26 @@ export function syncDuring(durationMs = 320) {
  * страницы настроек.
  */
 const hiddenBy = new Set();
+const hiddenListeners = new Set();
 
 export function setPageHidden(reason, hidden) {
   const before = hiddenBy.size > 0;
   if (hidden) hiddenBy.add(reason);
   else hiddenBy.delete(reason);
   const after = hiddenBy.size > 0;
-  if (before !== after) invokeQuiet("overlay_set", { on: after });
+  if (before === after) return;
+  invokeQuiet("overlay_set", { on: after });
+  for (const fn of hiddenListeners) fn(after);
+}
+
+export function isPageHidden() {
+  return hiddenBy.size > 0;
+}
+
+/** Страницу спрятали или вернули: окна страницы показываются только над ней. */
+export function onPageHidden(fn) {
+  hiddenListeners.add(fn);
+  return () => hiddenListeners.delete(fn);
 }
 
 /** Палитра перекрывает страницу — страница уходит. */

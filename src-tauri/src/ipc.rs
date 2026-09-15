@@ -7,20 +7,21 @@
 //! недоверенным вводом.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use browser190x4_store::{
     bookmarks_html, passwords_csv, BookmarkNode, Download, DownloadKind, DownloadState,
     HistoryEntry, HistoryHit, ImportReport, NeverSite, PasswordEntry, SessionTab, Store,
     BAR_FOLDER,
 };
-use browser190x4_webview::{DownloadPolicy, Layout, TabId};
+use browser190x4_webview::{DialogAnswer, DownloadPolicy, Layout, PermissionSetting, TabId};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::state::{with_host, App};
-use crate::{passwords, popup, transfers, vault};
+use crate::{external, passwords, popup, transfers, vault};
 
 fn text(err: impl std::fmt::Display) -> String {
     format!("{err:#}")
@@ -42,8 +43,9 @@ pub fn tab_open(app: AppHandle, state: State<'_, App>, url: String) -> Result<u3
 }
 
 #[tauri::command]
-pub fn tab_close(app: AppHandle, id: u32) -> Result<Option<u32>, String> {
+pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
     passwords::forget_tab(&app, id);
+    external::forget_tab(&state, id);
     with_host(&app, move |host| {
         host.close(TabId(id))
             .map(|next| next.map(|t| t.0))
@@ -102,6 +104,41 @@ pub fn tab_context_menu(
             .unwrap_or(Ok(()))
             .map_err(text)
     })?
+}
+
+/// Ответ на окно страницы. Несколько номеров — одно окно на несколько
+/// запросов (камера и микрофон сразу).
+#[tauri::command]
+pub fn tab_dialog(
+    app: AppHandle,
+    state: State<'_, App>,
+    id: u32,
+    tokens: Vec<u64>,
+    answer: DialogAnswer,
+) -> Result<(), String> {
+    let engine: Vec<u64> = tokens
+        .iter()
+        .copied()
+        .filter(|token| !external::answer(&app, &state, id, *token, &answer))
+        .collect();
+    if !engine.is_empty() {
+        let reply = answer.clone();
+        with_host(&app, move |host| {
+            host.with_tab(TabId(id), |tab| {
+                for token in engine {
+                    if let Err(err) = tab.dialog_done(token, &reply) {
+                        tracing::warn!(%err, "ответ на окно страницы не записан");
+                    }
+                }
+            });
+        })?;
+    }
+    let _ = app.emit_to(
+        "chrome",
+        "dialog-done",
+        serde_json::json!({ "id": id, "tokens": tokens }),
+    );
+    Ok(())
 }
 
 /// Отправить сообщение на страницу вкладки.
@@ -977,6 +1014,52 @@ pub fn browsing_data_clear(
         with_host(&app, move |host| host.clear_browsing_data(site_data, cache))?.map_err(text)?;
     }
     Ok(())
+}
+
+/// Сколько ждать ответа движка на запрос о разрешениях сайтов.
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Разрешения, которые пользователь дал или запретил сайтам (хранит движок).
+#[tauri::command]
+pub async fn site_permissions(app: AppHandle) -> Result<Vec<PermissionSetting>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_host(&app, move |host| {
+            host.permission_settings(move |list| {
+                let _ = tx.send(list);
+            })
+        })?
+        .map_err(text)?;
+        rx.recv_timeout(ENGINE_TIMEOUT)
+            .map_err(|_| "движок не ответил".to_string())
+    })
+    .await
+    .map_err(text)?
+}
+
+/// Забыть решение о разрешении: сайт спросит снова.
+#[tauri::command]
+pub async fn site_permission_reset(
+    app: AppHandle,
+    permission: String,
+    origin: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_host(&app, move |host| {
+            host.permission_reset(&permission, &origin, move |ok| {
+                let _ = tx.send(ok);
+            })
+        })?
+        .map_err(text)?;
+        match rx.recv_timeout(ENGINE_TIMEOUT) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("движок не сбросил разрешение".to_string()),
+            Err(_) => Err("движок не ответил".to_string()),
+        }
+    })
+    .await
+    .map_err(text)?
 }
 
 #[tauri::command]

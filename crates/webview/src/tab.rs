@@ -25,6 +25,7 @@ use webview2_com::{
 use windows::Win32::Foundation::{POINT, RECT};
 use windows_core::{Interface, BOOL, HSTRING, PWSTR};
 
+use crate::dialogs::{self, DialogAnswer, DialogRequest, Dialogs};
 use crate::downloads::{self, SharedDownloads};
 use crate::filter::{self, SourceUrl};
 use crate::host::TabId;
@@ -173,6 +174,20 @@ pub enum TabEvent {
         id: u32,
         combo: String,
     },
+    /// Страница просит окно: alert, confirm, prompt, «Покинуть сайт?»,
+    /// разрешение, вход по паролю или запуск приложения. Окно рисует chrome,
+    /// движок ждёт ответа в [`Tab::dialog_done`] с тем же `token`. Запуск
+    /// приложения движок уже отменил и ответа не ждёт.
+    Dialog {
+        id: u32,
+        token: u64,
+        request: DialogRequest,
+    },
+    /// Окна, ответа на которые больше не ждут: страница ушла.
+    DialogsClosed {
+        id: u32,
+        tokens: Vec<u64>,
+    },
 }
 
 /// По чему щёлкнули правой кнопкой.
@@ -228,6 +243,7 @@ pub struct Tab {
     visible: bool,
     menu: MenuSlot,
     frames: FrameMap,
+    dialogs: Dialogs,
 }
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
@@ -805,6 +821,8 @@ impl Tab {
         wire_context_menu(id, &core, sink.clone(), menu.clone());
         let frames = FrameMap::default();
         wire_frames(id, &core, sink.clone(), frames.clone());
+        let dialogs = Dialogs::default();
+        dialogs::wire(id.0, &core, sink.clone(), dialogs.clone());
 
         let tab = Self {
             id,
@@ -814,6 +832,7 @@ impl Tab {
             visible,
             menu,
             frames,
+            dialogs,
         };
         tab.wire_events(sink)?;
         tracing::debug!(?id, "вкладка готова");
@@ -828,6 +847,7 @@ impl Tab {
         unsafe {
             let s = sink.clone();
             let source = self.source.clone();
+            let page_dialogs = self.dialogs.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -838,6 +858,10 @@ impl Tab {
                     // первого запроса ресурсов страницы.
                     *source.borrow_mut() = url.clone();
                     s(TabEvent::Started { id, url });
+                    let closed = dialogs::navigation_started(&page_dialogs);
+                    if !closed.is_empty() {
+                        s(TabEvent::DialogsClosed { id, tokens: closed });
+                    }
                     Ok(())
                 })),
                 &mut token,
@@ -1227,6 +1251,21 @@ impl Tab {
                     .controller
                     .MoveFocus(webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
             }
+        }
+        Ok(())
+    }
+
+    /// Ответ на окно страницы (`TabEvent::Dialog`). Ответ на окно, которое уже
+    /// закрыто, ничего не делает.
+    pub fn dialog_done(&self, token: u64, answer: &DialogAnswer) -> windows_core::Result<()> {
+        if dialogs::answer(&self.dialogs, token, answer)? == Some(true) && self.visible {
+            // Окно забирало клавиатуру: без возврата текст после «ОК» уходил
+            // бы не в страницу.
+            let _ = unsafe {
+                self.controller.MoveFocus(
+                    webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+                )
+            };
         }
         Ok(())
     }

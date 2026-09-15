@@ -11,6 +11,7 @@ import { clock, dayLabel, el, favicon, formatDay, hostOf, icon, iconButton, plur
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
+import { PERMISSIONS } from "../permissions.js";
 import { checkUpdates, installUpdate, onUpdate, update } from "../updates.js";
 
 const SECTIONS = [
@@ -33,6 +34,9 @@ const ENGINES = [
   ["google", "Google"],
   ["bing", "Bing"],
 ];
+
+/** Сайты, которым разрешено открывать приложения без вопроса (`src-tauri/src/external.rs`). */
+const EXTERNAL_APPS = "external_apps_allowed";
 
 const LANGUAGES = ["Русский", "English", "Deutsch", "Français", "Español", "Italiano", "Português", "Türkçe", "Українська", "Polski", "中文", "日本語", "한국어"];
 
@@ -730,7 +734,68 @@ const BUILDERS = {
         ];
     const exemptGroup = group(exemptRows, { title: "Сайты без блокировки" });
 
-    return [group([clear], { title: "Данные браузера" }), adblockGroup, exemptGroup];
+    // Разрешения хранит движок: список приходит асинхронно и перечитывается после
+    // каждого сброса.
+    const permissionRows = el("div");
+    const permissionsGroup = group([permissionRows], { title: "Разрешения сайтов" });
+    const drawPermissions = () =>
+      invoke("site_permissions")
+        .then((items) => {
+          const rows = items
+            .filter((item) => PERMISSIONS[item.permission])
+            .map((item) =>
+              setting(
+                hostOf(item.origin) || item.origin,
+                `${PERMISSIONS[item.permission].name}: ${item.allowed ? "разрешено" : "запрещено"}`,
+                iconButton("delete-16", "Забыть решение — сайт спросит снова", async () => {
+                  await invoke("site_permission_reset", { permission: item.permission, origin: item.origin }).catch(() => {});
+                  drawPermissions();
+                }),
+                { iconId: PERMISSIONS[item.permission].icon }
+              )
+            );
+          permissionRows.replaceChildren(
+            ...(rows.length
+              ? rows
+              : [
+                  setting(
+                    "Сайты пока ни о чём не спрашивали",
+                    "Когда сайт попросит камеру, микрофон, местоположение или уведомления, ваш ответ появится здесь",
+                    el("span")
+                  ),
+                ])
+          );
+        })
+        .catch(() => {
+          permissionsGroup.hidden = true;
+        });
+    drawPermissions();
+
+    const apps = pref(EXTERNAL_APPS) ?? [];
+    const appRows = apps.length
+      ? apps.map((entry) =>
+          setting(
+            `${hostOf(entry.origin) || entry.origin} · ${entry.app || entry.scheme}`,
+            `Открывает ссылки ${entry.scheme}: без вопроса`,
+            iconButton("delete-16", "Снова спрашивать", () =>
+              setPref(
+                EXTERNAL_APPS,
+                apps.filter((other) => other.origin !== entry.origin || other.scheme !== entry.scheme)
+              )
+            ),
+            { iconId: "open" }
+          )
+        )
+      : [
+          setting(
+            "Сайты спрашивают, прежде чем открыть приложение",
+            "Сайт будет открывать приложение без вопроса, если в его окне отметить «Всегда разрешать»",
+            el("span")
+          ),
+        ];
+    const appsGroup = group(appRows, { title: "Открытие приложений" });
+
+    return [group([clear], { title: "Данные браузера" }), permissionsGroup, appsGroup, adblockGroup, exemptGroup];
   },
 
   downloads() {

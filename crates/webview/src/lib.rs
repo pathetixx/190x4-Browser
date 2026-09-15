@@ -22,6 +22,7 @@
 #![cfg(windows)]
 
 pub mod container;
+pub mod dialogs;
 pub mod downloads;
 pub mod filter;
 pub mod host;
@@ -29,6 +30,7 @@ pub mod interop;
 pub mod message;
 pub mod tab;
 
+pub use dialogs::{DialogAction, DialogAnswer, DialogRequest, PermissionSetting};
 pub use downloads::DownloadPolicy;
 pub use host::{EngineProcess, Layout, TabBrief, TabHost, TabId, PAGES_HOST};
 pub use message::{ChromeEvent, TabCommand};

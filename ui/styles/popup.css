@@ -666,3 +666,106 @@ svg {
   color: var(--text-lo);
   white-space: nowrap;
 }
+
+/* ── Окна страниц: alert, разрешения, вход, открытие приложения ── */
+
+.dialog .bubble__title {
+  overflow-wrap: anywhere;
+}
+
+.dialog__message {
+  margin: -4px 0 0;
+  max-height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-hi);
+  user-select: text;
+  cursor: text;
+}
+
+.dialog .field {
+  width: 100%;
+}
+
+.dialog__message + .field {
+  margin-top: 12px;
+}
+
+.dialog__note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-lo);
+}
+
+.dialog__permissions {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.dialog__permissions li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.dialog__permissions svg {
+  color: var(--text-mid);
+}
+
+.dialog__stack {
+  display: grid;
+  gap: 8px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-mid);
+  cursor: pointer;
+}
+
+.check input {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  border: 1px solid var(--text-lo);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.check:hover input {
+  border-color: var(--text-mid);
+}
+
+.check input:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.check input:checked::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--on-accent);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}

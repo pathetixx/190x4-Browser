@@ -7,6 +7,7 @@
 //! * [`browser190x4_adblock`] — сетевой фильтр на горячем пути WebResourceRequested.
 
 mod default_browser;
+mod external;
 mod filters;
 pub mod ipc;
 mod launch;
@@ -90,6 +91,7 @@ pub fn run() {
             passwords: Default::default(),
             transfers: Default::default(),
             popup: Default::default(),
+            external: Default::default(),
         })
         .manage(updates::Updates::default())
         .manage(newtab::NewTab::default())
@@ -102,6 +104,7 @@ pub fn run() {
             ipc::tab_action,
             ipc::tab_post,
             ipc::tab_context_menu,
+            ipc::tab_dialog,
             ipc::tab_mute,
             ipc::tab_find,
             ipc::tab_find_step,
@@ -152,6 +155,8 @@ pub fn run() {
             ipc::downloads_folder_open,
             ipc::download_folder_pick,
             ipc::browsing_data_clear,
+            ipc::site_permissions,
+            ipc::site_permission_reset,
             ipc::about_info,
             ipc::profile_open,
             ipc::popup_open,
@@ -246,7 +251,7 @@ pub fn run() {
 /// загрузки сначала попадают в базу, пароли не должны покидать Rust.
 #[cfg(windows)]
 fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
-    use browser190x4_webview::TabEvent;
+    use browser190x4_webview::{DialogRequest, TabEvent};
 
     match &event {
         TabEvent::Download {
@@ -280,6 +285,20 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
             {
                 return;
             }
+        }
+        // Ссылку на приложение открывает браузер: спросить или открыть сразу.
+        TabEvent::Dialog {
+            id,
+            token,
+            request:
+                DialogRequest::External {
+                    uri,
+                    origin,
+                    user_initiated,
+                },
+        } => {
+            external::on_request(app, *id, *token, uri, origin, *user_initiated);
+            return;
         }
         TabEvent::Started { id, .. } => passwords::on_navigation(app, *id),
         TabEvent::Favicon { page, url, .. } => {
@@ -334,16 +353,17 @@ fn wire_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     let handle = app.clone();
     let main = window.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Moved(_) => popup::hide(&handle),
+        WindowEvent::Moved(_) => popup::main_moved(&handle, &handle.state::<App>().popup),
         #[cfg(windows)]
         WindowEvent::ScaleFactorChanged { .. } => apply_window_icon(&main),
         WindowEvent::Resized(_) => {
             popup::hide(&handle);
             let maximized = main.is_maximized().unwrap_or(false);
+            let minimized = main.is_minimized().unwrap_or(false);
             let _ = handle.emit_to(
                 "chrome",
                 "window-state",
-                serde_json::json!({ "maximized": maximized }),
+                serde_json::json!({ "maximized": maximized, "minimized": minimized }),
             );
         }
         _ => {}

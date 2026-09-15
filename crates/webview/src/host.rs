@@ -27,11 +27,13 @@ use std::sync::Arc;
 use browser190x4_adblock::Guard;
 use webview2_com::CreateCoreWebView2ControllerCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2Controller, ICoreWebView2Environment, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Profile4, ICoreWebView2_13,
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 
 use crate::container;
+use crate::dialogs::{self, PermissionSetting};
 use crate::downloads::{self, DownloadPolicy, SharedDownloads};
 use crate::tab::{EventSink, Tab, TabEvent};
 
@@ -459,6 +461,52 @@ impl TabHost {
             .next()
             .ok_or_else(|| anyhow::anyhow!("нет ни одной открытой вкладки"))?;
         tab.clear_browsing_data(site_data, cache)
+    }
+
+    /// Разрешения, которые пользователь дал или запретил сайтам. Список приходит
+    /// в `done`, когда движок его соберёт.
+    pub fn permission_settings(
+        &self,
+        done: impl FnOnce(Vec<PermissionSetting>) + 'static,
+    ) -> anyhow::Result<()> {
+        dialogs::permission_settings(&self.profile()?, done)?;
+        Ok(())
+    }
+
+    /// Забыть решение о разрешении сайта: при следующем запросе сайт спросит
+    /// снова. `done(true)` — движок записал.
+    pub fn permission_reset(
+        &self,
+        permission: &str,
+        origin: &str,
+        done: impl FnOnce(bool) + 'static,
+    ) -> anyhow::Result<()> {
+        dialogs::permission_reset(&self.profile()?, permission, origin, done)
+    }
+
+    /// Профиль движка. Он общий на все вкладки и окно интерфейса: годится любая
+    /// вкладка, а без вкладок — вебвью интерфейса.
+    fn profile(&self) -> anyhow::Result<ICoreWebView2Profile4> {
+        use windows_core::Interface;
+
+        let state = self.inner.borrow();
+        let core = match state.tabs.values().next() {
+            Some(tab) => tab.core().clone(),
+            None => unsafe {
+                state
+                    .chrome
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("движок ещё не запущен"))?
+                    .CoreWebView2()?
+            },
+        };
+        let unsupported = || anyhow::anyhow!("движок не хранит разрешения сайтов");
+        let profile = unsafe {
+            core.cast::<ICoreWebView2_13>()
+                .map_err(|_| unsupported())?
+                .Profile()?
+        };
+        profile.cast().map_err(|_| unsupported())
     }
 
     /// Версия рантайма WebView2 — для страницы «О браузере».

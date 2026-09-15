@@ -21,6 +21,7 @@ import {
   textButton,
 } from "../dom.js";
 import * as model from "../downloads-model.js";
+import { ONCE, PERMISSIONS } from "../permissions.js";
 import { applyTheme, loadPrefs, onPref } from "../prefs.js";
 
 const root = document.getElementById("popup");
@@ -132,6 +133,8 @@ function onKey(event) {
   if (event.key === "Escape") {
     event.preventDefault();
     if (float) float.dispatchEvent(new Event("dismiss"));
+    // Окно страницы ждёт ответа: Escape — это «Отмена», а не просто закрыть.
+    else if (current?.onEscape) current.onEscape();
     else close();
     return;
   }
@@ -826,6 +829,181 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
     })
     .catch(() => {});
 };
+
+/* ── Окна страниц ──────────────────────────────────────────── */
+
+/** Кнопки окон, которые страница может подсунуть под щелчок, оживают не сразу:
+ *  иначе сайт открыл бы окно ровно под курсором, и двойной щелчок по странице
+ *  разрешил бы камеру или запустил программу. Столько же ждёт Chrome. */
+const GUARD_MS = 500;
+
+/** Окно, которое просит страница. Ответ уходит движку через Rust; Escape —
+ *  «Отмена». Закрытое без ответа окно (переключили вкладку, открыли меню) окно
+ *  браузера покажет снова (`dialogs.js`). */
+VIEWS.dialog = function dialog({ tab, tokens = [], request = {}, permissions = [], repeat = false }) {
+  const bubble = el("div", "bubble dialog");
+  const shownAt = performance.now();
+  let answered = false;
+  const answer = async (action, extra = {}, { guard = false } = {}) => {
+    if (answered || (guard && performance.now() - shownAt < GUARD_MS)) return;
+    answered = true;
+    if (isNative) await invoke("tab_dialog", { id: tab, tokens, answer: { action, ...extra } }).catch(() => {});
+    act("dialog", "answered", { tab, tokens });
+  };
+  const build = DIALOGS[request.type];
+  if (!build) {
+    answer("cancel");
+    return;
+  }
+  current.onEscape = build(bubble, request, { answer, permissions, repeat });
+  root.append(bubble);
+};
+
+const DIALOGS = {
+  /** alert, confirm, prompt и «Покинуть сайт?». */
+  script(bubble, { kind, url = "", message = "", default_text: defaultText = "" }, { answer, repeat }) {
+    const leave = kind === "beforeunload";
+    const host = hostOf(url);
+    bubble.append(dialogHead(leave ? "Покинуть сайт?" : host ? `Сайт ${host} сообщает` : "Страница сообщает"));
+    if (leave) bubble.append(el("p", "bubble__text", "Изменения, которые вы внесли, могут не сохраниться."));
+    else if (message) bubble.append(el("p", "dialog__message scroll", message));
+
+    let input = null;
+    if (kind === "prompt") {
+      input = el("input", "field");
+      input.value = defaultText;
+      input.spellcheck = false;
+      input.setAttribute("autofocus", "");
+      bubble.append(input);
+    }
+    const suppress = repeat && !leave ? checkbox("Запретить этой странице показывать новые окна") : null;
+    if (suppress) bubble.append(suppress.node);
+
+    const reply = (action) => answer(action, { text: input?.value ?? "", suppress: suppress?.input.checked ?? false });
+    const actions = el("div", "bubble__actions");
+    if (kind !== "alert") actions.append(textButton(leave ? "Остаться" : "Отмена", () => reply("cancel"), "btn"));
+    const ok = textButton(leave ? "Покинуть" : "ОК", () => reply("accept"), "btn btn--primary");
+    if (!input) ok.setAttribute("autofocus", "");
+    actions.append(ok);
+    bubble.append(actions);
+    input?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        reply("accept");
+      }
+    });
+    // У alert одна кнопка: Escape его просто закрывает.
+    return () => reply(kind === "alert" ? "accept" : "cancel");
+  },
+
+  /** Запрос разрешения. Несколько запросов одного сайта — одним окном. */
+  permission(bubble, { url = "" }, { answer, permissions }) {
+    const host = hostOf(url);
+    const head = dialogHead(host ? `Сайт ${host} запрашивает разрешение` : "Страница запрашивает разрешение");
+    head.append(iconButton("dismiss-16", "Закрыть", () => answer("cancel"), { className: "bubble__close" }));
+    bubble.append(head);
+
+    const list = el("ul", "dialog__permissions");
+    for (const name of permissions) {
+      const info = PERMISSIONS[name];
+      if (!info) continue;
+      const item = el("li");
+      item.append(icon(info.icon, 20), el("span", null, info.ask));
+      list.append(item);
+    }
+    bubble.append(list);
+
+    const stack = el("div", "dialog__stack");
+    const option = (label, action) => stack.append(textButton(label, () => answer(action, {}, { guard: true }), "btn"));
+    option("Разрешить при посещении сайта", "allow");
+    if (permissions.every((name) => ONCE.has(name))) option("Разрешить в этот раз", "allow_once");
+    option("Никогда не разрешать", "deny");
+    bubble.append(stack);
+    return () => answer("cancel");
+  },
+
+  /** Сайт или прокси требует имя и пароль. */
+  auth(bubble, { url = "" }, { answer }) {
+    bubble.append(dialogHead("Вход на сайт"));
+    const secure = url.startsWith("https:");
+    const site = el("div", "site");
+    site.append(icon(secure ? "lock-16" : "warning-16", 16), el("span", null, hostOf(url) || url));
+    bubble.append(site);
+    if (!secure) bubble.append(el("p", "dialog__note", "Подключение не защищено: имя и пароль можно перехватить."));
+
+    const user = el("input", "field");
+    user.spellcheck = false;
+    user.autocomplete = "off";
+    user.setAttribute("autofocus", "");
+    const secret = el("input", "field");
+    secret.type = "password";
+    const userRow = el("div", "form__row");
+    userRow.append(el("label", "label", "Имя пользователя"), user);
+    const secretRow = el("div", "form__row");
+    secretRow.append(el("label", "label", "Пароль"), secret);
+    bubble.append(el("div", "form__row"), userRow, secretRow);
+
+    const submit = () => {
+      if (!user.value && !secret.value) {
+        user.focus();
+        return;
+      }
+      answer("accept", { username: user.value, password: secret.value });
+    };
+    for (const input of [user, secret]) {
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submit();
+        }
+      });
+    }
+    const actions = el("div", "bubble__actions");
+    actions.append(textButton("Отмена", () => answer("cancel"), "btn"), textButton("Войти", submit, "btn btn--primary"));
+    bubble.append(actions);
+    return () => answer("cancel");
+  },
+
+  /** Ссылка на приложение: tg:, mailto:, zoommtg:… */
+  external(bubble, { scheme = "", origin = "", app = "", remember = false }, { answer }) {
+    bubble.append(dialogHead(app ? `Открыть приложение «${app}»?` : "Открыть приложение?"));
+    const host = hostOf(origin);
+    bubble.append(
+      el(
+        "p",
+        "bubble__text",
+        host ? `Сайт ${host} хочет открыть ссылку ${scheme}: в приложении на компьютере.` : `Ссылка ${scheme}: откроется в приложении на компьютере.`
+      )
+    );
+    const always = remember && host ? checkbox(`Всегда разрешать ${host} открывать такие ссылки`) : null;
+    if (always) bubble.append(always.node);
+
+    const actions = el("div", "bubble__actions");
+    const cancel = textButton("Отмена", () => answer("cancel"), "btn");
+    // Фокус — на «Отмене»: Enter, нажатый в странице за миг до окна, не должен
+    // запускать программу.
+    cancel.setAttribute("autofocus", "");
+    const open = textButton("Открыть", () => answer("accept", { remember: always?.input.checked ?? false }, { guard: true }), "btn btn--primary");
+    actions.append(cancel, open);
+    bubble.append(actions);
+    return () => answer("cancel");
+  },
+};
+
+function dialogHead(title) {
+  const head = el("div", "bubble__head");
+  head.append(el("h2", "bubble__title", title));
+  return head;
+}
+
+/** Флажок: подпись щёлкается вместе с ним. */
+function checkbox(label) {
+  const node = el("label", "check");
+  const input = el("input");
+  input.type = "checkbox";
+  node.append(input, el("span", null, label));
+  return { node, input };
+}
 
 /* ── Строка масштаба ───────────────────────────────────────── */
 

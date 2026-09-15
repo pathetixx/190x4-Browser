@@ -78,3 +78,8 @@ export function openMenu(menu, anchor, items, onPick, { width = 280, align = "st
 export function closePopup() {
   invoke("popup_hide").catch(() => {});
 }
+
+/** Какой попап открыт: `вид:меню` или null. */
+export function openPopupKey() {
+  return openKind;
+}

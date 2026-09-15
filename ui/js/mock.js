@@ -136,6 +136,15 @@ export async function invoke(command, args = {}) {
       return PASSWORDS;
     case "password_reveal":
       return "correct-horse-battery";
+    case "site_permissions":
+      return [
+        { permission: "camera", origin: "https://meet.jit.si", allowed: true },
+        { permission: "microphone", origin: "https://meet.jit.si", allowed: true },
+        { permission: "notifications", origin: "https://vk.com", allowed: false },
+      ];
+    case "site_permission_reset":
+    case "tab_dialog":
+      return null;
     case "password_never_list":
       return [{ origin: "https://bank.example.ru", added_at: NOW - 5000 }];
     case "downloads_list":
@@ -288,6 +297,20 @@ export function popupDemo(kind) {
       return { tab: 1, origin: "https://github.com", accounts: [{ id: 1, username: "pathetixx" }, { id: 2, username: "work@190x4.pw" }] };
     case "site":
       return { url: "https://habr.com/ru/", host: "habr.com", secure: true, blocked: 41, adblock: true, site: "habr.com", blocking: true, passwords: 1 };
+    case "dialog-alert":
+      return { kind: "dialog", payload: { tab: 1, tokens: [1], request: { type: "script", kind: "alert", url: "https://habr.com/ru/", message: "Сессия истекла. Войдите снова, чтобы не потерять черновик.", default_text: "" } } };
+    case "dialog-confirm":
+      return { kind: "dialog", payload: { tab: 1, tokens: [2], repeat: true, request: { type: "script", kind: "confirm", url: "https://e.mail.ru/inbox/", message: "Удалить 3 письма без возможности восстановления?", default_text: "" } } };
+    case "dialog-prompt":
+      return { kind: "dialog", payload: { tab: 1, tokens: [3], request: { type: "script", kind: "prompt", url: "https://github.com/", message: "Название новой ветки", default_text: "feature/dialogs" } } };
+    case "dialog-leave":
+      return { kind: "dialog", payload: { tab: 1, tokens: [4], request: { type: "script", kind: "beforeunload", url: "https://docs.google.com/", message: "", default_text: "" } } };
+    case "dialog-permission":
+      return { kind: "dialog", payload: { tab: 1, tokens: [5, 6], permissions: ["camera", "microphone"], request: { type: "permission", permission: "camera", url: "https://meet.jit.si/190x4", user_initiated: true } } };
+    case "dialog-auth":
+      return { kind: "dialog", payload: { tab: 1, tokens: [7], request: { type: "auth", url: "http://192.168.1.1/" } } };
+    case "dialog-external":
+      return { kind: "dialog", payload: { tab: 1, tokens: [8], request: { type: "external", scheme: "tg", origin: "https://t.me", app: "TG 190x4 EDITION", remember: true } } };
     case "suggest":
       return {
         selected: 1,

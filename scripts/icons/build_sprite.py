@@ -63,6 +63,18 @@ ICONS = {
     "export": "arrow_export_20_regular",
     "star-20": "star_20_regular",
     "star-20-filled": "star_20_filled",
+    # окна страниц: запросы разрешений и открытие приложений
+    "camera": "camera_20_regular",
+    "mic": "mic_20_regular",
+    "location": "location_20_regular",
+    "alert": "alert_20_regular",
+    "clipboard": "clipboard_20_regular",
+    "gauge": "gauge_20_regular",
+    "document-edit": "document_edit_20_regular",
+    "play-circle": "play_circle_20_regular",
+    "text-font": "text_font_20_regular",
+    "window-multiple": "window_multiple_20_regular",
+    "open": "open_20_regular",
     # 16 — адресная строка, вкладки, строки списков
     "star-16": "star_16_regular",
     "star-16-filled": "star_16_filled",

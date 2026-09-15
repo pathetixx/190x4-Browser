@@ -14,6 +14,7 @@ import {
 } from "./actions.js";
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
 import { initContextMenu, openContextMenu } from "./context-menu.js";
+import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
 import { el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
@@ -72,6 +73,7 @@ initBookmarksBar();
 initDownloads();
 initUpdates();
 initContextMenu({ translate: translateText });
+initDialogs();
 
 const web = () => {
   const tab = activeTab();
@@ -151,6 +153,7 @@ listen("tab", (event) => {
       break;
     case "started":
       upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
+      onNavigation(event.id);
       state.passwordSites.delete(event.id);
       break;
     case "finished":
@@ -197,6 +200,12 @@ listen("tab", (event) => {
       break;
     case "context_menu":
       openContextMenu(event);
+      break;
+    case "dialog":
+      onDialog(event);
+      break;
+    case "dialogs_closed":
+      onDialogsClosed(event);
       break;
   }
 });

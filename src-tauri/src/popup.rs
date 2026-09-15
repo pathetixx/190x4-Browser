@@ -1,5 +1,5 @@
 //! Всплывающие окна chrome-а: меню, пузырь загрузок, правка закладки,
-//! расширение-загрузчик, предложение сохранить пароль.
+//! расширение-загрузчик, предложение сохранить пароль, окна страниц.
 //!
 //! # Почему отдельное окно, а не HTML-слой
 //!
@@ -23,6 +23,8 @@ use tauri::{
 };
 
 pub const LABEL: &str = "popup";
+/// Окно, которое просит страница: alert, запрос разрешения, вход на сайт.
+pub const DIALOG: &str = "dialog";
 
 #[derive(Default)]
 pub struct Popup {
@@ -37,6 +39,10 @@ pub struct Popup {
     /// Меню у точки щелчка (`align = "point"`): высота точки в окне браузера.
     /// Вверх или вниз от неё раскрываться, решает `show`, когда высота известна.
     point: Mutex<Option<f64>>,
+    /// Окно страницы и где было окно браузера, когда его показали. Такое окно
+    /// не закрывается от потери фокуса и едет вместе с окном браузера:
+    /// страница ждёт ответа.
+    sticky: Mutex<Option<PhysicalPosition<i32>>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -78,7 +84,16 @@ pub fn ensure(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let closing = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
-            hide_window(&handle, &closing);
+            // Окно страницы ждёт ответа: щелчок мимо его не закрывает.
+            let sticky = handle
+                .state::<crate::state::App>()
+                .popup
+                .sticky
+                .lock()
+                .is_some();
+            if !sticky {
+                hide_window(&handle, &closing);
+            }
         }
     });
     Ok(window)
@@ -154,6 +169,34 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
+/// Окно браузера сдвинули. Меню и пузыри закрываются, а окно страницы едет
+/// вместе с ним: страница ждёт ответа, и прятать окно незачем.
+pub fn main_moved(app: &AppHandle, state: &Popup) {
+    let Some(popup) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    let followed = (|| -> Option<()> {
+        let now = app.get_webview_window("chrome")?.inner_position().ok()?;
+        let mut sticky = state.sticky.lock();
+        let before = sticky.as_mut()?;
+        if !native_visible(&popup) {
+            return None;
+        }
+        let at = popup.outer_position().ok()?;
+        popup
+            .set_position(PhysicalPosition::new(
+                at.x + now.x - before.x,
+                at.y + now.y - before.y,
+            ))
+            .ok()?;
+        *before = now;
+        Some(())
+    })();
+    if followed.is_none() {
+        hide_window(app, &popup);
+    }
+}
+
 /// Показать попап под элементом chrome-а. Размеры — в CSS-пикселях окна.
 pub fn open(
     app: &AppHandle,
@@ -197,6 +240,7 @@ pub fn open(
         (main_height - top - 12.0).max(160.0)
     };
     *state.point.lock() = point.then_some(anchor.y);
+    *state.sticky.lock() = (kind == DIALOG).then_some(origin);
 
     let x = origin.x + (left * scale).round() as i32;
     let y = origin.y + (top * scale).round() as i32;

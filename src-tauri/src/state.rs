@@ -33,6 +33,8 @@ pub struct App {
     pub passwords: Passwords,
     pub transfers: Transfers,
     pub popup: Popup,
+    /// Ссылки на приложения, о которых спросили пользователя.
+    pub external: crate::external::Offers,
 }
 
 pub fn install_host(host: TabHost) {
