@@ -260,8 +260,10 @@
 
   const CSS = `
     :host { all: initial; }
-    .panel { box-sizing: border-box; width: 100%; padding: 4px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.09); background: #151518; color: #f1f1f4; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+    .panel { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; padding: 4px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.09); background: #151518; color: #f1f1f4; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
     .panel.light { border-color: rgba(0, 0, 0, 0.1); background: #ffffff; color: #18181b; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16); }
+    .list { position: relative; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.18) transparent; }
+    .light .list { scrollbar-color: rgba(0, 0, 0, 0.2) transparent; }
     .row { box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; margin: 0; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
     .row:hover, .row.selected { background: rgba(255, 255, 255, 0.07); }
     .light .row:hover, .light .row.selected { background: rgba(0, 0, 0, 0.05); }
@@ -278,6 +280,8 @@
     .light .manage { color: #71717a; }
   `;
 
+  /** Высота списка учёток — семь с половиной строк: край следующей подсказывает прокрутку. */
+  const LIST_MAX = 330;
   const SVG = "http://www.w3.org/2000/svg";
   const LOCK = "M8 1a3 3 0 0 0-3 3v2h-.5A1.5 1.5 0 0 0 3 7.5v6A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 11.5 6H11V4a3 3 0 0 0-3-3Zm2 5H6V4a2 2 0 1 1 4 0v2Z";
   const glyph = () => {
@@ -321,7 +325,21 @@
     append(root, panel);
     // Нажатие в списке не забирает фокус у поля: иначе список закрылся бы до щелчка.
     on(panel, "mousedown", (event) => event.preventDefault());
-    menu = { host, panel, field: null, rows: [], selected: -1, shown: false };
+    // Колесо над списком прокручивает список, а не страницу. Прокрутка своя:
+    // обработчики колеса сайта (свой скролл, модальные окна) её не перехватят.
+    on(
+      panel,
+      "wheel",
+      (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!menu.list) return;
+        const step = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? menu.list.clientHeight : 1;
+        menu.list.scrollTop += event.deltaY * step;
+      },
+      { passive: false }
+    );
+    menu = { host, panel, list: null, field: null, rows: [], selected: -1, shown: false };
   };
 
   const hideMenu = () => {
@@ -346,6 +364,13 @@
     if (!menu.rows.length) return;
     menu.selected = (index + menu.rows.length) % menu.rows.length;
     menu.rows.forEach(({ row }, i) => call(dom.className, row, i === menu.selected ? "row selected" : "row"));
+    // Выбранная стрелками учётка — в видимой части списка.
+    const { row } = menu.rows[menu.selected];
+    const list = menu.list;
+    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
+    else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
+    }
   };
 
   const render = () => {
@@ -356,6 +381,9 @@
     call(dom.className, menu.panel, light() ? "panel light" : "panel");
     menu.rows = [];
     menu.selected = -1;
+    const list = make("div", "list");
+    menu.list = list;
+    append(menu.panel, list);
     for (const account of shown) {
       const row = make("button", "row");
       call(dom.setAttribute, row, "type", "button");
@@ -367,7 +395,7 @@
       append(row, tile);
       append(row, text);
       on(row, "click", (event) => pick(event, account.id));
-      append(menu.panel, row);
+      append(list, row);
       menu.rows.push({ row, id: account.id });
     }
     append(menu.panel, make("div", "sep"));
@@ -393,10 +421,19 @@
     const width = Math.min(Math.max(rect.width, 260), 380);
     const style = menu.host.style;
     style.setProperty("width", `${width}px`, "important");
+    // Список не выше семи с половиной строк и не больше места у поля: остальное
+    // прокручивается. Вниз, если там хватает места или его больше, чем сверху.
+    const list = menu.list;
+    const frame = menu.panel.offsetHeight - list.offsetHeight;
+    const wanted = Math.min(list.scrollHeight, LIST_MAX) + frame;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    const down = spaceBelow >= wanted || spaceBelow >= spaceAbove;
+    const room = (down ? spaceBelow : spaceAbove) - frame;
+    list.style.setProperty("max-height", `${Math.max(Math.min(LIST_MAX, room), 44)}px`);
     const height = menu.panel.offsetHeight;
-    const below = rect.bottom + 4 + height <= window.innerHeight || rect.top - 4 - height < 0;
     style.setProperty("left", `${Math.max(4, Math.min(rect.left, window.innerWidth - width - 4))}px`, "important");
-    style.setProperty("top", `${below ? rect.bottom + 4 : rect.top - 4 - height}px`, "important");
+    style.setProperty("top", `${down ? rect.bottom + 4 : Math.max(4, rect.top - 4 - height)}px`, "important");
   };
 
   const showMenu = (field) => {
