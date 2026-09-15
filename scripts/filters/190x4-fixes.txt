@@ -1,0 +1,8 @@
+! Исправления 190x4 Browser: поломки сайтов от правил других списков.
+! Сборка фильтров (scripts/filters/build.mjs) дописывает их в конец ubo-unbreak.txt,
+! поэтому правка доходит до браузеров обновлением фильтров, без выпуска браузера.
+!
+! Дзен: RU AdList блокирует модули static.dzeninfra.ru/s3/zen-apps, чьё имя
+! кончается не на .bundle.js. Интерфейс desktop2 грузит модули *.handle.js,
+! и без них лента не дорисовывается.
+@@||static.dzeninfra.ru/s3/zen-apps/*.handle.js$script,domain=dzen.ru|sportsdzen.ru

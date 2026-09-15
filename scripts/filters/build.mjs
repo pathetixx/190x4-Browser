@@ -15,7 +15,7 @@
 // Использование: node scripts/filters/build.mjs <каталог>
 
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -155,11 +155,14 @@ const put = (name, content) => {
   files[name] = { size: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex") };
 };
 
+// Свои исправления поломок — в конец списка исправлений: браузер уже на него
+// подписан, и правка доходит обновлением фильтров.
+const FIXES = readFileSync(new URL("./190x4-fixes.txt", import.meta.url), "utf8");
 for (const name of LISTS) {
   const url = `${LIST_BASE}${name}.txt`;
   const list = await preprocess(await text(url), url);
   if (list.split("\n").length < 50) throw new Error(`список ${name} подозрительно короткий`);
-  put(`ubo-${name}.txt`, list);
+  put(`ubo-${name}.txt`, name === "unbreak" ? `${list}\n${FIXES}` : list);
 }
 const { tag, resources } = await scriptlets();
 put("resources.json", JSON.stringify(resources));
@@ -170,7 +173,8 @@ put(
 (https://github.com/uBlockOrigin/uAssets). They are licensed under the GNU
 General Public License v3.0; the source is available at those addresses.
 The lists are preprocessed for 190x4 Browser: conditional directives resolved
-and includes inlined.
+and includes inlined. The rules after "Исправления 190x4 Browser" at the end of
+ubo-unbreak.txt are 190x4 Browser's own.
 `
 );
 writeFileSync(
