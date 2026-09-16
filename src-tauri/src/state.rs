@@ -150,11 +150,12 @@ where
             Ok(mut hosts) => {
                 // Приватное окно держит свой профиль движка: для общих данных
                 // берём обычное, если оно есть.
-                let host = hosts
-                    .values_mut()
-                    .find(|host| !host.is_private())
-                    .or_else(|| hosts.values_mut().next());
-                match host {
+                let label = hosts
+                    .iter()
+                    .find(|(_, host)| !host.is_private())
+                    .or_else(|| hosts.iter().next())
+                    .map(|(label, _)| label.clone());
+                match label.and_then(|label| hosts.get_mut(&label)) {
                     Some(host) => Ok(f(host)),
                     None => Err("окно браузера ещё не поднято".to_string()),
                 }

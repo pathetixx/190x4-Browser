@@ -58,7 +58,7 @@ pub fn confirm(window: Option<&tauri::WebviewWindow>, reason: &str) -> anyhow::R
         UserConsentVerifier::RequestVerificationAsync(&message)?.get()?
     } else {
         let interop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
-        let operation: windows::Foundation::IAsyncOperation<UserConsentVerificationResult> =
+        let operation: windows_future::IAsyncOperation<UserConsentVerificationResult> =
             unsafe { interop.RequestVerificationForWindowAsync(hwnd, &message)? };
         operation.get()?
     };

@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::browser_windows::{self as windows, WindowKind};
-use crate::state::{with_any_host, with_download, with_host, with_tab, App};
+use crate::state::{with_any_host, with_host, with_tab, App};
 use crate::{external, passwords, popup, transfers, vault};
 
 fn text(err: impl std::fmt::Display) -> String {
@@ -803,7 +803,6 @@ pub fn history_clear(state: State<'_, App>) -> Result<(), String> {
 /// чтобы серия открытий не превратилась в серию записей на диск.
 #[tauri::command]
 pub fn session_save(
-    app: AppHandle,
     window: tauri::Window,
     state: State<'_, App>,
     tabs: Vec<SessionTab>,
@@ -820,7 +819,6 @@ pub fn session_save(
 
 #[tauri::command]
 pub fn session_restore(
-    app: AppHandle,
     window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Vec<SessionTab>, String> {

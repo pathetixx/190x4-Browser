@@ -37,6 +37,9 @@ parking_lot.workspace = true
 [target.'cfg(windows)'.dependencies]
 webview2-com.workspace = true
 windows-core.workspace = true
+# Асинхронные операции WinRT (Windows Hello): в windows 0.61 они вынесены
+# в отдельный крейт, версия — та же, что тянет сам windows.
+windows-future = "0.2"
 windows = { workspace = true, features = [
     "Foundation",
     "Devices_Geolocation",
