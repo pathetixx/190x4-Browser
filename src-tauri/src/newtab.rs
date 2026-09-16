@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::resources::Monitor;
-use crate::state::{later, with_tab, App};
+use crate::state::{with_tab, App};
 use crate::weather::{self, Place};
 
 /// Прогноз для того же места берётся из памяти.
@@ -126,34 +126,41 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
     }
     let app = app.clone();
 
+    // Сообщение пришло на главный поток: всё, что трогает базу, уходит в пул.
     match event {
-        PageEvent::Init => post_later(&app, tab, page_state(&app)),
+        PageEvent::Init => {
+            tauri::async_runtime::spawn_blocking(move || post(&app, tab, page_state(&app)));
+        }
         PageEvent::Tiles { tiles } => {
             let tiles: Vec<Tile> = tiles
                 .into_iter()
                 .filter_map(clean_tile)
                 .take(MAX_TILES)
                 .collect();
-            if let Err(err) = store(&app).set_setting("newtab_tiles", &json!(tiles)) {
-                tracing::warn!(%err, "плитки новой вкладки не сохранены");
-            }
-            post_later(&app, tab, page_state(&app));
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(err) = store(&app).set_setting("newtab_tiles", &json!(tiles)) {
+                    tracing::warn!(%err, "плитки новой вкладки не сохранены");
+                }
+                post(&app, tab, page_state(&app));
+            });
         }
         PageEvent::Prefs {
             weather,
             monitor,
             seconds,
         } => {
-            for (key, value) in [
-                ("newtab_weather", weather),
-                ("newtab_monitor", monitor),
-                ("newtab_seconds", seconds),
-            ] {
-                if let Some(value) = value {
-                    let _ = store(&app).set_setting(key, &Value::Bool(value));
+            tauri::async_runtime::spawn_blocking(move || {
+                for (key, value) in [
+                    ("newtab_weather", weather),
+                    ("newtab_monitor", monitor),
+                    ("newtab_seconds", seconds),
+                ] {
+                    if let Some(value) = value {
+                        let _ = store(&app).set_setting(key, &Value::Bool(value));
+                    }
                 }
-            }
-            post_later(&app, tab, page_state(&app));
+                post(&app, tab, page_state(&app));
+            });
         }
         PageEvent::Icon { url } => {
             tauri::async_runtime::spawn(async move {
@@ -192,12 +199,14 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
                 Some(place) => json!(place),
                 None => Value::Null,
             };
-            let _ = store(&app).set_setting("newtab_city", &value);
             *app.state::<NewTab>().weather.lock() = None;
-            post_later(&app, tab, page_state(&app));
-            tauri::async_runtime::spawn(async move {
-                let message = weather_message(&app, false).await;
-                post_soon(app.clone(), tab, message);
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = store(&app).set_setting("newtab_city", &value);
+                post(&app, tab, page_state(&app));
+                tauri::async_runtime::spawn(async move {
+                    let message = weather_message(&app, false).await;
+                    post_soon(app.clone(), tab, message);
+                });
             });
         }
         PageEvent::Resources => {
@@ -333,18 +342,6 @@ fn post(app: &AppHandle, tab: u32, message: Value) {
 /// Ответ из асинхронной задачи: ожидание главного потока — в пуле блокирующих.
 fn post_soon(app: AppHandle, tab: u32, message: Value) {
     tauri::async_runtime::spawn_blocking(move || post(&app, tab, message));
-}
-
-/// Ответ из обработчика события вкладки — он сам на главном потоке.
-fn post_later(app: &AppHandle, tab: u32, message: Value) {
-    let json = message.to_string();
-    later(app, tab, move |host| {
-        host.with_tab(TabId(tab), |view| {
-            if from_pages(&view.source_url()) {
-                let _ = view.post(&json);
-            }
-        });
-    });
 }
 
 #[cfg(test)]

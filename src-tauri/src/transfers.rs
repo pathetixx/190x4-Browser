@@ -73,9 +73,59 @@ impl Transfers {
     }
 }
 
-/// Событие движка о загрузке.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Очередь записей о загрузках. Событие движка приходит на главный поток, а
+/// запись в базу там — это подвисание интерфейса на каждом куске прогресса.
+/// Поток один: события одной загрузки (начало, прогресс, конец) должны лечь в
+/// базу в том же порядке, в каком пришли.
+fn writer() -> &'static std::sync::mpsc::Sender<Job> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("downloads-writer".into())
+            .spawn(move || {
+                for job in rx {
+                    job();
+                }
+            })
+            .expect("поток записи загрузок создаётся всегда");
+        tx
+    })
+}
+
+/// Событие движка о загрузке. Зовётся на главном потоке — работа уходит в
+/// очередь записи.
 #[allow(clippy::too_many_arguments)]
 pub fn on_engine_event(
+    app: &AppHandle,
+    window: &str,
+    key: u64,
+    phase: &str,
+    url: &str,
+    path: &str,
+    bytes: i64,
+    total: Option<i64>,
+    error: &str,
+) {
+    let (app, window, phase, url, path, error) = (
+        app.clone(),
+        window.to_string(),
+        phase.to_string(),
+        url.to_string(),
+        path.to_string(),
+        error.to_string(),
+    );
+    let _ = writer().send(Box::new(move || {
+        apply_engine_event(
+            &app, &window, key, &phase, &url, &path, bytes, total, &error,
+        )
+    }));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_engine_event(
     app: &AppHandle,
     window: &str,
     key: u64,

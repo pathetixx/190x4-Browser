@@ -191,6 +191,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Символы для стеков из browser.log: сторож главного потока пишет их
+      # адресами, и разобрать такой стек можно только этим PDB.
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-symbols
+          path: target/release/190x4_browser.pdb
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload release metadata
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

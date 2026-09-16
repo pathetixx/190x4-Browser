@@ -16,9 +16,22 @@ if (!isNative) {
   mock = await import("./mock.js");
 }
 
+/**
+ * Команды, где важен порядок: «поставить тему A», сразу «тему B». Rust
+ * выполняет их в пуле потоков, и два вызова подряд могли бы применяться в
+ * обратном порядке — тогда в базе осталось бы старое значение. Вызовы одной
+ * такой команды идут друг за другом.
+ */
+const ORDERED = new Set(["settings_set", "session_save", "adblock_set_enabled", "adblock_site_set", "zoom_site_set"]);
+const chains = new Map();
+
 export async function invoke(command, args = {}) {
-  if (isNative) return tauri.core.invoke(command, args);
-  return mock.invoke(command, args);
+  if (!isNative) return mock.invoke(command, args);
+  if (!ORDERED.has(command)) return tauri.core.invoke(command, args);
+  const previous = chains.get(command) ?? Promise.resolve();
+  const call = previous.catch(() => {}).then(() => tauri.core.invoke(command, args));
+  chains.set(command, call);
+  return call;
 }
 
 export async function listen(event, handler) {

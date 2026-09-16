@@ -114,6 +114,20 @@ fn saved_geometry(app: &AppHandle) -> Option<Geometry> {
     (geometry.width >= 400.0 && geometry.height >= 300.0).then_some(geometry)
 }
 
+/// Последняя геометрия окна. Движение и ресайз приходят десятками в секунду на
+/// главный поток — писать каждое в базу значит подвешивать перетаскивание окна.
+static LAST_GEOMETRY: Mutex<Option<Geometry>> = Mutex::new(None);
+
+/// Записать запомненную геометрию в базу: при закрытии окна и выходе.
+pub fn save_geometry(app: &AppHandle) {
+    if let Some(geometry) = *LAST_GEOMETRY.lock() {
+        let _ = app.state::<App>().store.set_setting(
+            GEOMETRY_KEY,
+            &serde_json::to_value(geometry).unwrap_or_default(),
+        );
+    }
+}
+
 /// Запомнить, каким окно осталось: размер, место и «развёрнуто».
 pub fn remember_geometry(app: &AppHandle, label: &str) {
     if app.state::<App>().windows.is_private(label) {
@@ -132,7 +146,8 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
     // У развёрнутого окна запоминаем прежний размер: иначе «свернуть в окно»
     // после перезапуска давало бы окно во весь экран.
     let geometry = if maximized {
-        let mut geometry = saved_geometry(app).unwrap_or_default();
+        let last = *LAST_GEOMETRY.lock();
+        let mut geometry = last.or_else(|| saved_geometry(app)).unwrap_or_default();
         geometry.maximized = true;
         if geometry.width < 400.0 || geometry.height < 300.0 {
             geometry.width = 1440.0;
@@ -153,10 +168,7 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
             maximized: false,
         }
     };
-    let _ = app.state::<App>().store.set_setting(
-        GEOMETRY_KEY,
-        &serde_json::to_value(geometry).unwrap_or_default(),
-    );
+    *LAST_GEOMETRY.lock() = Some(geometry);
 }
 
 /// Создать окно браузера. Возвращает его ярлык.
@@ -337,14 +349,24 @@ fn accept_files(app: &AppHandle, window: &tauri::WebviewWindow) {
     }
 
     let Ok(hwnd) = window.hwnd() else { return };
-    let target = Box::into_raw(Box::new(Target {
+    let hwnd_bits = hwnd.0 as isize;
+    let target = Target {
         app: app.clone(),
         label: window.label().to_string(),
-    }));
-    unsafe {
-        DragAcceptFiles(hwnd, true);
-        let _ = SetWindowSubclass(hwnd, Some(proc), 190, target as usize);
-    }
+    };
+    // Подкласс окна ставится только с того потока, которому окно принадлежит, —
+    // а новое окно создаёт команда из пула.
+    let _ = app.run_on_main_thread(move || {
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_bits as *mut std::ffi::c_void);
+        let target = Box::into_raw(Box::new(target));
+        unsafe {
+            DragAcceptFiles(hwnd, true);
+            if !SetWindowSubclass(hwnd, Some(proc), 190, target as usize).as_bool() {
+                drop(Box::from_raw(target));
+                tracing::warn!("перетаскивание файлов в окно не подключено");
+            }
+        }
+    });
 }
 
 /// Подписки окна: попап ездит за окном, состояние кнопок и закрытие.
@@ -389,6 +411,7 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
 /// ещё живы. Отложенная запись из интерфейса сюда уже не успеет.
 fn closing(app: &AppHandle, label: &str) {
     remember_geometry(app, label);
+    save_geometry(app);
     let state = app.state::<App>();
     let Some(session) = state.windows.session(label) else {
         return;

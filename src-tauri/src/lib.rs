@@ -26,6 +26,7 @@ mod suggest;
 mod transfers;
 mod updates;
 mod vault;
+mod watchdog;
 mod weather;
 
 use std::sync::Arc;
@@ -99,6 +100,11 @@ pub fn run() {
             popup: Default::default(),
             external: Default::default(),
             windows: Default::default(),
+            engine: parking_lot::RwLock::new(
+                store
+                    .setting_str("search_engine")
+                    .unwrap_or_else(|| "duckduckgo".into()),
+            ),
             sessions: Default::default(),
         })
         .manage(updates::Updates::default())
@@ -197,6 +203,8 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Сторож снимает хэндл главного потока — поэтому первым и отсюда.
+            watchdog::spawn(handle.clone());
             updates::spawn_checker(handle.clone());
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
@@ -212,6 +220,7 @@ pub fn run() {
         .run(|handle, event| {
             // Выход: в базе остаются сессии только тех окон, что были открыты.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                browser_windows::save_geometry(handle);
                 let state = handle.state::<App>();
                 let alive: Vec<i64> = state
                     .windows
@@ -307,10 +316,14 @@ pub(crate) fn route_event(
             external::forget_tab(&app.state::<App>(), *id);
         }
         TabEvent::Favicon { page, url, .. } => {
-            let state = app.state::<App>();
-            if state.store.set_bookmark_icon(page, url).unwrap_or(false) {
-                let _ = app.emit("bookmarks", ());
-            }
+            // Запись в базу — не на главном потоке: событие приходит с него.
+            let (app, page, url) = (app.clone(), page.clone(), url.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                let state = app.state::<App>();
+                if state.store.set_bookmark_icon(&page, &url).unwrap_or(false) {
+                    let _ = app.emit("bookmarks", ());
+                }
+            });
         }
         _ => {}
     }

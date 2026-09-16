@@ -49,7 +49,7 @@ pub fn tab_open(
     state: State<'_, App>,
     url: String,
 ) -> Result<u32, String> {
-    let url = normalize_url(&url, &search_engine(&state.store));
+    let url = normalize_url(&url, &search_engine(&state));
     tracing::info!(%url, "открываем вкладку");
     let result = with_host(&app, &owner(&window), move |host| {
         host.open(&url).map(|id| id.0).map_err(text)
@@ -97,7 +97,7 @@ pub fn tab_navigate(
     id: u32,
     url: String,
 ) -> Result<(), String> {
-    let url = normalize_url(&url, &search_engine(&state.store));
+    let url = normalize_url(&url, &search_engine(&state));
     with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.navigate(&url))
             .ok_or_else(|| "вкладка ещё не готова".to_string())?
@@ -262,7 +262,7 @@ pub fn overlay_set(app: AppHandle, window: tauri::Window, on: bool) -> Result<()
     })?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> Result<(), String> {
     let window = app
         .get_webview_window(&owner(&window))
@@ -317,7 +317,7 @@ pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
 }
 
 /// Новое окно браузера: обычное или приватное, с адресом или пустое.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn window_open(
     app: AppHandle,
     private: Option<bool>,
@@ -333,10 +333,11 @@ pub fn window_open(
 
 /* ── Адресная строка ────────────────────────────────────────────────────── */
 
-fn search_engine(store: &Store) -> String {
-    store
-        .setting_str("search_engine")
-        .unwrap_or_else(|| "duckduckgo".into())
+/// Поисковая система — из памяти, а не из базы: открытие вкладки выполняется
+/// на главном потоке, и ждать на нём замок базы, пока фоновая задача чистит
+/// историю, нельзя.
+fn search_engine(state: &App) -> String {
+    state.engine.read().clone()
 }
 
 fn search_prefix(engine: &str) -> &'static str {
@@ -510,7 +511,7 @@ pub fn adblock_stats(state: State<'_, App>) -> browser190x4_adblock::Snapshot {
     state.guard.stats().snapshot()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn adblock_set_enabled(app: AppHandle, state: State<'_, App>, on: bool) -> Result<(), String> {
     state.guard.set_enabled(on);
     state
@@ -557,7 +558,7 @@ pub fn adblock_site(state: State<'_, App>, url: String) -> SiteBlocking {
 ///
 /// Включение снимает и исключение родительского домена: иначе на `m.youtube.com`
 /// переключатель не работал бы, пока выключен `youtube.com`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn adblock_site_set(
     app: AppHandle,
     state: State<'_, App>,
@@ -596,7 +597,7 @@ pub struct FilterList {
     enabled: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn adblock_lists(state: State<'_, App>) -> Vec<FilterList> {
     let enabled = crate::enabled_lists(&state.store);
     browser190x4_adblock::Subscriptions::default()
@@ -612,13 +613,13 @@ pub fn adblock_lists(state: State<'_, App>) -> Vec<FilterList> {
 
 /* ── Настройки ──────────────────────────────────────────────────────────── */
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn settings_get(state: State<'_, App>) -> Result<serde_json::Map<String, Value>, String> {
     state.store.settings().map_err(text)
 }
 
 /// Сохранить настройку и применить то, что касается движка.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn settings_set(
     app: AppHandle,
     state: State<'_, App>,
@@ -658,6 +659,12 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
         "adblock_lists" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
         }
+        "search_engine" => {
+            *state.engine.write() = state
+                .store
+                .setting_str("search_engine")
+                .unwrap_or_else(|| "duckduckgo".into());
+        }
         _ => {}
     }
 }
@@ -678,7 +685,7 @@ pub fn download_policy(store: &Store) -> DownloadPolicy {
 ///
 /// Зовёт chrome, а не движковая часть: там в одном месте известны и адрес, и
 /// заголовок, а в событиях вкладки они приходят порознь.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_record(
     app: AppHandle,
     window: tauri::Window,
@@ -695,7 +702,7 @@ pub fn history_record(
 
 /// Страница истории: посещения по времени с поиском и подгрузкой по мере
 /// прокрутки.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_page(
     state: State<'_, App>,
     query: Option<String>,
@@ -712,13 +719,13 @@ pub fn history_page(
         .map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_forget_visit(state: State<'_, App>, id: i64) -> Result<(), String> {
     state.store.forget_visit(id).map_err(text)
 }
 
 /// Очистить историю за период: `hour`, `day`, `week` или всю.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_clear_period(state: State<'_, App>, period: String) -> Result<(), String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -737,7 +744,7 @@ pub fn history_clear_period(state: State<'_, App>, period: String) -> Result<(),
 ///
 /// В сеть не ходит: иначе открытие списка паролей означало бы запрос на
 /// каждый сайт, где у пользователя есть пароль.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn site_icon(url: String) -> Option<String> {
     let dir = crate::profile_dir().join("site-icons");
     crate::site_icons::cached(&dir, &url).map(|icon| icon.data)
@@ -759,14 +766,14 @@ pub async fn search_suggest(
             return Ok(Vec::new());
         }
         (
-            search_engine(&state.store),
+            search_engine(&state),
             app.state::<crate::newtab::NewTab>().client().clone(),
         )
     };
     Ok(crate::suggest::fetch(&client, &engine, &query).await)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_recent(
     state: State<'_, App>,
     limit: Option<u32>,
@@ -777,7 +784,7 @@ pub fn history_recent(
         .map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_search(
     state: State<'_, App>,
     query: String,
@@ -789,19 +796,19 @@ pub fn history_search(
         .map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_forget(state: State<'_, App>, url: String) -> Result<(), String> {
     state.store.forget_history(&url).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_clear(state: State<'_, App>) -> Result<(), String> {
     state.store.clear_history().map_err(text)
 }
 
 /// Сохранить раскладку вкладок. Chrome зовёт это с задержкой после изменений,
 /// чтобы серия открытий не превратилась в серию записей на диск.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn session_save(
     window: tauri::Window,
     state: State<'_, App>,
@@ -817,7 +824,7 @@ pub fn session_save(
     state.store.save_session(session, &tabs).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn session_restore(
     window: tauri::Window,
     state: State<'_, App>,
@@ -835,19 +842,19 @@ fn bookmarks_changed(app: &AppHandle) {
     let _ = app.emit("bookmarks", ());
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmarks_tree(state: State<'_, App>) -> Result<Vec<BookmarkNode>, String> {
     state.store.bookmark_nodes().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_find(state: State<'_, App>, url: String) -> Result<Option<BookmarkNode>, String> {
     state.store.bookmark_by_url(&url).map_err(text)
 }
 
 /// Добавить закладку. Без папки — туда, куда пользователь сохранял в прошлый
 /// раз, как это делает Chrome.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_add(
     app: AppHandle,
     state: State<'_, App>,
@@ -887,7 +894,7 @@ pub fn bookmark_add(
         .ok_or_else(|| "закладка не сохранилась".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_folder_add(
     app: AppHandle,
     state: State<'_, App>,
@@ -903,7 +910,7 @@ pub fn bookmark_folder_add(
 }
 
 /// Правка закладки из пузыря или диспетчера: название, адрес, папка.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_update(
     app: AppHandle,
     state: State<'_, App>,
@@ -927,7 +934,7 @@ pub fn bookmark_update(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_move(
     app: AppHandle,
     state: State<'_, App>,
@@ -940,14 +947,14 @@ pub fn bookmark_move(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_remove(app: AppHandle, state: State<'_, App>, id: i64) -> Result<(), String> {
     state.store.remove_bookmark(id).map_err(text)?;
     bookmarks_changed(&app);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bookmark_remove_url(
     app: AppHandle,
     state: State<'_, App>,
@@ -1000,7 +1007,7 @@ fn passwords_changed(app: &AppHandle) {
     let _ = app.emit("passwords", ());
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn passwords_list(state: State<'_, App>) -> Result<Vec<PasswordEntry>, String> {
     state.store.password_entries().map_err(text)
 }
@@ -1036,7 +1043,7 @@ pub async fn password_reveal(
     .map_err(text)?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_add(
     app: AppHandle,
     state: State<'_, App>,
@@ -1059,7 +1066,7 @@ pub fn password_add(
     Ok(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_update(
     app: AppHandle,
     state: State<'_, App>,
@@ -1079,7 +1086,7 @@ pub fn password_update(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_delete(app: AppHandle, state: State<'_, App>, id: i64) -> Result<(), String> {
     state.store.delete_password(id).map_err(text)?;
     passwords_changed(&app);
@@ -1162,12 +1169,12 @@ pub async fn passwords_export(
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_never_list(state: State<'_, App>) -> Result<Vec<NeverSite>, String> {
     state.store.password_never_sites().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_never_forget(
     app: AppHandle,
     state: State<'_, App>,
@@ -1179,13 +1186,13 @@ pub fn password_never_forget(
 }
 
 /// Ответ на «Сохранить пароль?»: `save`, `never`, `dismiss`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_offer_answer(app: AppHandle, tab: u32, action: String) -> Result<(), String> {
     passwords::answer(&app, tab, &action).map_err(text)
 }
 
 /// Заполнить форму на вкладке выбранной учёткой.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn password_fill(app: AppHandle, tab: u32, id: i64) -> Result<(), String> {
     passwords::fill(&app, tab, id).map_err(text)
 }
@@ -1196,7 +1203,7 @@ pub struct SiteAccount {
     username: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn passwords_for_site(state: State<'_, App>, url: String) -> Result<Vec<SiteAccount>, String> {
     let Some(origin) = passwords_csv::origin_of(&url) else {
         return Ok(Vec::new());
@@ -1215,7 +1222,7 @@ pub fn passwords_for_site(state: State<'_, App>, url: String) -> Result<Vec<Site
 
 /* ── Загрузки ───────────────────────────────────────────────────────────── */
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn downloads_list(state: State<'_, App>, limit: Option<u32>) -> Result<Vec<Download>, String> {
     state.store.downloads(limit.unwrap_or(200)).map_err(text)
 }
@@ -1228,7 +1235,7 @@ pub async fn download_control(app: AppHandle, id: i64, action: String) -> Result
 
 /// Масштаб, который сайт запомнил. Chrome помнит его на сайт, а не на вкладку:
 /// открыл тот же сайт в новой вкладке — масштаб тот же.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn zoom_sites(state: State<'_, App>) -> Value {
     state
         .store
@@ -1240,7 +1247,7 @@ pub fn zoom_sites(state: State<'_, App>) -> Value {
 }
 
 /// Запомнить масштаб сайта (или забыть, если он вернулся к 100%).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn zoom_site_set(
     app: AppHandle,
     state: State<'_, App>,
@@ -1272,7 +1279,7 @@ pub fn zoom_site_set(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn downloads_clear(app: AppHandle, state: State<'_, App>) -> Result<(), String> {
     state.store.clear_downloads().map_err(text)?;
     let _ = app.emit("downloads", ());
@@ -1288,7 +1295,7 @@ fn download_dir(app: &AppHandle, store: &Store) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn downloads_folder_open(app: AppHandle, state: State<'_, App>) -> Result<(), String> {
     let dir = download_dir(&app, &state.store);
     tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(text)
@@ -1337,7 +1344,7 @@ pub async fn download_folder_pick(
 /* ── Данные браузера и сведения ─────────────────────────────────────────── */
 
 /// «Удалить данные о работе в браузере».
-#[tauri::command]
+#[tauri::command(async)]
 pub fn browsing_data_clear(
     app: AppHandle,
     state: State<'_, App>,
@@ -1406,7 +1413,7 @@ pub async fn site_permission_reset(
     .map_err(text)?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn about_info(app: AppHandle) -> Value {
     let webview = with_any_host(&app, |host| host.browser_version()).unwrap_or_default();
     serde_json::json!({
@@ -1416,7 +1423,7 @@ pub fn about_info(app: AppHandle) -> Value {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn profile_open() -> Result<(), String> {
     tauri_plugin_opener::open_path(crate::profile_dir(), None::<&str>).map_err(text)
 }

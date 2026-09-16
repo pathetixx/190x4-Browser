@@ -51,6 +51,9 @@ pub struct App {
     pub external: crate::external::Offers,
     /// Окна браузера: ярлык → что это за окно (обычное или приватное).
     pub windows: WindowRegistry,
+    /// Поисковая система из настроек: её читает открытие вкладки на главном
+    /// потоке, где ждать замок базы нельзя.
+    pub engine: parking_lot::RwLock<String>,
     /// Последняя сохранённая сессия каждого окна: окно закрывается раньше,
     /// чем интерфейс успевает записать её сам.
     pub sessions: Mutex<HashMap<String, Vec<browser190x4_store::SessionTab>>>,

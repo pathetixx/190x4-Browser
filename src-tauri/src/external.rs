@@ -148,6 +148,27 @@ pub fn on_request(
     origin: &str,
     user_initiated: bool,
 ) {
+    // Событие пришло на главный поток, а решение читает базу и реестр.
+    let (app, window, uri, origin) = (
+        app.clone(),
+        window.to_string(),
+        uri.to_string(),
+        origin.to_string(),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        decide(&app, &window, tab, token, &uri, &origin, user_initiated)
+    });
+}
+
+fn decide(
+    app: &AppHandle,
+    window: &str,
+    tab: u32,
+    token: u64,
+    uri: &str,
+    origin: &str,
+    user_initiated: bool,
+) {
     let Some(scheme) = scheme_of(uri) else {
         tracing::info!("ссылка на приложение отклонена");
         return;
