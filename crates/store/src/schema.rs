@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Версия схемы хранится в `user_version`: это дешевле отдельной таблицы и
 /// не требует запроса при каждом старте.
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 /// Корневые папки закладок. Номера фиксированы: интерфейс и импорт ссылаются
 /// на них напрямую, а переименовать или удалить их нельзя.
@@ -25,6 +25,9 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
     }
     if current < 3 {
         db.execute_batch(V3)?;
+    }
+    if current < 4 {
+        db.execute_batch(V4)?;
     }
     Ok(())
 }
@@ -155,14 +158,30 @@ const V3: &str = r#"
         url        TEXT NOT NULL,
         title      TEXT NOT NULL DEFAULT '',
         host       TEXT NOT NULL DEFAULT '',
+        -- Адрес и заголовок в нижнем регистре: SQLite lower() умеет только
+        -- ASCII, а искать «Хабр» по «хабр» нужно.
+        search     TEXT NOT NULL DEFAULT '',
         visited_at INTEGER NOT NULL
     );
     CREATE INDEX visits_at ON visits(visited_at DESC);
     CREATE INDEX visits_url ON visits(url);
-    INSERT INTO visits (url, title, host, visited_at)
-        SELECT url, title, host, visited_at FROM history;
+    INSERT INTO visits (url, title, host, search, visited_at)
+        SELECT url, title, host, lower(title || ' ' || url), visited_at FROM history;
+
+    ALTER TABLE history ADD COLUMN search TEXT NOT NULL DEFAULT '';
+    UPDATE history SET search = lower(title || ' ' || url);
 
     PRAGMA user_version = 3;
+    COMMIT;
+"#;
+
+/// Четвёртая версия: группы вкладок. Группа описывается прямо в строке
+/// вкладки — отдельная таблица на две-три группы в окне не окупается, а
+/// восстановление сессии читает всё одним запросом.
+const V4: &str = r#"
+    BEGIN;
+    ALTER TABLE session_windows ADD COLUMN group_json TEXT NOT NULL DEFAULT '';
+    PRAGMA user_version = 4;
     COMMIT;
 "#;
 

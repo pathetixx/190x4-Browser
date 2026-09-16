@@ -29,7 +29,7 @@ pub use downloads::{Download, DownloadKind, DownloadState};
 pub use history::{HistoryEntry, HistoryHit, Visit};
 pub use passwords::{NeverSite, PasswordEntry, PasswordSecret};
 pub use schema::{BAR_FOLDER, OTHER_FOLDER};
-pub use session::SessionTab;
+pub use session::{SessionGroup, SessionTab};
 
 pub struct Store {
     db: Mutex<Connection>,

@@ -600,6 +600,57 @@ function siteBlockingRow({ url, site, blocked, blocking }) {
 /** Меню страницы по правому щелчку: пункты собирает окно браузера
  *  (`context-menu.js`). Команду движка попап отдаёт движку сам и только потом
  *  закрывается — иначе закрытие успело бы ответить «без выбора». */
+/** Пузырь группы вкладок: имя, цвет и действия над всей группой. */
+VIEWS.group = function group({ group: data = {}, tabs = 0, colors = [] }) {
+  const box = el("div", "bubble");
+  box.append(el("div", "bubble__title", "Группа вкладок"));
+
+  const name = el("input", "field");
+  name.type = "text";
+  name.placeholder = "Название группы";
+  name.value = data.title ?? "";
+  name.maxLength = 40;
+  name.setAttribute("autofocus", "true");
+  // Имя применяется по ходу набора: отдельной кнопки «Сохранить» в Chrome нет.
+  name.addEventListener("input", () =>
+    act("group", "rename", { id: data.id, title: name.value }, { keepOpen: true })
+  );
+  name.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") close();
+  });
+  box.append(name);
+
+  const palette = el("div", "palette");
+  for (const [id, label] of colors) {
+    const dot = el("button", "palette__dot");
+    dot.type = "button";
+    dot.dataset.color = id;
+    dot.title = label;
+    dot.setAttribute("aria-pressed", String(id === data.color));
+    dot.addEventListener("click", () => {
+      for (const other of palette.children) other.setAttribute("aria-pressed", String(other === dot));
+      act("group", "color", { id: data.id, color: id }, { keepOpen: true });
+    });
+    palette.append(dot);
+  }
+  box.append(palette);
+
+  const actions = el("div", "menu");
+  for (const [action, label, glyph] of [
+    ["collapse", data.collapsed ? "Развернуть группу" : "Свернуть группу", "chevron-down-16"],
+    ["ungroup", "Разгруппировать", "dismiss-16"],
+    ["close", `Закрыть группу (${tabs})`, "delete-16"],
+  ]) {
+    const item = el("button", "menu__item");
+    item.type = "button";
+    item.append(icon(glyph, sizeOf(glyph)), el("span", "menu__label", label));
+    item.addEventListener("click", () => act("group", action, { id: data.id }));
+    actions.append(item);
+  }
+  box.append(actions);
+  return box;
+};
+
 VIEWS.context = function context({ tab, token, rows = [] }) {
   const list = el("div", "menu menu--context scroll");
   for (const row of rows) {

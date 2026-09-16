@@ -769,3 +769,47 @@ svg {
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
 }
+
+/* ── Пузырь группы вкладок ──────────────────────────────────── */
+
+.palette {
+  display: flex;
+  gap: 8px;
+  padding: 10px 4px 4px;
+}
+
+.palette__dot {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--dot);
+  cursor: pointer;
+}
+
+.palette__dot[aria-pressed="true"] {
+  border-color: var(--text-hi);
+}
+
+.palette__dot[data-color="rose"] {
+  --dot: #d9536f;
+}
+.palette__dot[data-color="amber"] {
+  --dot: #c8892b;
+}
+.palette__dot[data-color="lime"] {
+  --dot: #6f9a3a;
+}
+.palette__dot[data-color="teal"] {
+  --dot: #2f8f86;
+}
+.palette__dot[data-color="sky"] {
+  --dot: #3a7bbf;
+}
+.palette__dot[data-color="violet"] {
+  --dot: #7a5cc0;
+}
+.palette__dot[data-color="slate"] {
+  --dot: #6b7280;
+}

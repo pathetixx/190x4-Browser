@@ -12,6 +12,22 @@ pub struct SessionTab {
     /// Закреплённая вкладка: она открывается первой и без крестика.
     #[serde(default)]
     pub pinned: bool,
+    /// Группа, в которой вкладка лежала. Описание группы повторяется у каждой
+    /// её вкладки: отдельная таблица на две-три группы в окне не окупается.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<SessionGroup>,
+}
+
+/// Группа вкладок: имя, цвет и свёрнута ли она.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionGroup {
+    pub id: i64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl Store {
@@ -27,10 +43,16 @@ impl Store {
             tx.execute("DELETE FROM session_windows WHERE window = ?1", [window])?;
             {
                 let mut stmt = tx.prepare(
-                    "INSERT INTO session_windows (window, position, url, title, active, pinned)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO session_windows
+                        (window, position, url, title, active, pinned, group_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 )?;
                 for (index, tab) in tabs.iter().enumerate() {
+                    let group = tab
+                        .group
+                        .as_ref()
+                        .and_then(|group| serde_json::to_string(group).ok())
+                        .unwrap_or_default();
                     stmt.execute(rusqlite::params![
                         window,
                         index as i64,
@@ -38,6 +60,7 @@ impl Store {
                         tab.title,
                         tab.active as i64,
                         tab.pinned as i64,
+                        group,
                     ])?;
                 }
             }
@@ -49,16 +72,18 @@ impl Store {
     pub fn restore_session(&self, window: i64) -> anyhow::Result<Vec<SessionTab>> {
         self.with(|db| {
             let mut stmt = db.prepare(
-                "SELECT url, title, active, pinned FROM session_windows
+                "SELECT url, title, active, pinned, group_json FROM session_windows
                  WHERE window = ?1 ORDER BY position",
             )?;
             let rows: Vec<SessionTab> = stmt
                 .query_map([window], |row| {
+                    let group: String = row.get(4)?;
                     Ok(SessionTab {
                         url: row.get(0)?,
                         title: row.get(1)?,
                         active: row.get::<_, i64>(2)? == 1,
                         pinned: row.get::<_, i64>(3)? == 1,
+                        group: serde_json::from_str(&group).ok(),
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -111,6 +136,7 @@ mod tests {
             title: String::new(),
             active,
             pinned: false,
+            group: None,
         }
     }
 
@@ -176,6 +202,22 @@ mod tests {
         pinned.pinned = true;
         store.save_session(0, &[pinned]).unwrap();
         assert!(store.restore_session(0).unwrap()[0].pinned);
+    }
+
+    #[test]
+    fn group_survives_a_restart() {
+        let store = Store::memory().unwrap();
+        let mut grouped = tab("https://a.example/", true);
+        grouped.group = Some(crate::session::SessionGroup {
+            id: 7,
+            title: "Работа".into(),
+            color: "rose".into(),
+            collapsed: true,
+        });
+        store.save_session(0, &[grouped.clone()]).unwrap();
+
+        let restored = store.restore_session(0).unwrap();
+        assert_eq!(restored[0].group, grouped.group);
     }
 
     #[test]

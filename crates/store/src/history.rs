@@ -47,20 +47,22 @@ impl Store {
         }
         let host = host_of(url);
         let now = now_secs();
+        let search = searchable(title, url);
         self.with(|db| {
             let tx = db.unchecked_transaction()?;
             tx.execute(
                 r#"
-                INSERT INTO history (url, title, host, visits, visited_at)
-                VALUES (?1, ?2, ?3, 1, ?4)
+                INSERT INTO history (url, title, host, search, visits, visited_at)
+                VALUES (?1, ?2, ?3, ?5, 1, ?4)
                 ON CONFLICT(url) DO UPDATE SET
                     -- Пустым заголовком затирать уже известный не даём:
                     -- NavigationCompleted иногда приходит раньше DocumentTitleChanged.
                     title      = CASE WHEN excluded.title = '' THEN history.title ELSE excluded.title END,
+                    search     = CASE WHEN excluded.title = '' THEN history.search ELSE excluded.search END,
                     visits     = history.visits + 1,
                     visited_at = excluded.visited_at
                 "#,
-                rusqlite::params![url, title, host, now],
+                rusqlite::params![url, title, host, now, search],
             )?;
             // Перезагрузка страницы в ту же секунду — это одно посещение.
             let repeat: bool = tx.query_row(
@@ -70,14 +72,17 @@ impl Store {
             )?;
             if repeat {
                 tx.execute(
-                    "UPDATE visits SET title = CASE WHEN ?2 = '' THEN title ELSE ?2 END
+                    "UPDATE visits SET
+                        title = CASE WHEN ?2 = '' THEN title ELSE ?2 END,
+                        search = CASE WHEN ?2 = '' THEN search ELSE ?4 END
                      WHERE url = ?1 AND visited_at >= ?3",
-                    rusqlite::params![url, title, now - 1],
+                    rusqlite::params![url, title, now - 1, search],
                 )?;
             } else {
                 tx.execute(
-                    "INSERT INTO visits (url, title, host, visited_at) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![url, title, host, now],
+                    "INSERT INTO visits (url, title, host, search, visited_at)
+                     VALUES (?1, ?2, ?3, ?5, ?4)",
+                    rusqlite::params![url, title, host, now, search],
                 )?;
             }
             tx.commit()
@@ -114,7 +119,7 @@ impl Store {
                 r#"
                 SELECT id, url, title, host, visited_at FROM visits
                 WHERE visited_at <= ?2
-                  AND (?1 = '' OR lower(url) LIKE ?1 ESCAPE '\' OR lower(title) LIKE ?1 ESCAPE '\')
+                  AND (?1 = '' OR search LIKE ?1 ESCAPE '\')
                 ORDER BY visited_at DESC, id DESC
                 LIMIT ?3
                 "#,
@@ -151,7 +156,7 @@ impl Store {
                 r#"
                 SELECT url, title, host, visits, visited_at
                 FROM history
-                WHERE lower(url) LIKE ?1 ESCAPE '\' OR lower(title) LIKE ?1 ESCAPE '\'
+                WHERE search LIKE ?1 ESCAPE '\'
                 ORDER BY visited_at DESC
                 LIMIT 200
                 "#,
@@ -260,6 +265,13 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
     })
 }
 
+/// Строка, по которой ищут: заголовок и адрес в нижнем регистре. Считается
+/// в Rust — `lower()` внутри SQLite знает только ASCII, а «Хабр» надо
+/// находить и по «хабр».
+fn searchable(title: &str, url: &str) -> String {
+    format!("{title} {url}").to_lowercase()
+}
+
 /// Шаблон для LIKE: свои `%` и `_` пользователь ищет как обычные знаки, а не
 /// как подстановочные — иначе запрос «100%» находил бы всё подряд.
 fn like_pattern(query: &str) -> String {
@@ -349,6 +361,7 @@ mod tests {
 
         let hits = store.search_history("habr", 5).unwrap();
         assert_eq!(hits[0].entry.url, "https://habr.com/often");
+        assert_eq!(store.search_history("чАстАя", 5).unwrap().len(), 1);
     }
 
     #[test]
@@ -377,8 +390,11 @@ mod tests {
         assert_eq!(visits.len(), 2);
         assert_eq!(visits[0].url, "https://b.example/");
 
-        let found = store.history_visits("а.example", None, 10).unwrap();
+        let found = store.history_visits("a.example", None, 10).unwrap();
         assert_eq!(found.len(), 1);
+        // Русский заголовок ищется и строчными буквами: lower() в SQLite
+        // кириллицу не трогает, поэтому регистр приводит Rust.
+        assert_eq!(store.history_visits("б", None, 10).unwrap().len(), 1);
 
         store.forget_visit(visits[0].id).unwrap();
         assert_eq!(store.history_visits("", None, 10).unwrap().len(), 1);

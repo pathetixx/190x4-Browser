@@ -11,7 +11,7 @@
 import { invoke } from "./bridge.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
 import { setPageHidden } from "./layout.js";
-import { openMenu } from "./popups.js";
+import { onPopupAction, openMenu, openPopup } from "./popups.js";
 import {
   groupBounds,
   insertTabAt,
@@ -34,12 +34,32 @@ export const INTERNAL = {
   history: { title: "История", icon: "history" },
 };
 
+/** Цвета групп — как в Chrome: у группы есть имя и цвет, больше ничего. */
+export const GROUP_COLORS = [
+  ["rose", "Багровый"],
+  ["amber", "Янтарный"],
+  ["lime", "Лаймовый"],
+  ["teal", "Бирюзовый"],
+  ["sky", "Небесный"],
+  ["violet", "Фиолетовый"],
+  ["slate", "Серый"],
+];
+
+let groupSeq = 1;
 let internalSeq = 1_000_000;
 /** Спящие вкладки нумеруются в минус: их номера не встретятся с номерами Rust. */
 let sleepSeq = -1;
 const closedTabs = [];
 
 export function initTabs() {
+  onPopupAction("group", ({ action, id, title, color }) => {
+    if (action === "rename") updateGroup(id, { title: String(title ?? "").slice(0, 40) });
+    if (action === "color") updateGroup(id, { color });
+    if (action === "collapse") toggleGroup(id);
+    if (action === "ungroup") ungroupAll(id);
+    if (action === "close") closeGroup(id);
+  });
+
   // Ширина вкладок меняется и без перерисовки — окно развернули или сузили.
   new ResizeObserver(() => updateNarrow()).observe(strip);
   strip.addEventListener("click", onClick);
@@ -118,12 +138,14 @@ function defaultIndex() {
  * Вкладка из сессии: место в строке есть, страницы нет. Просыпается при
  * первом показе.
  */
-export function openSleeping({ url, title = "", pinned = false }) {
+export function openSleeping({ url, title = "", pinned = false, group = null }) {
   const id = sleepSeq--;
+  if (group) groupSeq = Math.max(groupSeq, group.id + 1);
   upsertTab(id, {
     url,
     title: title || hostOf(url) || url,
     pinned,
+    group,
     sleeping: true,
     loading: false,
   });
@@ -314,6 +336,8 @@ function showTabMenu(id, event) {
     },
     { id: "to-window", label: "Переместить в новое окно", icon: "window-16", disabled: !web },
     { separator: true },
+    ...groupItems(tab),
+    { separator: true },
     { id: "close", label: "Закрыть", icon: "dismiss-16", keys: "Ctrl+W" },
     { id: "close-left", label: "Закрыть вкладки слева", disabled: index === 0 },
     { id: "close-right", label: "Закрыть вкладки справа", disabled: index === ids.length - 1 },
@@ -347,6 +371,20 @@ function showTabMenu(id, event) {
       case "to-window":
         moveToNewWindow(id);
         break;
+      case "group-new": {
+        const group = groupTab(id);
+        if (group) editGroup(group.id);
+        break;
+      }
+      case "group-out":
+        ungroupTab(id);
+        break;
+      default:
+        if (action?.startsWith("group:")) {
+          const target = groups().find((group) => group.id === Number(action.slice(6)));
+          if (target) groupTab(id, { ...target, collapsed: false });
+        }
+        break;
       case "close":
         close(id);
         break;
@@ -370,12 +408,110 @@ function showTabMenu(id, event) {
   });
 }
 
+/** Пункты меню про группы: новая, существующие и «убрать из группы». */
+function groupItems(tab) {
+  if (tab.internal) return [];
+  const items = [{ id: "group-new", label: "Добавить вкладку в новую группу", icon: "tab-group-16" }];
+  for (const group of groups()) {
+    if (group.id === tab.group?.id) continue;
+    items.push({
+      id: `group:${group.id}`,
+      label: `Добавить в группу «${group.title || "Без имени"}»`,
+      icon: "tab-group-16",
+    });
+  }
+  if (tab.group) items.push({ id: "group-out", label: "Убрать из группы", icon: "dismiss-16" });
+  return items;
+}
+
+/** Пузырь группы: имя, цвет и действия над всей группой. */
+export function editGroup(groupId, anchor = null) {
+  const members = groupTabs(groupId);
+  if (!members.length) return;
+  const group = members[0].group;
+  const target = anchor ?? strip.querySelector(`[data-group-pill="${groupId}"]`) ?? strip;
+  openPopup("group", target, {
+    width: 300,
+    payload: { group, tabs: members.length, colors: GROUP_COLORS },
+  }).catch(() => {});
+}
+
 /** Вкладку — в отдельное окно: адрес переезжает, здесь она закрывается. */
 export async function moveToNewWindow(id) {
   const tab = state.tabs.get(id);
   if (!tab || tab.internal || !tab.url) return;
   await invoke("window_open", { private: false, url: tab.url }).catch(() => {});
   await close(id);
+}
+
+/* ── Группы вкладок ────────────────────────────────────────── */
+
+/** Все вкладки группы по порядку. */
+export function groupTabs(id) {
+  return [...state.tabs.values()].filter((tab) => tab.group?.id === id);
+}
+
+/** Группы окна: по одной записи на группу, в порядке появления в строке. */
+export function groups() {
+  const seen = new Map();
+  for (const tab of state.tabs.values()) {
+    if (tab.group && !seen.has(tab.group.id)) seen.set(tab.group.id, tab.group);
+  }
+  return [...seen.values()];
+}
+
+/** Новая группа из одной вкладки: имя пользователь задаст в пузыре. */
+export function groupTab(id, group = null) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.internal) return null;
+  const next =
+    group ??
+    {
+      id: groupSeq++,
+      title: "",
+      color: GROUP_COLORS[(groupSeq - 2) % GROUP_COLORS.length][0],
+      collapsed: false,
+    };
+  upsertTab(id, { group: next, pinned: false });
+  // Вкладки группы стоят рядом: место новой — сразу за последней из группы.
+  const members = groupTabs(next.id).filter((other) => other.id !== id);
+  if (members.length) {
+    moveTab(id, tabIndex(members[members.length - 1].id) + 1);
+  }
+  return next;
+}
+
+export function ungroupTab(id) {
+  if (state.tabs.get(id)?.group) upsertTab(id, { group: null });
+}
+
+/** Поменять свойства группы у всех её вкладок разом. */
+export function updateGroup(groupId, patch) {
+  for (const tab of groupTabs(groupId)) {
+    upsertTab(tab.id, { group: { ...tab.group, ...patch } });
+  }
+}
+
+export function ungroupAll(groupId) {
+  for (const tab of groupTabs(groupId)) upsertTab(tab.id, { group: null });
+}
+
+export async function closeGroup(groupId) {
+  await closeMany(groupTabs(groupId).map((tab) => tab.id));
+}
+
+/** Свернуть или развернуть группу. Свёрнутая группа прячет свои вкладки. */
+export function toggleGroup(groupId) {
+  const members = groupTabs(groupId);
+  if (!members.length) return;
+  const collapsed = !members[0].group.collapsed;
+  // Активную вкладку прятать нельзя: перед сворачиванием уходим на соседнюю.
+  if (collapsed && members.some((tab) => tab.id === state.activeId)) {
+    const outside = [...state.tabs.values()].find((tab) => tab.group?.id !== groupId);
+    if (!outside) return;
+    activate(outside.id);
+  }
+  updateGroup(groupId, { collapsed });
 }
 
 /* ── Перетаскивание вкладок ────────────────────────────────── */
@@ -427,6 +563,7 @@ function wireDrag() {
  * появления, теряется hover и позиция крестика под курсором.
  */
 const nodes = new Map();
+const pills = new Map();
 
 export function renderTabs() {
   const tabs = [...state.tabs.values()];
@@ -437,30 +574,78 @@ export function renderTabs() {
       nodes.delete(id);
     }
   }
-
-  tabs.forEach((tab, index) => {
-    let node = nodes.get(tab.id);
-    if (!node) {
-      node = el("div", "tab");
-      node.dataset.id = tab.id;
-      node.draggable = true;
-      node.setAttribute("role", "tab");
-      nodes.set(tab.id, node);
+  const alive = new Set(tabs.map((tab) => tab.group?.id).filter((id) => id != null));
+  for (const [id, pill] of pills) {
+    if (!alive.has(id)) {
+      pill.remove();
+      pills.delete(id);
     }
-    updateTab(node, tab);
+  }
+
+  // Порядок в строке: перед первой вкладкой группы стоит её ярлык.
+  const order = [];
+  let lastGroup = null;
+  for (const tab of tabs) {
+    const group = tab.group ?? null;
+    if (group && group.id !== lastGroup) order.push(pillFor(group));
+    lastGroup = group?.id ?? null;
+    order.push(tabNode(tab));
+  }
+  order.forEach((node, index) => {
     if (strip.children[index] !== node) strip.insertBefore(node, strip.children[index] ?? null);
   });
 
-  // Ширина полосы — от числа вкладок, а не от их содержимого: иначе узкие
-  // вкладки без подписей сжимали полосу под себя и не расширялись, когда место
-  // появлялось (окно развернули, вкладки закрыли).
-  strip.parentElement.style.setProperty("--tab-count", String(tabs.length));
+  // Ширина полосы — от числа видимых вкладок, а не от их содержимого: иначе
+  // узкие вкладки без подписей сжимали полосу под себя и не расширялись, когда
+  // место появлялось (окно развернули, вкладки закрыли).
+  const visible = tabs.filter((tab) => !tab.group?.collapsed).length;
+  strip.parentElement.style.setProperty("--tab-count", String(visible + pills.size));
   requestAnimationFrame(updateNarrow);
+}
+
+function tabNode(tab) {
+  let node = nodes.get(tab.id);
+  if (!node) {
+    node = el("div", "tab");
+    node.dataset.id = tab.id;
+    node.draggable = true;
+    node.setAttribute("role", "tab");
+    nodes.set(tab.id, node);
+  }
+  updateTab(node, tab);
+  // Свёрнутая группа прячет свои вкладки: на экране остаётся только ярлык.
+  node.hidden = Boolean(tab.group?.collapsed);
+  return node;
+}
+
+/** Ярлык группы: щелчок сворачивает, правый щелчок открывает пузырь. */
+function pillFor(group) {
+  let pill = pills.get(group.id);
+  if (!pill) {
+    pill = el("button", "tabgroup");
+    pill.type = "button";
+    pill.dataset.groupPill = group.id;
+    pill.addEventListener("click", () => toggleGroup(group.id));
+    pill.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      editGroup(group.id, pill);
+    });
+    pills.set(group.id, pill);
+  }
+  pill.dataset.color = group.color;
+  pill.dataset.collapsed = String(Boolean(group.collapsed));
+  const label = group.title || `${groupTabs(group.id).length}`;
+  if (pill.textContent !== label) pill.textContent = label;
+  pill.title = group.title
+    ? `Группа «${group.title}» — щелчок сворачивает, правый щелчок открывает настройки`
+    : "Группа вкладок — правый щелчок открывает настройки";
+  return pill;
 }
 
 /** Узкий режим — по фактической ширине плитки: при открытой панели места меньше при том же счёте. */
 function updateNarrow() {
   for (const node of strip.children) {
+    if (!node.classList.contains("tab") || node.hidden) continue;
     const width = node.getBoundingClientRect().width;
     // Подпись прячем, только когда от неё остались бы две-три буквы.
     const narrow = width < 64 ? "true" : "false";
@@ -482,6 +667,7 @@ function updateTab(node, tab) {
   setAttr(node, "aria-selected", String(active));
   setAttr(node, "data-muted", String(tab.muted));
   setAttr(node, "data-pinned", String(tab.pinned));
+  setAttr(node, "data-group", tab.group ? tab.group.color : "");
   setAttr(node, "data-sleeping", String(tab.sleeping));
   setAttr(node, "data-split", String(split));
 

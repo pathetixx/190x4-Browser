@@ -722,6 +722,7 @@ function sessionTabs() {
       title: tab.title ?? "",
       active: tab.id === state.activeId,
       pinned: Boolean(tab.pinned),
+      group: tab.group ?? null,
     }));
 }
 

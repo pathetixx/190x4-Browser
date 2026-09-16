@@ -277,3 +277,72 @@
   border-radius: 2px;
   background: var(--accent);
 }
+
+/* ── Группы вкладок ─────────────────────────────────────────── */
+
+/* Ярлык группы стоит перед её вкладками: щелчок сворачивает группу, правый
+   щелчок открывает пузырь с именем и цветом — как в Chrome. */
+.tabgroup {
+  flex: 0 0 auto;
+  align-self: center;
+  max-width: 140px;
+  height: 22px;
+  margin-inline-end: 2px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--group, var(--accent));
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.tabgroup[data-collapsed="true"] {
+  opacity: 0.85;
+}
+
+/* Цвета групп. Названия — те же, что в tabs.js. */
+.tabgroup[data-color="rose"],
+.tab[data-group="rose"] {
+  --group: #d9536f;
+}
+.tabgroup[data-color="amber"],
+.tab[data-group="amber"] {
+  --group: #c8892b;
+}
+.tabgroup[data-color="lime"],
+.tab[data-group="lime"] {
+  --group: #6f9a3a;
+}
+.tabgroup[data-color="teal"],
+.tab[data-group="teal"] {
+  --group: #2f8f86;
+}
+.tabgroup[data-color="sky"],
+.tab[data-group="sky"] {
+  --group: #3a7bbf;
+}
+.tabgroup[data-color="violet"],
+.tab[data-group="violet"] {
+  --group: #7a5cc0;
+}
+.tabgroup[data-color="slate"],
+.tab[data-group="slate"] {
+  --group: #6b7280;
+}
+
+/* Вкладка в группе помечена полоской её цвета. */
+.tab[data-group]:not([data-group=""])::before {
+  content: "";
+  position: absolute;
+  inset-inline: 6px;
+  top: 0;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--group);
+}
