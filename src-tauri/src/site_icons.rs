@@ -46,6 +46,16 @@ struct Candidate {
     maskable: bool,
 }
 
+/// Значок сайта, который уже лежит в кэше профиля. В сеть не ходит: список
+/// паролей и закладок не должен рассылать запросы по всем сайтам из него.
+pub fn cached(cache_dir: &Path, page: &str) -> Option<Icon> {
+    let page = Url::parse(page).ok()?;
+    if !matches!(page.scheme(), "http" | "https") || page.host_str().is_none() {
+        return None;
+    }
+    read_cache(&cache_dir.join(format!("{}.json", cache_key(&page))))?
+}
+
 /// Значок сайта страницы `page` или `None`, если у сайта его не нашлось.
 pub async fn icon(client: &reqwest::Client, cache_dir: &Path, page: &str) -> Option<Icon> {
     let page = Url::parse(page).ok()?;

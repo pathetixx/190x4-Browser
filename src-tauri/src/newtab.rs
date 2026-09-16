@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::resources::Monitor;
-use crate::state::{with_host, with_host_later, App};
+use crate::state::{later, with_tab, App};
 use crate::weather::{self, Place};
 
 /// Прогноз для того же места берётся из памяти.
@@ -52,7 +52,7 @@ pub struct NewTab {
 }
 
 impl NewTab {
-    fn client(&self) -> &reqwest::Client {
+    pub(crate) fn client(&self) -> &reqwest::Client {
         self.client.get_or_init(|| {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(12))
@@ -319,7 +319,7 @@ async fn weather_message(app: &AppHandle, force: bool) -> Value {
 /// Ответ странице. Блокирует до главного потока — звать не с него.
 fn post(app: &AppHandle, tab: u32, message: Value) {
     let json = message.to_string();
-    let _ = with_host(app, move |host| {
+    let _ = with_tab(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| {
             if from_pages(&view.source_url()) {
                 if let Err(err) = view.post(&json) {
@@ -338,7 +338,7 @@ fn post_soon(app: AppHandle, tab: u32, message: Value) {
 /// Ответ из обработчика события вкладки — он сам на главном потоке.
 fn post_later(app: &AppHandle, tab: u32, message: Value) {
     let json = message.to_string();
-    with_host_later(app, move |host| {
+    later(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| {
             if from_pages(&view.source_url()) {
                 let _ = view.post(&json);

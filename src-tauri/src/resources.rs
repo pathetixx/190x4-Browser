@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::state::with_host;
+use crate::state::with_any_host;
 
 /// Замер свежее этого отдаётся из кэша: страницу могут открыть в двух вкладках.
 const FRESH: Duration = Duration::from_millis(700);
@@ -137,7 +137,7 @@ impl Monitor {
 
 fn load_engine(app: &AppHandle) -> Option<(Vec<EngineProcess>, Vec<TabBrief>)> {
     let (tx, rx) = mpsc::channel();
-    let tabs = with_host(app, move |host| {
+    let tabs = with_any_host(app, move |host| {
         let reply = tx.clone();
         if let Err(err) = host.engine_processes(move |processes| {
             let _ = reply.send(processes);

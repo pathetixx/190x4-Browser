@@ -1,13 +1,29 @@
 /**
  * Строка вкладок: рендер, открытие и закрытие, встроенные страницы,
- * контекстное меню, перетаскивание.
+ * закреплённые и спящие вкладки, контекстное меню, перетаскивание.
+ *
+ * Вкладка из прошлого сеанса сначала спит: у неё есть место в строке, адрес и
+ * заголовок, но нет ни вебвью, ни памяти под страницу. Просыпается она при
+ * первом показе — так же ведут себя Chrome и Edge, и двадцать вкладок в
+ * сессии больше не поднимают двадцать страниц на старте.
  */
 
 import { invoke } from "./bridge.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
 import { setPageHidden } from "./layout.js";
 import { openMenu } from "./popups.js";
-import { insertTabAt, moveTab, removeTab, setActive, state, tabIndex, upsertTab } from "./state.js";
+import {
+  groupBounds,
+  insertTabAt,
+  moveTab,
+  removeTab,
+  replaceTabId,
+  setActive,
+  setSplit,
+  state,
+  tabIndex,
+  upsertTab,
+} from "./state.js";
 
 const strip = document.getElementById("tabstrip");
 
@@ -15,9 +31,12 @@ const strip = document.getElementById("tabstrip");
 export const INTERNAL = {
   settings: { title: "Настройки", icon: "settings" },
   downloads: { title: "Загрузки", icon: "download" },
+  history: { title: "История", icon: "history" },
 };
 
 let internalSeq = 1_000_000;
+/** Спящие вкладки нумеруются в минус: их номера не встретятся с номерами Rust. */
+let sleepSeq = -1;
 const closedTabs = [];
 
 export function initTabs() {
@@ -66,7 +85,9 @@ export function internalUrl(name, section = "") {
 
 /** `190x4://settings/passwords`, `about:downloads` → { name, section }. */
 export function parseInternal(url) {
-  const match = /^(?:190x4:\/\/|about:)(settings|downloads)(?:\/([\w-]*))?\/?$/i.exec(String(url ?? "").trim());
+  const match = /^(?:190x4:\/\/|about:)(settings|downloads|history)(?:\/([\w-]*))?\/?$/i.exec(
+    String(url ?? "").trim()
+  );
   return match ? { name: match[1].toLowerCase(), section: match[2] ?? "" } : null;
 }
 
@@ -79,12 +100,33 @@ export async function open(url, { background = false, index = null } = {}) {
   const id = await invoke("tab_open", { url });
   // События движка могли прийти раньше ответа команды — не затираем их.
   const known = state.tabs.has(id);
-  if (index != null) insertTabAt(id, known ? {} : { loading: true }, index);
-  else if (!known) upsertTab(id, { loading: true });
+  const at = index != null ? index : defaultIndex();
+  if (index != null || !known) insertTabAt(id, known ? {} : { loading: true }, at);
   if (!background) {
     await activate(id);
     if (url === "about:newtab") focusOmnibox();
   }
+  return id;
+}
+
+/** Новая вкладка встаёт после закреплённых и после текущей — как в Chrome. */
+function defaultIndex() {
+  return state.tabs.size;
+}
+
+/**
+ * Вкладка из сессии: место в строке есть, страницы нет. Просыпается при
+ * первом показе.
+ */
+export function openSleeping({ url, title = "", pinned = false }) {
+  const id = sleepSeq--;
+  upsertTab(id, {
+    url,
+    title: title || hostOf(url) || url,
+    pinned,
+    sleeping: true,
+    loading: false,
+  });
   return id;
 }
 
@@ -112,14 +154,40 @@ function openInternal(name, section, { background, index }) {
     loading: false,
   };
   if (index != null) insertTabAt(id, patch, index);
-  else upsertTab(id, patch);
+  else insertTabAt(id, patch, defaultIndex());
   if (!background) activate(id);
   return id;
 }
 
+/** Спящая вкладка просыпается: под неё заводится настоящая вкладка движка. */
+async function wake(tab) {
+  const url = tab.url;
+  const realId = await invoke("tab_open", { url }).catch(() => null);
+  if (realId == null) return null;
+  // Событие «вкладка открылась» могло прийти раньше ответа: свои поля
+  // (закрепление, заголовок из сессии) переносим поверх.
+  const known = state.tabs.get(realId);
+  if (known) removeTab(realId);
+  replaceTabId(tab.id, realId, {
+    sleeping: false,
+    loading: true,
+    title: known?.title || tab.title,
+    favicon: known?.favicon ?? tab.favicon,
+  });
+  return realId;
+}
+
 export async function activate(id) {
-  const tab = state.tabs.get(id);
+  let tab = state.tabs.get(id);
   if (!tab) return;
+
+  if (tab.sleeping) {
+    const realId = await wake(tab);
+    if (realId == null) return;
+    id = realId;
+    tab = state.tabs.get(id);
+  }
+
   setActive(id);
 
   if (tab.internal) {
@@ -132,6 +200,26 @@ export async function activate(id) {
   if (state.activeId === id) setPageHidden("internal", false);
 }
 
+/** Вторая вкладка рядом с активной: режим разделения экрана. */
+export async function splitWith(id) {
+  let tab = state.tabs.get(id);
+  if (!tab || tab.internal || id === state.activeId) return;
+  if (tab.sleeping) {
+    const realId = await wake(tab);
+    if (realId == null) return;
+    id = realId;
+  }
+  await invoke("tab_split", { id }).catch(() => {});
+  setSplit(id);
+  setPageHidden("internal", false);
+}
+
+export async function endSplit() {
+  if (state.splitId === null) return;
+  await invoke("tab_split", { id: null }).catch(() => {});
+  setSplit(null);
+}
+
 export async function close(id) {
   const tab = state.tabs.get(id);
   if (!tab) return;
@@ -142,12 +230,12 @@ export async function close(id) {
 
   const url = tab.internal ? internalUrl(tab.internal, tab.section) : tab.url;
   if (url) {
-    closedTabs.push({ url, index });
+    closedTabs.push({ url, index, pinned: tab.pinned });
     if (closedTabs.length > 25) closedTabs.shift();
   }
 
   removeTab(id);
-  if (!tab.internal) await invoke("tab_close", { id }).catch(() => {});
+  if (!tab.internal && !tab.sleeping) await invoke("tab_close", { id }).catch(() => {});
 
   if (state.tabs.size === 0) {
     // Последнюю вкладку закрыли — окно не пустеет, а открывает новую.
@@ -161,10 +249,22 @@ export async function close(id) {
   }
 }
 
+/** Закрепить или открепить: закреплённые всегда слева и без крестика. */
+export function togglePin(id) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.internal) return;
+  const pinned = !tab.pinned;
+  upsertTab(id, { pinned });
+  const bounds = groupBounds(pinned);
+  moveTab(id, pinned ? bounds.to : bounds.from);
+}
+
 /** Ctrl+Shift+T. */
 export async function reopenClosed() {
   const last = closedTabs.pop();
-  if (last) await open(last.url, { index: last.index });
+  if (!last) return;
+  const id = await open(last.url, { index: last.index });
+  if (last.pinned) upsertTab(id, { pinned: true });
 }
 
 export function hasClosedTabs() {
@@ -190,22 +290,34 @@ function showTabMenu(id, event) {
   if (!tab) return;
   const ids = [...state.tabs.keys()];
   const index = ids.indexOf(id);
+  const web = !tab.internal;
+  const splitting = state.splitId !== null;
 
   const items = [
     { id: "new-right", label: "Новая вкладка справа", icon: "tab-add" },
     { separator: true },
-    { id: "reload", label: "Обновить", icon: "reload", keys: "Ctrl+R", disabled: Boolean(tab.internal) },
+    { id: "reload", label: "Обновить", icon: "reload", keys: "Ctrl+R", disabled: !web },
     { id: "duplicate", label: "Дублировать", icon: "copy-16" },
+    { id: "pin", label: tab.pinned ? "Открепить" : "Закрепить", icon: "pin-16", disabled: !web },
     {
       id: "mute",
       label: tab.muted ? "Включить звук" : "Выключить звук",
       icon: tab.muted ? "speaker-16" : "mute-16",
-      disabled: Boolean(tab.internal),
+      disabled: !web,
     },
     { separator: true },
+    {
+      id: "split",
+      label: splitting && state.splitId === id ? "Выйти из разделения экрана" : "Открыть в режиме разделения экрана",
+      icon: "split-16",
+      disabled: !web || (id === state.activeId && !splitting),
+    },
+    { id: "to-window", label: "Переместить в новое окно", icon: "window-16", disabled: !web },
+    { separator: true },
     { id: "close", label: "Закрыть", icon: "dismiss-16", keys: "Ctrl+W" },
-    { id: "close-others", label: "Закрыть другие вкладки", disabled: ids.length < 2 },
+    { id: "close-left", label: "Закрыть вкладки слева", disabled: index === 0 },
     { id: "close-right", label: "Закрыть вкладки справа", disabled: index === ids.length - 1 },
+    { id: "close-others", label: "Закрыть другие вкладки", disabled: ids.length < 2 },
     { separator: true },
     { id: "reopen", label: "Открыть закрытую вкладку", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
   ];
@@ -222,8 +334,18 @@ function showTabMenu(id, event) {
       case "duplicate":
         open(tab.internal ? internalUrl(tab.internal) : tab.url, { index: tabIndex(id) + 1 });
         break;
+      case "pin":
+        togglePin(id);
+        break;
       case "mute":
         invoke("tab_mute", { id, muted: !tab.muted }).catch(() => {});
+        break;
+      case "split":
+        if (state.splitId === id) endSplit();
+        else splitWith(id);
+        break;
+      case "to-window":
+        moveToNewWindow(id);
         break;
       case "close":
         close(id);
@@ -231,6 +353,11 @@ function showTabMenu(id, event) {
       case "close-others":
         closeMany([...state.tabs.keys()].filter((other) => other !== id));
         break;
+      case "close-left": {
+        const all = [...state.tabs.keys()];
+        closeMany(all.slice(0, all.indexOf(id)));
+        break;
+      }
       case "close-right": {
         const all = [...state.tabs.keys()];
         closeMany(all.slice(all.indexOf(id) + 1));
@@ -241,6 +368,14 @@ function showTabMenu(id, event) {
         break;
     }
   });
+}
+
+/** Вкладку — в отдельное окно: адрес переезжает, здесь она закрывается. */
+export async function moveToNewWindow(id) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.internal || !tab.url) return;
+  await invoke("window_open", { private: false, url: tab.url }).catch(() => {});
+  await close(id);
 }
 
 /* ── Перетаскивание вкладок ────────────────────────────────── */
@@ -342,9 +477,13 @@ const SPIN_MS = 1570;
 
 function updateTab(node, tab) {
   const active = state.activeId === tab.id;
-  setAttr(node, "data-active", String(active));
+  const split = state.splitId === tab.id;
+  setAttr(node, "data-active", String(active || split));
   setAttr(node, "aria-selected", String(active));
   setAttr(node, "data-muted", String(tab.muted));
+  setAttr(node, "data-pinned", String(tab.pinned));
+  setAttr(node, "data-sleeping", String(tab.sleeping));
+  setAttr(node, "data-split", String(split));
 
   const title = tab.title || hostOf(tab.url) || "Новая вкладка";
   if (node.title !== title) node.title = title;

@@ -1,8 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Права chrome-окна и его всплывающего окна. Вкладки сюда не входят и Tauri-IPC не видят.",
-  "windows": ["chrome", "popup"],
+  "description": "Права окон браузера и их всплывающих окон. Вкладки сюда не входят и Tauri-IPC не видят.",
+  "windows": [
+    "chrome",
+    "chrome-*",
+    "popup--*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

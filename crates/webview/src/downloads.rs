@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -46,6 +47,10 @@ use crate::tab::{EventSink, TabEvent};
 /// принятый кусок, а цифре в списке загрузок хватает пяти кадров в секунду.
 const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
+/// Номера загрузок общие на все окна: команда из списка загрузок приходит с
+/// номером записи, а какое окно её начало — неизвестно.
+static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
+
 /// Куда сохранять. Меняется из настроек без перезапуска.
 #[derive(Debug, Clone, Default)]
 pub struct DownloadPolicy {
@@ -68,7 +73,6 @@ struct Pending {
 
 #[derive(Default)]
 pub struct Downloads {
-    next: Cell<u64>,
     ops: RefCell<HashMap<u64, ICoreWebView2DownloadOperation>>,
     pending: RefCell<HashMap<u64, Pending>>,
     policy: RefCell<DownloadPolicy>,
@@ -82,9 +86,12 @@ impl Downloads {
     }
 
     fn next_key(&self) -> u64 {
-        let key = self.next.get() + 1;
-        self.next.set(key);
-        key
+        NEXT_KEY.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Знает ли это окно такую загрузку: команда приходит без номера окна.
+    pub fn has(&self, key: u64) -> bool {
+        self.ops.borrow().contains_key(&key) || self.pending.borrow().contains_key(&key)
     }
 
     /// Пауза, продолжение, отмена.

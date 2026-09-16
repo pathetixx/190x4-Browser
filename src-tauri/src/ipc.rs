@@ -20,20 +20,38 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::state::{with_host, App};
+use crate::browser_windows::{self as windows, WindowKind};
+use crate::state::{with_any_host, with_download, with_host, with_tab, App};
 use crate::{external, passwords, popup, transfers, vault};
 
 fn text(err: impl std::fmt::Display) -> String {
     format!("{err:#}")
 }
 
+/// Окно браузера, от имени которого пришла команда. Всплывающее окно работает
+/// от имени своего окна: меню второго окна не должно трогать первое.
+fn owner(window: &tauri::Window) -> String {
+    let label = window.label();
+    popup::owner_of(label).unwrap_or(label).to_string()
+}
+
+/// Приватное окно ничего не пишет на диск: ни истории, ни сессии, ни паролей.
+fn is_private(app: &AppHandle, window: &tauri::Window) -> bool {
+    app.state::<App>().windows.is_private(&owner(window))
+}
+
 /* ── Вкладки ────────────────────────────────────────────────────────────── */
 
 #[tauri::command]
-pub fn tab_open(app: AppHandle, state: State<'_, App>, url: String) -> Result<u32, String> {
+pub fn tab_open(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+    url: String,
+) -> Result<u32, String> {
     let url = normalize_url(&url, &search_engine(&state.store));
     tracing::info!(%url, "открываем вкладку");
-    let result = with_host(&app, move |host| {
+    let result = with_host(&app, &owner(&window), move |host| {
         host.open(&url).map(|id| id.0).map_err(text)
     })?;
     if let Err(err) = &result {
@@ -46,7 +64,7 @@ pub fn tab_open(app: AppHandle, state: State<'_, App>, url: String) -> Result<u3
 pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
     passwords::forget_tab(&app, id);
     external::forget_tab(&state, id);
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.close(TabId(id))
             .map(|next| next.map(|t| t.0))
             .map_err(text)
@@ -55,7 +73,21 @@ pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Optio
 
 #[tauri::command]
 pub fn tab_activate(app: AppHandle, id: u32) -> Result<(), String> {
-    with_host(&app, move |host| host.activate(TabId(id)).map_err(text))?
+    with_tab(&app, id, move |host| host.activate(TabId(id)).map_err(text))?
+}
+
+/// Разделённый экран: вторая вкладка встаёт справа от активной. `id = None`
+/// возвращает окно к одной странице.
+#[tauri::command]
+pub fn tab_split(app: AppHandle, window: tauri::Window, id: Option<u32>) -> Result<(), String> {
+    match id {
+        Some(id) => with_tab(&app, id, move |host| {
+            host.set_split(Some(TabId(id))).map_err(text)
+        })?,
+        None => with_host(&app, &owner(&window), |host| {
+            host.set_split(None).map_err(text)
+        })?,
+    }
 }
 
 #[tauri::command]
@@ -66,7 +98,7 @@ pub fn tab_navigate(
     url: String,
 ) -> Result<(), String> {
     let url = normalize_url(&url, &search_engine(&state.store));
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.navigate(&url))
             .ok_or_else(|| "вкладка ещё не готова".to_string())?
             .map_err(text)
@@ -75,11 +107,12 @@ pub fn tab_navigate(
 
 #[tauri::command]
 pub fn tab_action(app: AppHandle, id: u32, action: String) -> Result<(), String> {
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| match action.as_str() {
             "back" => tab.go_back().map_err(text),
             "forward" => tab.go_forward().map_err(text),
             "reload" => tab.reload().map_err(text),
+            "reload_hard" => tab.reload_ignoring_cache().map_err(text),
             "print" => tab.print().map_err(text),
             "devtools" => tab.open_devtools().map_err(text),
             "zoom_in" => tab.zoom(1).map(|_| ()).map_err(text),
@@ -99,8 +132,18 @@ pub fn tab_context_menu(
     menu: u64,
     command: Option<i32>,
 ) -> Result<(), String> {
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.context_menu_done(menu, command))
+            .unwrap_or(Ok(()))
+            .map_err(text)
+    })?
+}
+
+/// Поставить вкладке масштаб сайта: его помнит не вкладка, а сайт.
+#[tauri::command]
+pub fn tab_zoom_set(app: AppHandle, id: u32, factor: f64) -> Result<(), String> {
+    with_tab(&app, id, move |host| {
+        host.with_tab(TabId(id), |tab| tab.set_zoom(factor))
             .unwrap_or(Ok(()))
             .map_err(text)
     })?
@@ -111,6 +154,7 @@ pub fn tab_context_menu(
 #[tauri::command]
 pub fn tab_dialog(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
     id: u32,
     tokens: Vec<u64>,
@@ -123,7 +167,7 @@ pub fn tab_dialog(
         .collect();
     if !engine.is_empty() {
         let reply = answer.clone();
-        with_host(&app, move |host| {
+        with_tab(&app, id, move |host| {
             host.with_tab(TabId(id), |tab| {
                 for token in engine {
                     if let Err(err) = tab.dialog_done(token, &reply) {
@@ -134,7 +178,7 @@ pub fn tab_dialog(
         })?;
     }
     let _ = app.emit_to(
-        "chrome",
+        owner(&window).as_str(),
         "dialog-done",
         serde_json::json!({ "id": id, "tokens": tokens }),
     );
@@ -145,7 +189,7 @@ pub fn tab_dialog(
 #[tauri::command]
 pub fn tab_post(app: AppHandle, id: u32, payload: Value) -> Result<(), String> {
     let json = payload.to_string();
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.post(&json))
             .ok_or_else(|| "вкладка ещё не готова".to_string())?
             .map_err(text)
@@ -155,7 +199,7 @@ pub fn tab_post(app: AppHandle, id: u32, payload: Value) -> Result<(), String> {
 /// Заглушить вкладку или вернуть ей звук.
 #[tauri::command]
 pub fn tab_mute(app: AppHandle, id: u32, muted: bool) -> Result<(), String> {
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.set_muted(muted))
             .ok_or_else(|| "вкладка ещё не готова".to_string())?
             .map_err(text)
@@ -165,13 +209,15 @@ pub fn tab_mute(app: AppHandle, id: u32, muted: bool) -> Result<(), String> {
 /// Начать поиск по странице. Результаты приходят событиями `find`.
 #[tauri::command]
 pub fn tab_find(app: AppHandle, id: u32, query: String) -> Result<(), String> {
-    with_host(&app, move |host| host.find(TabId(id), &query).map_err(text))?
+    with_tab(&app, id, move |host| {
+        host.find(TabId(id), &query).map_err(text)
+    })?
 }
 
 /// Следующее/предыдущее совпадение или конец поиска.
 #[tauri::command]
 pub fn tab_find_step(app: AppHandle, id: u32, action: String) -> Result<(), String> {
-    with_host(&app, move |host| {
+    with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| match action.as_str() {
             "next" => tab.find_step(true),
             "prev" => tab.find_step(false),
@@ -190,6 +236,7 @@ pub fn tab_find_step(app: AppHandle, id: u32, action: String) -> Result<(), Stri
 #[tauri::command]
 pub fn layout_set(
     app: AppHandle,
+    window: tauri::Window,
     x: f64,
     y: f64,
     width: f64,
@@ -202,18 +249,24 @@ pub fn layout_set(
         width: (width * scale).round() as i32,
         height: (height * scale).round() as i32,
     };
-    with_host(&app, move |host| host.set_layout(layout).map_err(text))?
+    with_host(&app, &owner(&window), move |host| {
+        host.set_layout(layout).map_err(text)
+    })?
 }
 
 /// Показать/убрать нативную поверхность под оверлеем chrome-а.
 #[tauri::command]
-pub fn overlay_set(app: AppHandle, on: bool) -> Result<(), String> {
-    with_host(&app, move |host| host.set_overlay(on).map_err(text))?
+pub fn overlay_set(app: AppHandle, window: tauri::Window, on: bool) -> Result<(), String> {
+    with_host(&app, &owner(&window), move |host| {
+        host.set_overlay(on).map_err(text)
+    })?
 }
 
 #[tauri::command]
-pub fn window_command(app: AppHandle, action: String) -> Result<(), String> {
-    let window = app.get_webview_window("chrome").ok_or("нет chrome-окна")?;
+pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> Result<(), String> {
+    let window = app
+        .get_webview_window(&owner(&window))
+        .ok_or("нет окна браузера")?;
     match action.as_str() {
         "minimize" => window.minimize().map_err(text),
         "maximize" => window.maximize().map_err(text),
@@ -232,19 +285,50 @@ pub fn window_command(app: AppHandle, action: String) -> Result<(), String> {
 
 /// Вернуть клавиатуру интерфейсу (см. `TabHost::focus_chrome`).
 #[tauri::command]
-pub fn chrome_focus(app: AppHandle) -> Result<(), String> {
-    let result = with_host(&app, |host| host.focus_chrome().map_err(text))?;
+pub fn chrome_focus(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let result = with_host(&app, &owner(&window), |host| {
+        host.focus_chrome().map_err(text)
+    })?;
     tracing::debug!(ok = result.is_ok(), "chrome focus requested");
     result
 }
 
 #[tauri::command]
-pub fn window_state(app: AppHandle) -> Value {
+pub fn window_state(app: AppHandle, window: tauri::Window) -> Value {
+    let label = owner(&window);
     let maximized = app
-        .get_webview_window("chrome")
+        .get_webview_window(&label)
         .and_then(|window| window.is_maximized().ok())
         .unwrap_or(false);
     serde_json::json!({ "maximized": maximized })
+}
+
+/// Что это за окно: приватное или обычное и под каким номером его сессия.
+#[tauri::command]
+pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
+    let label = owner(&window);
+    let registry = &app.state::<App>().windows;
+    serde_json::json!({
+        "label": label,
+        "private": registry.is_private(&label),
+        "session": registry.session(&label),
+        "windows": registry.len(),
+    })
+}
+
+/// Новое окно браузера: обычное или приватное, с адресом или пустое.
+#[tauri::command]
+pub fn window_open(
+    app: AppHandle,
+    private: Option<bool>,
+    url: Option<String>,
+) -> Result<(), String> {
+    let kind = if private.unwrap_or(false) {
+        WindowKind::Private
+    } else {
+        WindowKind::Normal
+    };
+    windows::open(&app, kind, url).map(|_| ()).map_err(text)
 }
 
 /* ── Адресная строка ────────────────────────────────────────────────────── */
@@ -278,6 +362,16 @@ fn normalize_url(input: &str, engine: &str) -> String {
     if trimmed == "about:newtab" {
         return format!("http://{}/newtab.html", browser190x4_webview::PAGES_HOST);
     }
+    // Схемы, которые исполняют код в той странице, где их открыли: вставленные
+    // в адресную строку, они бывают только просьбой мошенника «вставьте это
+    // сюда». Ищем их как текст, как это делает Chrome.
+    let lower = trimmed.to_ascii_lowercase();
+    let dangerous = ["javascript:", "data:", "vbscript:", "view-source:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme));
+    if dangerous {
+        return format!("{}{}", search_prefix(engine), urlencode(trimmed));
+    }
     if trimmed.contains("://") || trimmed.starts_with("about:") {
         return trimmed.to_string();
     }
@@ -286,10 +380,49 @@ fn normalize_url(input: &str, engine: &str) -> String {
         && !trimmed.starts_with('.')
         && !trimmed.ends_with('.');
     if looks_like_host || trimmed == "localhost" || trimmed.starts_with("localhost:") {
-        format!("https://{trimmed}")
+        // Домашний роутер и сосед по локальной сети по https не отвечают:
+        // туда идём по http, во внешний интернет — по https.
+        let scheme = if is_local_address(trimmed) {
+            "http"
+        } else {
+            "https"
+        };
+        format!("{scheme}://{trimmed}")
     } else {
         format!("{}{}", search_prefix(engine), urlencode(trimmed))
     }
+}
+
+/// Адрес внутри локальной сети: его открываем по http.
+fn is_local_address(input: &str) -> bool {
+    let host = input
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(input)
+        .rsplit_once(':')
+        .map(|(host, port)| {
+            if port.chars().all(|c| c.is_ascii_digit()) {
+                host
+            } else {
+                input
+            }
+        })
+        .unwrap_or(input)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    for suffix in [".local", ".lan", ".home", ".internal", ".intranet"] {
+        if host.ends_with(suffix) {
+            return true;
+        }
+    }
+    let Ok(ip) = host.parse::<std::net::Ipv4Addr>() else {
+        return false;
+    };
+    ip.is_private() || ip.is_loopback() || ip.is_link_local()
 }
 
 fn urlencode(value: &str) -> String {
@@ -337,11 +470,36 @@ mod tests {
     }
 
     #[test]
-    fn localhost_with_port_is_a_host() {
+    fn local_addresses_go_over_http() {
+        // Домашний роутер и сосед по сети по https не отвечают.
         assert_eq!(
             normalize_url("localhost:5173", "google"),
-            "https://localhost:5173"
+            "http://localhost:5173"
         );
+        assert_eq!(normalize_url("192.168.3.2", "google"), "http://192.168.3.2");
+        assert_eq!(
+            normalize_url("10.0.0.1:8080", "google"),
+            "http://10.0.0.1:8080"
+        );
+        assert_eq!(normalize_url("nas.local", "google"), "http://nas.local");
+        assert_eq!(normalize_url("habr.com", "google"), "https://habr.com");
+        assert_eq!(normalize_url("8.8.8.8", "google"), "https://8.8.8.8");
+    }
+
+    #[test]
+    fn code_schemes_are_searched_not_opened() {
+        // «Вставьте это в адресную строку» — всегда мошенничество.
+        for input in [
+            "javascript:alert(1)",
+            "JavaScript:void(0)",
+            "data:text/html,<script>x</script>",
+            "view-source:https://habr.com",
+        ] {
+            assert!(
+                normalize_url(input, "duckduckgo").starts_with("https://duckduckgo.com/?q="),
+                "{input}"
+            );
+        }
     }
 }
 
@@ -487,7 +645,11 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
     match key {
         "download_dir" | "download_ask" => {
             let policy = download_policy(&state.store);
-            let _ = with_host(app, move |host| host.set_download_policy(policy));
+            // Папка загрузок общая на все окна, а политика живёт в каждом хосте.
+            for label in state.windows.labels() {
+                let policy = policy.clone();
+                let _ = with_host(app, &label, move |host| host.set_download_policy(policy));
+            }
         }
         "adblock_enabled" => state
             .guard
@@ -517,8 +679,91 @@ pub fn download_policy(store: &Store) -> DownloadPolicy {
 /// Зовёт chrome, а не движковая часть: там в одном месте известны и адрес, и
 /// заголовок, а в событиях вкладки они приходят порознь.
 #[tauri::command]
-pub fn history_record(state: State<'_, App>, url: String, title: String) -> Result<(), String> {
+pub fn history_record(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    // Приватное окно истории не оставляет.
+    if is_private(&app, &window) {
+        return Ok(());
+    }
     state.store.record_visit(&url, &title).map_err(text)
+}
+
+/// Страница истории: посещения по времени с поиском и подгрузкой по мере
+/// прокрутки.
+#[tauri::command]
+pub fn history_page(
+    state: State<'_, App>,
+    query: Option<String>,
+    before: Option<i64>,
+    limit: Option<u32>,
+) -> Result<Vec<browser190x4_store::Visit>, String> {
+    state
+        .store
+        .history_visits(
+            query.as_deref().unwrap_or(""),
+            before,
+            limit.unwrap_or(120).min(500),
+        )
+        .map_err(text)
+}
+
+#[tauri::command]
+pub fn history_forget_visit(state: State<'_, App>, id: i64) -> Result<(), String> {
+    state.store.forget_visit(id).map_err(text)
+}
+
+/// Очистить историю за период: `hour`, `day`, `week` или всю.
+#[tauri::command]
+pub fn history_clear_period(state: State<'_, App>, period: String) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    match period.as_str() {
+        "hour" => state.store.clear_history_since(now - 3600).map_err(text),
+        "day" => state.store.clear_history_since(now - 86_400).map_err(text),
+        "week" => state.store.clear_history_since(now - 604_800).map_err(text),
+        "all" => state.store.clear_history().map_err(text),
+        other => Err(format!("неизвестный период {other}")),
+    }
+}
+
+/// Значок сайта из кэша профиля — для списков паролей и истории.
+///
+/// В сеть не ходит: иначе открытие списка паролей означало бы запрос на
+/// каждый сайт, где у пользователя есть пароль.
+#[tauri::command]
+pub fn site_icon(url: String) -> Option<String> {
+    let dir = crate::profile_dir().join("site-icons");
+    crate::site_icons::cached(&dir, &url).map(|icon| icon.data)
+}
+
+/// Подсказки поисковика для адресной строки.
+///
+/// Запрос уходит на сторону, поэтому в приватном окне подсказок нет, а
+/// настройка `search_suggest` выключает их совсем.
+#[tauri::command]
+pub async fn search_suggest(
+    app: AppHandle,
+    window: tauri::Window,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let (engine, client) = {
+        let state = app.state::<App>();
+        if is_private(&app, &window) || !state.store.setting_bool("search_suggest", true) {
+            return Ok(Vec::new());
+        }
+        (
+            search_engine(&state.store),
+            app.state::<crate::newtab::NewTab>().client().clone(),
+        )
+    };
+    Ok(crate::suggest::fetch(&client, &engine, &query).await)
 }
 
 #[tauri::command]
@@ -557,13 +802,33 @@ pub fn history_clear(state: State<'_, App>) -> Result<(), String> {
 /// Сохранить раскладку вкладок. Chrome зовёт это с задержкой после изменений,
 /// чтобы серия открытий не превратилась в серию записей на диск.
 #[tauri::command]
-pub fn session_save(state: State<'_, App>, tabs: Vec<SessionTab>) -> Result<(), String> {
-    state.store.save_session(&tabs).map_err(text)
+pub fn session_save(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+    tabs: Vec<SessionTab>,
+) -> Result<(), String> {
+    let label = owner(&window);
+    // Копию держим в памяти: окно закрывается раньше, чем интерфейс успевает
+    // записать сессию сам, и тогда её сохраняет обработчик закрытия окна.
+    state.sessions.lock().insert(label.clone(), tabs.clone());
+    let Some(session) = state.windows.session(&label) else {
+        return Ok(()); // приватное окно
+    };
+    state.store.save_session(session, &tabs).map_err(text)
 }
 
 #[tauri::command]
-pub fn session_restore(state: State<'_, App>) -> Result<Vec<SessionTab>, String> {
-    state.store.restore_session().map_err(text)
+pub fn session_restore(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+) -> Result<Vec<SessionTab>, String> {
+    let label = owner(&window);
+    let Some(session) = state.windows.session(&label) else {
+        return Ok(Vec::new());
+    };
+    state.store.restore_session(session).map_err(text)
 }
 
 /* ── Закладки ───────────────────────────────────────────────────────────── */
@@ -745,13 +1010,32 @@ pub fn passwords_list(state: State<'_, App>) -> Result<Vec<PasswordEntry>, Strin
 /// Показать пароль. Единственное место, где он уходит в интерфейс открытым
 /// текстом — по явному нажатию «показать» или «скопировать».
 #[tauri::command]
-pub fn password_reveal(state: State<'_, App>, id: i64) -> Result<String, String> {
-    let (_, secret) = state
-        .store
-        .password_secret(id)
-        .map_err(text)?
-        .ok_or("пароль удалён")?;
-    vault::reveal(&secret).map_err(text)
+pub async fn password_reveal(
+    app: AppHandle,
+    window: tauri::Window,
+    id: i64,
+) -> Result<String, String> {
+    // Показать чужой пароль на незалоченном компьютере — ровно то, ради чего к
+    // нему и садятся. Спрашиваем Windows Hello, как Chrome и Edge.
+    let label = owner(&window);
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let main = handle.get_webview_window(&label);
+        let confirmed = crate::hello::confirm_recent(main.as_ref(), "Показать сохранённый пароль")
+            .map_err(text)?;
+        if !confirmed {
+            return Err("вход не подтверждён".to_string());
+        }
+        let state = handle.state::<App>();
+        let (_, secret) = state
+            .store
+            .password_secret(id)
+            .map_err(text)?
+            .ok_or("пароль удалён")?;
+        vault::reveal(&secret).map_err(text)
+    })
+    .await
+    .map_err(text)?
 }
 
 #[tauri::command]
@@ -841,8 +1125,23 @@ pub async fn passwords_import(
 #[tauri::command]
 pub async fn passwords_export(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Option<String>, String> {
+    // Файл с паролями открытым текстом — тоже повод спросить Windows Hello.
+    let label = owner(&window);
+    let handle = app.clone();
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        let main = handle.get_webview_window(&label);
+        crate::hello::confirm_recent(main.as_ref(), "Экспортировать сохранённые пароли")
+    })
+    .await
+    .map_err(text)?
+    .map_err(text)?;
+    if !confirmed {
+        return Err("вход не подтверждён".into());
+    }
+
     let name = format!("passwords_190x4_{}.csv", today());
     let Some(path) = save_file(&app, "Экспорт паролей", "CSV", &["csv"], name).await
     else {
@@ -929,6 +1228,52 @@ pub async fn download_control(app: AppHandle, id: i64, action: String) -> Result
     transfers::control(&app, id, &action).await.map_err(text)
 }
 
+/// Масштаб, который сайт запомнил. Chrome помнит его на сайт, а не на вкладку:
+/// открыл тот же сайт в новой вкладке — масштаб тот же.
+#[tauri::command]
+pub fn zoom_sites(state: State<'_, App>) -> Value {
+    state
+        .store
+        .setting("zoom_sites")
+        .ok()
+        .flatten()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Default::default()))
+}
+
+/// Запомнить масштаб сайта (или забыть, если он вернулся к 100%).
+#[tauri::command]
+pub fn zoom_site_set(
+    app: AppHandle,
+    state: State<'_, App>,
+    host: String,
+    factor: f64,
+) -> Result<(), String> {
+    let host = host.trim().to_ascii_lowercase();
+    if host.is_empty() || host.len() > 255 {
+        return Ok(());
+    }
+    let mut sites = match state.store.setting("zoom_sites").ok().flatten() {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    if (factor - 1.0).abs() < 0.01 {
+        sites.remove(&host);
+    } else {
+        sites.insert(host, Value::from(factor));
+    }
+    let value = Value::Object(sites);
+    state
+        .store
+        .set_setting("zoom_sites", &value)
+        .map_err(text)?;
+    let _ = app.emit(
+        "settings",
+        serde_json::json!({ "key": "zoom_sites", "value": value }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub fn downloads_clear(app: AppHandle, state: State<'_, App>) -> Result<(), String> {
     state.store.clear_downloads().map_err(text)?;
@@ -1011,7 +1356,8 @@ pub fn browsing_data_clear(
         let _ = app.emit("downloads", ());
     }
     if site_data || cache {
-        with_host(&app, move |host| host.clear_browsing_data(site_data, cache))?.map_err(text)?;
+        with_any_host(&app, move |host| host.clear_browsing_data(site_data, cache))?
+            .map_err(text)?;
     }
     Ok(())
 }
@@ -1024,7 +1370,7 @@ const ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
 pub async fn site_permissions(app: AppHandle) -> Result<Vec<PermissionSetting>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (tx, rx) = std::sync::mpsc::channel();
-        with_host(&app, move |host| {
+        with_any_host(&app, move |host| {
             host.permission_settings(move |list| {
                 let _ = tx.send(list);
             })
@@ -1046,7 +1392,7 @@ pub async fn site_permission_reset(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (tx, rx) = std::sync::mpsc::channel();
-        with_host(&app, move |host| {
+        with_any_host(&app, move |host| {
             host.permission_reset(&permission, &origin, move |ok| {
                 let _ = tx.send(ok);
             })
@@ -1064,7 +1410,7 @@ pub async fn site_permission_reset(
 
 #[tauri::command]
 pub fn about_info(app: AppHandle) -> Value {
-    let webview = with_host(&app, |host| host.browser_version()).unwrap_or_default();
+    let webview = with_any_host(&app, |host| host.browser_version()).unwrap_or_default();
     serde_json::json!({
         "version": app.package_info().version.to_string(),
         "webview": webview,
@@ -1082,7 +1428,7 @@ pub fn profile_open() -> Result<(), String> {
 #[tauri::command]
 pub async fn popup_open(
     app: AppHandle,
-    state: State<'_, App>,
+    window: tauri::Window,
     kind: String,
     anchor: popup::Anchor,
     width: f64,
@@ -1091,7 +1437,7 @@ pub async fn popup_open(
 ) -> Result<(), String> {
     popup::open(
         &app,
-        &state.popup,
+        &owner(&window),
         &kind,
         anchor,
         width,
@@ -1102,32 +1448,32 @@ pub async fn popup_open(
 }
 
 #[tauri::command]
-pub fn popup_pending(state: State<'_, App>) -> Option<Value> {
-    popup::take_pending(&state.popup)
+pub fn popup_pending(app: AppHandle, window: tauri::Window) -> Option<Value> {
+    popup::take_pending(&app, &owner(&window))
 }
 
 #[tauri::command]
 pub async fn popup_show(
     app: AppHandle,
-    state: State<'_, App>,
+    window: tauri::Window,
     height: f64,
     focus: Option<bool>,
 ) -> Result<f64, String> {
-    popup::show(&app, &state.popup, height, focus.unwrap_or(true)).map_err(text)
+    popup::show(&app, &owner(&window), height, focus.unwrap_or(true)).map_err(text)
 }
 
 #[tauri::command]
 pub async fn popup_resize(
     app: AppHandle,
-    state: State<'_, App>,
+    window: tauri::Window,
     height: f64,
 ) -> Result<f64, String> {
-    popup::resize(&app, &state.popup, height).map_err(text)
+    popup::resize(&app, &owner(&window), height).map_err(text)
 }
 
 #[tauri::command]
-pub async fn popup_hide(app: AppHandle) -> Result<(), String> {
-    popup::hide(&app);
+pub async fn popup_hide(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    popup::hide(&app, &owner(&window));
     Ok(())
 }
 

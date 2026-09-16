@@ -7,6 +7,7 @@
 //! Адреса копятся в очереди [`Launch`], chrome забирает их командой
 //! [`launch_take`]: после восстановления сессии и по событию `launch`.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -21,18 +22,38 @@ pub const SINGLE_ARGUMENT: &str = "--single-argument";
 /// нельзя, иначе плагин примет первый процесс за второй.
 const PRIMARY_MUTEX: &str = "Local\\pw.x190x4.browser-primary";
 
+/// Очереди адресов: общая (её заберёт первое спросившее окно) и адресные —
+/// для окон, которые открыли специально под ссылку.
 #[derive(Default)]
-pub struct Launch(Mutex<Vec<String>>);
+pub struct Launch {
+    common: Mutex<Vec<String>>,
+    windows: Mutex<HashMap<String, Vec<String>>>,
+}
 
 impl Launch {
     pub fn push(&self, targets: Vec<String>) {
-        self.0.lock().extend(targets);
+        self.common.lock().extend(targets);
+    }
+
+    /// Адреса для конкретного окна: его интерфейс ещё грузится и заберёт их сам.
+    pub fn push_for(&self, label: &str, targets: Vec<String>) {
+        self.windows
+            .lock()
+            .entry(label.to_string())
+            .or_default()
+            .extend(targets);
+    }
+
+    fn take(&self, label: &str) -> Vec<String> {
+        let mut found = self.windows.lock().remove(label).unwrap_or_default();
+        found.extend(std::mem::take(&mut *self.common.lock()));
+        found
     }
 }
 
 #[tauri::command]
-pub fn launch_take(launch: State<'_, Launch>) -> Vec<String> {
-    std::mem::take(&mut *launch.0.lock())
+pub fn launch_take(window: tauri::Window, launch: State<'_, Launch>) -> Vec<String> {
+    launch.take(window.label())
 }
 
 /// Браузер уже запущен? Второй процесс живёт до настройки плагинов, и профиль
@@ -80,11 +101,14 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     // и режет её обратно по `|` — части адреса склеиваем тем же знаком.
     let found = targets(args.get(1..).unwrap_or_default(), Path::new(&cwd), "|");
     tracing::info!(count = found.len(), "повторный запуск браузера");
+    // Адреса забирает то окно, которое сейчас впереди: в него же выходит и
+    // фокус. Приватному окну чужие ссылки не отдаём.
+    let target = crate::browser_windows::foreground_label(app);
     if !found.is_empty() {
-        app.state::<Launch>().push(found);
-        let _ = app.emit_to("chrome", "launch", ());
+        app.state::<Launch>().push_for(&target, found);
+        let _ = app.emit_to(target.as_str(), "launch", ());
     }
-    if let Some(window) = app.get_webview_window("chrome") {
+    if let Some(window) = app.get_webview_window(&target) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();

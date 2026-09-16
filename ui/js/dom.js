@@ -64,6 +64,27 @@ export function favicon(src, className = "favicon") {
   return img;
 }
 
+/**
+ * Значок сайта для списков браузера (пароли, история).
+ *
+ * Берётся из кэша профиля, а не с самого сайта: иначе открытый список
+ * паролей означал бы запрос на каждый сайт, где у вас есть пароль, — и по
+ * этим запросам виден весь список. Пока значка нет, стоит глобус.
+ */
+export function siteIcon(url, className = "favicon") {
+  const node = icon("globe-16", 16, className);
+  const holder = el("span", null);
+  holder.append(node);
+  import("./bridge.js")
+    .then(({ invoke }) => invoke("site_icon", { url }))
+    .then((data) => {
+      if (!data) return;
+      holder.replaceChildren(favicon(data, className));
+    })
+    .catch(() => {});
+  return holder;
+}
+
 export function hostOf(url) {
   try {
     return new URL(url).host;

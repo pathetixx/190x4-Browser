@@ -674,7 +674,7 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
 
   const pick = async (node, action) => {
     closeMenu();
-    if (action === "open" || action === "open-new") {
+    if (["open", "open-new", "open-window", "open-split", "open-private"].includes(action)) {
       act("bookmark-folder", action, { url: node.url });
     } else if (action === "edit") {
       act("bookmark-folder", "edit", { id: node.id });
@@ -689,7 +689,17 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
     closeMenu();
     const items =
       node.kind === "url"
-        ? [["open", "Открыть", "globe"], ["open-new", "Открыть в новой вкладке", "tab-add"], null, ["edit", "Изменить…", "edit-16"], ["remove", "Удалить", "delete-16"]]
+        ? [
+            // Тот же порядок, что и в меню панели закладок: «Открыть» здесь
+            // не нужно — для этого достаточно щелчка по самой закладке.
+            ["open-new", "Открыть в новой вкладке", "tab-add"],
+            ["open-window", "Открыть в новом окне", "window-16"],
+            ["open-split", "Открыть в режиме разделения экрана", "split-16"],
+            ["open-private", "Открыть в приватном окне", "private-16"],
+            null,
+            ["edit", "Изменить…", "edit-16"],
+            ["remove", "Удалить", "delete-16"],
+          ]
         : [["edit", "Переименовать…", "edit-16"], ["remove", "Удалить", "delete-16"]];
     menu = el("div", "menu menu--float");
     menu.setAttribute("role", "menu");

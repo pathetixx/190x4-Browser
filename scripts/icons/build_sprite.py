@@ -133,6 +133,15 @@ CAPTION = {
 }
 
 
+# Своё: окно, разделённый экран и приватное окно. В наборе Fluent таких
+# 16-пиксельных глифов нет, а двадцатки на 16 px мылятся.
+OWN = {
+    "window-16": '<path d="M3 4.25A1.75 1.75 0 0 1 4.75 2.5h6.5A1.75 1.75 0 0 1 13 4.25v7.5A1.75 1.75 0 0 1 11.25 13.5h-6.5A1.75 1.75 0 0 1 3 11.75v-7.5Z" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M3 6h10" fill="none" stroke="currentColor" stroke-width="1.1"/>',
+    "split-16": '<path d="M2 4.25A1.75 1.75 0 0 1 3.75 2.5h8.5A1.75 1.75 0 0 1 14 4.25v7.5A1.75 1.75 0 0 1 12.25 13.5h-8.5A1.75 1.75 0 0 1 2 11.75v-7.5Z" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M8 2.75v10.5" fill="none" stroke="currentColor" stroke-width="1.1"/>',
+    "private-16": '<path d="M3.2 8.2 4.9 4.3a1.2 1.2 0 0 1 1.1-.7h4a1.2 1.2 0 0 1 1.1.7l1.7 3.9" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 8.6h12" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><circle cx="5.3" cy="11" r="1.8" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="10.7" cy="11" r="1.8" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M7.1 11h1.8" fill="none" stroke="currentColor" stroke-width="1.1"/>',
+}
+
+
 def symbol(alias: str, source: str) -> str:
     view_box = re.search(r'viewBox="([^"]+)"', source).group(1)
     body = re.sub(r"^.*?<svg[^>]*>|</svg>\s*$", "", source.strip(), flags=re.S)
@@ -147,12 +156,14 @@ def main() -> None:
     parts = ['<svg xmlns="http://www.w3.org/2000/svg">']
     for alias, name in ICONS.items():
         parts.append(symbol(alias, (root / f"{name}.svg").read_text()))
+    for alias, body in OWN.items():
+        parts.append(f'<symbol id="i-{alias}" viewBox="0 0 16 16">{body}</symbol>')
     for alias, body in CAPTION.items():
         parts.append(f'<symbol id="i-{alias}" viewBox="0 0 10 10">{body}</symbol>')
     parts.append("</svg>\n")
 
     out.write_text("\n".join(parts))
-    print(f"{len(ICONS) + len(CAPTION)} иконок → {out} ({out.stat().st_size // 1024} КБ)")
+    print(f"{len(ICONS) + len(OWN) + len(CAPTION)} иконок → {out} ({out.stat().st_size // 1024} КБ)")
 
 
 if __name__ == "__main__":

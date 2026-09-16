@@ -66,6 +66,18 @@ pub enum TabEvent {
         id: u32,
         url: String,
     },
+    /// Вкладка так и не родилась: движок не отдал контроллер. Без этого
+    /// события в строке вкладок осталась бы пустая вкладка-призрак.
+    OpenFailed {
+        id: u32,
+    },
+    /// Сколько запросов фильтр снял на этой вкладке с начала загрузки
+    /// страницы. Счётчик у каждой вкладки свой — общий по браузеру показывать
+    /// в адресной строке нельзя.
+    Blocked {
+        id: u32,
+        count: u64,
+    },
     Started {
         id: u32,
         url: String,
@@ -244,6 +256,10 @@ pub struct Tab {
     menu: MenuSlot,
     frames: FrameMap,
     dialogs: Dialogs,
+    /// Обработчики поиска вешаются на объект `Find` вкладки один раз: он у
+    /// вкладки один, и повторная подписка на каждый набранный символ
+    /// размножала бы события счётчика.
+    find_wired: Cell<bool>,
 }
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
@@ -682,6 +698,65 @@ fn read_menu_items(
     Ok(out)
 }
 
+/// Удалить данные сайтов и/или кэш профиля движка.
+///
+/// Профиль общий на все окна и вкладки, поэтому годится любое живое вебвью —
+/// в том числе интерфейс, когда открыты только встроенные страницы.
+pub(crate) fn clear_browsing_data(
+    core: &ICoreWebView2,
+    site_data: bool,
+    cache: bool,
+) -> anyhow::Result<()> {
+    use webview2_com::ClearBrowsingDataCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile2, ICoreWebView2_13, COREWEBVIEW2_BROWSING_DATA_KINDS,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE, COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+    };
+
+    let mut kinds = 0;
+    if site_data {
+        kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE.0;
+    }
+    if cache {
+        kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE.0;
+    }
+    if kinds == 0 {
+        return Ok(());
+    }
+
+    let profile: ICoreWebView2Profile2 = unsafe {
+        core.cast::<ICoreWebView2_13>()
+            .map_err(|_| anyhow::anyhow!("движок не умеет удалять данные"))?
+            .Profile()?
+            .cast()
+            .map_err(|_| anyhow::anyhow!("движок не умеет удалять данные"))?
+    };
+    unsafe {
+        profile.ClearBrowsingData(
+            COREWEBVIEW2_BROWSING_DATA_KINDS(kinds),
+            &ClearBrowsingDataCompletedHandler::create(Box::new(|code| {
+                if let Err(err) = code {
+                    tracing::warn!(%err, "данные браузера не удалены");
+                }
+                Ok(())
+            })),
+        )?;
+    }
+    Ok(())
+}
+
+/// Адрес документа по данным движка — для страницы ошибки.
+fn document_url(core: Option<&ICoreWebView2>) -> String {
+    let Some(core) = core else {
+        return String::new();
+    };
+    let mut raw = PWSTR::null();
+    match unsafe { core.Source(&mut raw) } {
+        Ok(()) => take_pwstr(raw),
+        Err(_) => String::new(),
+    }
+}
+
 /// Отчёт о состоянии поиска: сколько нашли и на каком совпадении стоим.
 fn report_find(id: u32, find: &ICoreWebView2Find, sink: &EventSink) -> windows_core::Result<()> {
     let mut total = 0i32;
@@ -711,12 +786,20 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
     const VK_OEM_PLUS: u32 = 0xBB;
     const VK_OEM_MINUS: u32 = 0xBD;
 
+    const VK_HOME: u32 = 0x24;
+
     let combo = match (ctrl, shift, alt, key) {
         (true, false, false, 0x4B) => "ctrl+k", // командная палитра
         (true, false, false, 0x54) => "ctrl+t", // новая вкладка
         (true, false, false, 0x57) => "ctrl+w", // закрыть вкладку
+        (true, false, false, 0x4E) => "ctrl+n", // новое окно
+        (true, true, false, 0x4E) => "ctrl+shift+n", // приватное окно
+        (true, true, false, 0x57) => "ctrl+shift+w", // закрыть окно
         (true, false, false, 0x4C) => "ctrl+l", // адресная строка
         (true, false, false, 0x52) => "ctrl+r", // обновить
+        (true, false, false, VK_F5) => "ctrl+f5", // обновить без кэша
+        (true, true, false, 0x4A) => "ctrl+shift+j", // инструменты разработчика
+        (false, false, true, VK_HOME) => "alt+home", // домашняя страница
         (true, false, false, 0x44) => "ctrl+d", // в закладки
         (true, false, false, 0x46) => "ctrl+f", // поиск по странице
         (true, false, false, 0x4A) => "ctrl+j", // загрузки
@@ -811,7 +894,14 @@ impl Tab {
 
         configure(&core)?;
         inject_scripts(&core)?;
-        filter::install(&core, env, guard.clone(), source.clone())?;
+        filter::install(
+            &core,
+            env,
+            guard.clone(),
+            source.clone(),
+            id.0,
+            sink.clone(),
+        )?;
         filter::install_cosmetics(&core, guard)?;
         wire_accelerators(id, &controller, sink.clone())?;
         downloads::wire(id, &core, downloads, sink.clone())?;
@@ -833,6 +923,7 @@ impl Tab {
             menu,
             frames,
             dialogs,
+            find_wired: Cell::new(false),
         };
         tab.wire_events(sink)?;
         tracing::debug!(?id, "вкладка готова");
@@ -874,6 +965,30 @@ impl Tab {
                     let Some(args) = args else { return Ok(()) };
                     let mut ok = windows_core::BOOL::default();
                     args.IsSuccess(&mut ok)?;
+                    // Страница ошибки движка — чужая деталь: она на языке
+                    // системы, с оформлением Edge и советами про Edge. Рисуем
+                    // свою прямо в документе, не трогая ни адрес, ни историю.
+                    if !ok.as_bool() {
+                        let mut status =
+                            webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                        args.WebErrorStatus(&mut status)?;
+                        if let (Some(core), Some(script)) = (
+                            sender.as_ref(),
+                            crate::errors::error_script(status, &document_url(sender.as_ref())),
+                        ) {
+                            let _ = core.ExecuteScript(
+                                &HSTRING::from(script),
+                                &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(
+                                    |code, _| {
+                                        if let Err(err) = code {
+                                            tracing::debug!(%err, "страница ошибки не нарисована");
+                                        }
+                                        Ok(())
+                                    },
+                                )),
+                            );
+                        }
+                    }
                     let mut status = 0i32;
                     // HTTP-статус живёт в ICoreWebView2NavigationCompletedEventArgs2;
                     // на старом evergreen интерфейса может не быть — это не повод падать.
@@ -1024,6 +1139,25 @@ impl Tab {
         unsafe { self.core.Reload() }
     }
 
+    /// Ctrl+F5: перезагрузка мимо кэша. Своего вызова у движка нет, зато есть
+    /// та же команда протокола отладки, которой это делает сам Chromium.
+    pub fn reload_ignoring_cache(&self) -> windows_core::Result<()> {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+
+        unsafe {
+            self.core.CallDevToolsProtocolMethod(
+                &HSTRING::from("Page.reload"),
+                &HSTRING::from(r#"{"ignoreCache":true}"#),
+                &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|code, _| {
+                    if let Err(err) = code {
+                        tracing::debug!(%err, "перезагрузка без кэша не удалась");
+                    }
+                    Ok(())
+                })),
+            )
+        }
+    }
+
     pub fn go_back(&self) -> windows_core::Result<()> {
         unsafe { self.core.GoBack() }
     }
@@ -1133,23 +1267,27 @@ impl Tab {
             options.SetShouldHighlightAllMatches(true)?;
             options.SetSuppressDefaultFindDialog(true)?;
 
-            let count_find = find.clone();
-            let count_sink = sink.clone();
-            find.add_MatchCountChanged(
-                &FindMatchCountChangedEventHandler::create(Box::new(move |_, _| {
-                    report_find(id, &count_find, &count_sink)
-                })),
-                &mut token,
-            )?;
+            // Объект Find у вкладки один: подписка на каждый набранный символ
+            // множила бы события счётчика и держала бы мёртвые обработчики.
+            if !self.find_wired.replace(true) {
+                let count_find = find.clone();
+                let count_sink = sink.clone();
+                find.add_MatchCountChanged(
+                    &FindMatchCountChangedEventHandler::create(Box::new(move |_, _| {
+                        report_find(id, &count_find, &count_sink)
+                    })),
+                    &mut token,
+                )?;
 
-            let index_find = find.clone();
-            let index_sink = sink.clone();
-            find.add_ActiveMatchIndexChanged(
-                &FindActiveMatchIndexChangedEventHandler::create(Box::new(move |_, _| {
-                    report_find(id, &index_find, &index_sink)
-                })),
-                &mut token,
-            )?;
+                let index_find = find.clone();
+                let index_sink = sink.clone();
+                find.add_ActiveMatchIndexChanged(
+                    &FindActiveMatchIndexChangedEventHandler::create(Box::new(move |_, _| {
+                        report_find(id, &index_find, &index_sink)
+                    })),
+                    &mut token,
+                )?;
+            }
 
             find.Start(
                 &options,
@@ -1296,43 +1434,18 @@ impl Tab {
     /// Удалить данные сайтов и/или кэш профиля. Профиль общий на все вкладки,
     /// поэтому вызывать можно на любой из них.
     pub fn clear_browsing_data(&self, site_data: bool, cache: bool) -> anyhow::Result<()> {
-        use webview2_com::ClearBrowsingDataCompletedHandler;
-        use webview2_com::Microsoft::Web::WebView2::Win32::{
-            ICoreWebView2Profile2, ICoreWebView2_13, COREWEBVIEW2_BROWSING_DATA_KINDS,
-            COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE, COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
-        };
+        clear_browsing_data(&self.core, site_data, cache)
+    }
 
-        let mut kinds = 0;
-        if site_data {
-            kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE.0;
-        }
-        if cache {
-            kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE.0;
-        }
-        if kinds == 0 {
-            return Ok(());
-        }
+    /// Масштаб страницы напрямую: его помнит сайт, а не вкладка.
+    pub fn set_zoom(&self, factor: f64) -> windows_core::Result<()> {
+        unsafe { self.controller.SetZoomFactor(factor.clamp(0.25, 5.0)) }
+    }
 
-        let profile: ICoreWebView2Profile2 = unsafe {
-            self.core
-                .cast::<ICoreWebView2_13>()
-                .map_err(|_| anyhow::anyhow!("движок не умеет удалять данные"))?
-                .Profile()?
-                .cast()
-                .map_err(|_| anyhow::anyhow!("движок не умеет удалять данные"))?
-        };
-        unsafe {
-            profile.ClearBrowsingData(
-                COREWEBVIEW2_BROWSING_DATA_KINDS(kinds),
-                &ClearBrowsingDataCompletedHandler::create(Box::new(|code| {
-                    if let Err(err) = code {
-                        tracing::warn!(%err, "данные браузера не удалены");
-                    }
-                    Ok(())
-                })),
-            )?;
-        }
-        Ok(())
+    pub fn zoom_factor(&self) -> f64 {
+        let mut factor = 1.0f64;
+        let _ = unsafe { self.controller.ZoomFactor(&mut factor) };
+        factor
     }
 
     /// Отдать папку встроенных страниц (новая вкладка, ошибки) по
@@ -1367,7 +1480,7 @@ mod tests {
             engine_script("// комментарий\nconst a = 1;\n  // ещё\n  a;"),
             "const a = 1;\n  a;"
         );
-        assert!(engine_script(PASSWORDS_SCRIPT).contains("__190x4Passwords"));
+        assert!(engine_script(PASSWORDS_SCRIPT).contains("password_submit"));
     }
 
     /// Движок обрезает скрипт на нулевом символе, прочие управляющие символы в

@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::state::{with_host, with_host_later, App};
+use crate::state::{with_download, App};
 
 /// В базу — не чаще раза в секунду: интерфейс получает прогресс событиями, а
 /// диску хватает редких записей.
@@ -37,6 +37,12 @@ struct Inner {
 struct Entry {
     id: i64,
     written: Instant,
+}
+
+/// Загрузка из приватного окна: её нет ни в базе, ни в списке — как в Chrome.
+/// Номера у таких загрузок свои, чтобы не путаться с записями базы.
+fn private_id(key: u64) -> i64 {
+    -(key as i64) - 1
 }
 
 /// Событие `download` для интерфейса. Одинаковое для обычных загрузок и
@@ -71,6 +77,7 @@ impl Transfers {
 #[allow(clippy::too_many_arguments)]
 pub fn on_engine_event(
     app: &AppHandle,
+    window: &str,
     key: u64,
     phase: &str,
     url: &str,
@@ -81,6 +88,26 @@ pub fn on_engine_event(
 ) {
     let state = app.state::<App>();
     let store = &state.store;
+
+    // Приватное окно не оставляет следов: прогресс виден в пузыре загрузок,
+    // но в списке и в базе такой загрузки нет.
+    if state.windows.is_private(window) {
+        let _ = app.emit_to(
+            window,
+            "download",
+            DownloadEvent {
+                id: private_id(key),
+                kind: DownloadKind::Web,
+                phase: phase.to_string(),
+                url: url.to_string(),
+                path: path.to_string(),
+                bytes,
+                total,
+                error: error.to_string(),
+            },
+        );
+        return;
+    }
 
     let id = if phase == "started" {
         let id = match store.start_download(DownloadKind::Web, url, path, total) {
@@ -198,17 +225,27 @@ pub fn ask_target(app: &AppHandle, key: u64, suggested: String) {
         let target = dialog
             .blocking_save_file()
             .and_then(|path| path.into_path().ok());
-        with_host_later(&app, move |host| {
-            if let Err(err) = host.download_answer(key, target) {
-                tracing::warn!(%err, "ответ на загрузку не принят");
-            }
-        });
+        if let Err(err) = with_download(&app, key, move |host| host.download_answer(key, target)) {
+            tracing::warn!(%err, "ответ на загрузку не принят");
+        }
     });
 }
 
 /// Действие из списка загрузок.
 pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<()> {
     let state = app.state::<App>();
+    // Загрузка приватного окна в базу не попадает, но управлять ею всё равно
+    // нужно: её номер — это номер операции движка со знаком минус.
+    if id < 0 {
+        let key = (-id - 1) as u64;
+        anyhow::ensure!(
+            matches!(action, "cancel" | "pause" | "resume"),
+            "этой загрузки нет в списке"
+        );
+        let action = action.to_string();
+        return with_download(app, key, move |host| host.download_control(key, &action))
+            .map_err(anyhow::Error::msg)?;
+    }
     let download = state
         .store
         .download(id)?
@@ -252,7 +289,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
                     anyhow::anyhow!("эту загрузку уже не продолжить — начните заново")
                 })?;
             let action = action.to_string();
-            with_host(app, move |host| host.download_control(key, &action))
+            with_download(app, key, move |host| host.download_control(key, &action))
                 .map_err(anyhow::Error::msg)??;
         }
         "retry" => {
@@ -264,7 +301,10 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
             // навигация на неё не меняет страницу, а просто начинает загрузку.
             let url = download.url.clone();
             state.store.remove_download(id)?;
-            with_host(app, move |host| {
+            // Повтор идёт в то окно, которое сейчас впереди: список загрузок
+            // мог остаться открытым и во втором окне.
+            let label = crate::browser_windows::foreground_label(app);
+            crate::state::with_host(app, &label, move |host| {
                 let active = host.active_id();
                 active.and_then(|tab| host.with_tab(tab, |view| view.navigate(&url).ok()))
             })

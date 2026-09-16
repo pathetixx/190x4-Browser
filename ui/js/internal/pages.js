@@ -8,6 +8,7 @@
 
 import { activeTab, upsertTab } from "../state.js";
 import { createDownloadsPage } from "./downloads.js";
+import { createHistoryPage } from "./history.js";
 import { createSettingsPage } from "./settings.js";
 
 const container = document.getElementById("internal");
@@ -32,7 +33,9 @@ export function renderInternal() {
             onSection: (section) =>
               upsertTab(tab.id, { section, url: `190x4://settings${section ? `/${section}` : ""}` }),
           })
-        : createDownloadsPage(container);
+        : tab.internal === "history"
+          ? createHistoryPage(container)
+          : createDownloadsPage(container);
     current = { tabId: tab.id, name: tab.internal, section: tab.section, page };
     return;
   }

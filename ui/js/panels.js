@@ -9,7 +9,7 @@ import { clock, dayLabel, el, favicon, hostOf, icon, plural } from "./dom.js";
 import { syncDuring } from "./layout.js";
 import { pref, setPref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
-import { navigate, openSettings } from "./actions.js";
+import { navigate, openHistoryPage, openSettings } from "./actions.js";
 
 const panel = document.getElementById("panel");
 const title = document.getElementById("panel-title");
@@ -240,6 +240,13 @@ const VIEWS = {
       row.addEventListener("click", (event) => navigate(entry.url, { newTab: event.ctrlKey }));
       out.push(row);
     }
+
+    // Панель показывает последние адреса; каждое посещение по отдельности —
+    // на странице истории.
+    const full = el("button", "prow prow--footer");
+    full.append(icon("history", 20), textBlock("Вся история", "Каждое посещение, поиск и очистка за период"));
+    full.addEventListener("click", () => openHistoryPage());
+    out.push(full);
 
     const clear = el("button", "prow prow--footer");
     clear.append(icon("broom", 20), textBlock("Удалить данные о работе в браузере", "История, файлы cookie, кэш"));

@@ -24,10 +24,12 @@
 pub mod container;
 pub mod dialogs;
 pub mod downloads;
+pub mod errors;
 pub mod filter;
 pub mod host;
 pub mod interop;
 pub mod message;
+pub(crate) mod stream;
 pub mod tab;
 
 pub use dialogs::{DialogAction, DialogAnswer, DialogRequest, PermissionSetting};

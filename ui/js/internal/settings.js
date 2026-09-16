@@ -7,7 +7,7 @@
  */
 
 import { invoke, listen } from "../bridge.js";
-import { clock, dayLabel, el, favicon, formatDay, hostOf, icon, iconButton, plural, textButton } from "../dom.js";
+import { clock, dayLabel, el, favicon, formatDay, hostOf, icon, iconButton, plural, siteIcon, textButton } from "../dom.js";
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
@@ -279,7 +279,7 @@ function button(label, onClick, { iconId, kind = "btn" } = {}) {
 }
 
 /** Диалог внутри страницы. Возвращает выбранное действие или null. */
-function modal({ title, text, body = [], actions }) {
+export function modal({ title, text, body = [], actions }) {
   return new Promise((resolve) => {
     const scrim = el("div", "modal-scrim");
     const card = el("div", "modal");
@@ -514,6 +514,11 @@ const BUILDERS = {
           "Поисковая система в адресной строке",
           "Запросы, набранные в адресной строке и на новой вкладке, уходят сюда",
           select("search_engine", ENGINES)
+        ),
+        switchSetting(
+          "search_suggest",
+          "Показывать подсказки поисковой системы",
+          "Набранное отправляется выбранному поисковику, чтобы он предложил продолжение. В приватном окне подсказок нет"
         ),
       ]),
     ];
@@ -946,7 +951,7 @@ const BUILDERS = {
 function passwordRow(entry) {
   const row = el("div", "row");
   const host = hostOf(entry.origin);
-  row.append(favicon(`${entry.origin}/favicon.ico`));
+  row.append(siteIcon(entry.origin));
 
   const siteCell = el("div", "row__primary");
   siteCell.append(el("span", null, host));

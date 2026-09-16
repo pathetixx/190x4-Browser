@@ -12,7 +12,7 @@
  */
 
 import { invoke, listen } from "./bridge.js";
-import { hooks, openMediaExtension } from "./actions.js";
+import { hooks, openInNewWindow, openInPrivateWindow, openInSplit, openMediaExtension } from "./actions.js";
 import { onPopupAction, openPopup } from "./popups.js";
 import { pref } from "./prefs.js";
 import { state, tabIndex } from "./state.js";
@@ -128,6 +128,19 @@ function buildRows(target, items, site) {
     });
   }
 
+  // Ссылку можно открыть не только вкладкой: окно, разделённый экран и
+  // приватное окно — наши, движок про них не знает.
+  const link = target.link_url ?? "";
+  if (/^https?:/.test(link)) {
+    const extra = [
+      { id: "link-window", label: "Открыть ссылку в новом окне" },
+      { id: "link-split", label: "Открыть ссылку в режиме разделения экрана" },
+      { id: "link-private", label: "Открыть ссылку в приватном окне" },
+    ];
+    const after = rows.findIndex((row) => row.name === "openLinkInNewWindow");
+    rows.splice(after >= 0 ? after + 1 : 0, 0, ...extra);
+  }
+
   const source = target.source_url ?? "";
   if ((target.kind === "video" || target.kind === "audio") && /^https?:/.test(source) && pref("ext_media_enabled")) {
     rows.unshift({ id: "media", label: "Скачать через загрузчик 190x4" }, { separator: true });
@@ -175,7 +188,14 @@ async function runAction(action, menu) {
   const { target } = menu;
   answer(null);
 
-  if (action === "translate" && target.selection) {
+  const link = target.link_url ?? "";
+  if (action === "link-window" && link) {
+    openInNewWindow(link);
+  } else if (action === "link-private" && link) {
+    openInPrivateWindow(link);
+  } else if (action === "link-split" && link) {
+    openInSplit(link);
+  } else if (action === "translate" && target.selection) {
     translate(target.selection);
   } else if (action === "search" && target.selection) {
     open(target.selection.trim().slice(0, 500), { index: tabIndex(menu.tab) + 1 });

@@ -113,11 +113,39 @@ export async function invoke(command, args = {}) {
       return null;
     case "window_state":
       return { maximized: false };
+    case "window_info":
+      return { label: "chrome", private: false, session: 0, windows: 1 };
+    case "window_open":
+    case "tab_split":
+    case "tab_zoom_set":
+    case "zoom_site_set":
+    case "history_forget_visit":
+    case "history_clear_period":
+      return null;
+    case "zoom_sites":
+      return {};
+    case "site_icon":
+      return null;
     case "session_restore":
       return [];
     case "history_recent":
     case "history_search":
       return MOCK_HISTORY.slice(0, args.limit ?? 6);
+    case "history_page":
+      // Страница истории в макете: те же адреса, но каждое посещение — строкой.
+      return MOCK_HISTORY.flatMap((entry, index) =>
+        [0, 1].map((step) => ({
+          id: index * 10 + step,
+          url: entry.url,
+          title: entry.title,
+          host: entry.host,
+          visited_at: entry.visited_at - step * 5400,
+        }))
+      ).filter((visit) =>
+        !args.query || `${visit.title} ${visit.url}`.toLowerCase().includes(String(args.query).toLowerCase())
+      );
+    case "search_suggest":
+      return [`${args.query} перевод`, `${args.query} скачать`, `${args.query} 2026`];
     case "bookmarks_tree":
       return BOOKMARKS;
     case "bookmark_find":

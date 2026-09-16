@@ -11,7 +11,7 @@ import { invoke } from "./bridge.js";
 import { openPopup } from "./popups.js";
 import { pref, setPref } from "./prefs.js";
 import { activeTab, removeTab, state, tabIndex } from "./state.js";
-import { open, parseInternal } from "./tabs.js";
+import { open, parseInternal, splitWith } from "./tabs.js";
 
 /** Точки, которые заполняет main.js: панели и поиск живут в своих модулях. */
 export const hooks = {
@@ -58,6 +58,37 @@ export function openSettings(section = "") {
 
 export function openDownloadsPage() {
   return open("190x4://downloads");
+}
+
+export function openHistoryPage() {
+  return open("190x4://history");
+}
+
+/* ── Открыть где-то ещё ────────────────────────────────────── */
+
+/** Новая вкладка в фоне: текущая страница остаётся на экране. */
+export function openInNewTab(url) {
+  return open(url, { background: true });
+}
+
+export function openInNewWindow(url) {
+  return invoke("window_open", { private: false, url }).catch(() => {});
+}
+
+export function openInPrivateWindow(url) {
+  return invoke("window_open", { private: true, url }).catch(() => {});
+}
+
+/** Рядом с текущей страницей: разделённый экран. */
+export async function openInSplit(url) {
+  const id = await open(url, { background: true });
+  await splitWith(id);
+  return id;
+}
+
+/** Новое окно браузера без адреса — Ctrl+N и Ctrl+Shift+N. */
+export function newWindow({ private: isPrivate = false } = {}) {
+  return invoke("window_open", { private: isPrivate }).catch(() => {});
 }
 
 export function zoom(direction) {

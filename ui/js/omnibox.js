@@ -286,32 +286,60 @@ async function renderSuggest(query) {
     : await invoke("history_recent", { limit: 6 }).catch(() => []);
   if (token !== suggestToken) return;
 
-  rows = [];
-  if (value) {
-    const looksLikeUrl = value.includes("://") || (/\./.test(value) && !/\s/.test(value));
-    if (looksLikeUrl) rows.push({ text: value, hint: "перейти", value, iconId: "globe-16" });
-
-    const needle = value.toLowerCase();
-    const seen = new Set();
-    for (const node of state.bookmarks ?? []) {
-      if (node.kind !== "url" || seen.size >= 3) continue;
-      if (!node.title.toLowerCase().includes(needle) && !node.url.toLowerCase().includes(needle)) continue;
-      seen.add(node.url);
-      rows.push({ text: node.title || node.url, hint: "закладка", value: node.url, iconId: "star-16", image: node.icon });
-    }
-    for (const entry of history) {
-      if (seen.has(entry.url)) continue;
-      rows.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
-    }
-    rows.push({ text: value, hint: "поиск", value, iconId: "search-16" });
-  } else {
-    for (const entry of history) {
-      rows.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
-    }
-  }
-
+  rows = buildRows(value, history, []);
   selected = 0;
   if (field.hidden) return;
+  paint();
+
+  // Подсказки поисковика приходят из сети и опаздывают: список уже нарисован,
+  // а они дописываются к нему, когда придут. В приватном окне их нет.
+  if (!value) return;
+  const words = await invoke("search_suggest", { query: value }).catch(() => []);
+  if (token !== suggestToken || field.hidden || !words.length) return;
+  rows = buildRows(value, history, words);
+  selected = Math.min(selected, rows.length - 1);
+  paint();
+}
+
+/**
+ * Порядок строк фиксированный — пользователь не должен угадывать, что
+ * окажется первым: переход по адресу, закладки, история, подсказки
+ * поисковика, поиск набранного.
+ */
+function buildRows(value, history, words) {
+  const out = [];
+  if (!value) {
+    for (const entry of history) {
+      out.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
+    }
+    return out;
+  }
+
+  const looksLikeUrl = value.includes("://") || (/\./.test(value) && !/\s/.test(value));
+  if (looksLikeUrl) out.push({ text: value, hint: "перейти", value, iconId: "globe-16" });
+
+  const needle = value.toLowerCase();
+  const seen = new Set();
+  for (const node of state.bookmarks ?? []) {
+    if (node.kind !== "url" || seen.size >= 3) continue;
+    if (!node.title.toLowerCase().includes(needle) && !node.url.toLowerCase().includes(needle)) continue;
+    seen.add(node.url);
+    out.push({ text: node.title || node.url, hint: "закладка", value: node.url, iconId: "star-16", image: node.icon });
+  }
+  for (const entry of history) {
+    if (seen.has(entry.url)) continue;
+    out.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
+  }
+  for (const word of words.slice(0, 6)) {
+    if (word.toLowerCase() === needle) continue;
+    out.push({ text: word, hint: "поиск", value: word, iconId: "search-16" });
+  }
+  out.push({ text: value, hint: "поиск", value, iconId: "search-16" });
+  return out;
+}
+
+/** Показать текущий список: в приложении — попапом, в макете — выпадашкой. */
+function paint() {
 
   if (isNative) {
     if (rows.length) {

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Версия схемы хранится в `user_version`: это дешевле отдельной таблицы и
 /// не требует запроса при каждом старте.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 /// Корневые папки закладок. Номера фиксированы: интерфейс и импорт ссылаются
 /// на них напрямую, а переименовать или удалить их нельзя.
@@ -22,6 +22,9 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
         // Версия ставится внутри той же транзакции: иначе падение между
         // COMMIT и PRAGMA оставило бы базу, на которой миграция не повторяется.
         db.execute_batch(V2)?;
+    }
+    if current < 3 {
+        db.execute_batch(V3)?;
     }
     Ok(())
 }
@@ -122,6 +125,44 @@ const V2: &str = r#"
     ALTER TABLE downloads ADD COLUMN error TEXT NOT NULL DEFAULT '';
 
     PRAGMA user_version = 2;
+    COMMIT;
+"#;
+
+/// Третья версия: несколько окон в сессии, закреплённые вкладки и полная
+/// история посещений.
+///
+/// `history` остаётся сводкой по адресу (её читают подсказки адресной строки),
+/// а каждое посещение теперь ещё и строка в `visits`: без них страница истории
+/// не может показать «сегодня в 14:20 и вчера в 9:00», а Chrome умеет.
+const V3: &str = r#"
+    BEGIN;
+
+    CREATE TABLE session_windows (
+        window   INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        url      TEXT NOT NULL,
+        title    TEXT NOT NULL DEFAULT '',
+        active   INTEGER NOT NULL DEFAULT 0,
+        pinned   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (window, position)
+    );
+    INSERT INTO session_windows (window, position, url, title, active)
+        SELECT 0, position, url, title, active FROM session;
+    DROP TABLE session;
+
+    CREATE TABLE visits (
+        id         INTEGER PRIMARY KEY,
+        url        TEXT NOT NULL,
+        title      TEXT NOT NULL DEFAULT '',
+        host       TEXT NOT NULL DEFAULT '',
+        visited_at INTEGER NOT NULL
+    );
+    CREATE INDEX visits_at ON visits(visited_at DESC);
+    CREATE INDEX visits_url ON visits(url);
+    INSERT INTO visits (url, title, host, visited_at)
+        SELECT url, title, host, visited_at FROM history;
+
+    PRAGMA user_version = 3;
     COMMIT;
 "#;
 

@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::state::{with_host, with_host_later, App};
+use crate::state::{later, with_tab, App};
 use crate::vault;
 
 /// Отправленный логин ждёт подтверждения входа не дольше этого.
@@ -48,6 +48,12 @@ struct PageOffer {
 
 #[derive(Default)]
 pub struct Passwords {
+    /// Окно каждой вкладки: предложение сохранить пароль должно прийти в то
+    /// окно, где эта вкладка живёт, а не в первое попавшееся.
+    windows: Mutex<HashMap<u32, String>>,
+    /// Когда вкладка (или её фрейм) последний раз спрашивала учётки: страница
+    /// может слать это сообщение в цикле, а нам хватает одного раза в секунду.
+    asked: Mutex<HashMap<(u32, Option<u32>), Instant>>,
     /// Отправлено, но вход ещё не подтверждён.
     candidates: Mutex<HashMap<u32, Candidate>>,
     /// Показано предложение сохранить, ждём ответа пользователя.
@@ -62,6 +68,39 @@ pub struct Passwords {
 
 /// Навигация раньше отправленного логина на столько — всё ещё «вход по нему».
 const NAVIGATION_SLACK: Duration = Duration::from_millis(1200);
+
+/// Чаще этого одна и та же форма учётки не запрашивает.
+const ASK_EVERY: Duration = Duration::from_secs(1);
+
+impl Passwords {
+    /// Запомнить, в каком окне живёт вкладка.
+    fn remember_window(&self, tab: u32, window: &str) {
+        self.windows.lock().insert(tab, window.to_string());
+    }
+
+    /// Окно вкладки; если оно уже закрыто — первое окно браузера.
+    fn window_of(&self, tab: u32) -> String {
+        self.windows
+            .lock()
+            .get(&tab)
+            .cloned()
+            .unwrap_or_else(|| crate::browser_windows::FIRST.to_string())
+    }
+
+    /// Пустить ли запрос учёток от этой формы: защита от страницы, которая
+    /// шлёт `password_form` в цикле.
+    fn allow_form(&self, tab: u32, frame: Option<u32>) -> bool {
+        let mut asked = self.asked.lock();
+        let now = Instant::now();
+        match asked.get(&(tab, frame)) {
+            Some(at) if now.duration_since(*at) < ASK_EVERY => false,
+            _ => {
+                asked.insert((tab, frame), now);
+                true
+            }
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "evt")]
@@ -90,6 +129,7 @@ enum PageEvent {
 /// не идёт.
 pub fn handle_message(
     app: &AppHandle,
+    window: &str,
     tab: u32,
     frame: Option<u32>,
     source: &str,
@@ -98,6 +138,12 @@ pub fn handle_message(
     let Ok(event) = serde_json::from_str::<PageEvent>(payload) else {
         return false;
     };
+    // Приватное окно паролей не предлагает и не подставляет: его сеанс не
+    // должен оставлять следов ни в базе, ни на странице.
+    if app.state::<App>().windows.is_private(window) {
+        return true;
+    }
+    app.state::<App>().passwords.remember_window(tab, window);
     tracing::debug!(tab, ?frame, %source, "сообщение менеджера паролей");
     let Some(origin) = origin_of(source).filter(|origin| !origin.ends_with(PAGES_HOST)) else {
         return true;
@@ -131,8 +177,17 @@ pub fn handle_message(
         }
         PageEvent::Commit => commit(app, tab),
         PageEvent::Form { confident } => {
+            // Сообщения страницы — недоверенный поток: сайт может слать их в
+            // цикле. Поэтому работа уходит в пул задач, а не в новый поток на
+            // каждое сообщение, и одна и та же форма не опрашивается чаще
+            // раза в секунду.
+            if !state.passwords.allow_form(tab, frame) {
+                return true;
+            }
             let app = app.clone();
-            std::thread::spawn(move || offer_accounts(&app, tab, frame, &origin, confident));
+            tauri::async_runtime::spawn_blocking(move || {
+                offer_accounts(&app, tab, frame, &origin, confident)
+            });
         }
         PageEvent::Pick { id } => {
             // Выбрать можно только учётку из списка, показанного этому документу.
@@ -147,7 +202,7 @@ pub fn handle_message(
                 return true;
             }
             let app = app.clone();
-            std::thread::spawn(move || {
+            tauri::async_runtime::spawn_blocking(move || {
                 if let Err(err) = fill_offered(&app, tab, frame, &origin, id) {
                     tracing::warn!(%err, "учётка не подставлена");
                 }
@@ -155,7 +210,7 @@ pub fn handle_message(
         }
         PageEvent::Manage => {
             let _ = app.emit_to(
-                "chrome",
+                state.passwords.window_of(tab).as_str(),
                 "open-settings",
                 serde_json::json!({ "section": "passwords" }),
             );
@@ -181,6 +236,8 @@ pub fn forget_tab(app: &AppHandle, tab: u32) {
     state.passwords.offers.lock().remove(&tab);
     state.passwords.navigations.lock().remove(&tab);
     state.passwords.pages.lock().retain(|(id, _), _| *id != tab);
+    state.passwords.asked.lock().retain(|(id, _), _| *id != tab);
+    state.passwords.windows.lock().remove(&tab);
 }
 
 fn commit(app: &AppHandle, tab: u32) {
@@ -194,7 +251,7 @@ fn commit(app: &AppHandle, tab: u32) {
     tracing::debug!(tab, origin = %candidate.origin, "вход подтверждён, решаем про пароль");
 
     let app = app.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<App>();
         let store = &state.store;
         if !store.setting_bool("passwords_offer", true)
@@ -244,7 +301,8 @@ fn commit(app: &AppHandle, tab: u32) {
             offers.insert(tab, candidate);
         }
         tracing::debug!(tab, update, "предлагаем сохранить пароль");
-        let _ = app.emit_to("chrome", "password-offer", payload);
+        let window = state.passwords.window_of(tab);
+        let _ = app.emit_to(window.as_str(), "password-offer", payload);
     });
 }
 
@@ -338,7 +396,7 @@ fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str, c
 
     if frame.is_none() {
         let _ = app.emit_to(
-            "chrome",
+            state.passwords.window_of(tab).as_str(),
             "password-site",
             serde_json::json!({
                 "tab": tab,
@@ -360,7 +418,10 @@ fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str, c
     if confident && own.len() == 1 && store.setting_bool("passwords_autofill", true) {
         let account = &own[0];
         match vault::reveal(&account.secret) {
-            Ok(password) => fill_tab(app, tab, frame, origin, &account.username, password),
+            // Сам браузер подставляет учётку только после того, как человек
+            // тронул страницу: пароль не должен лежать в поле у страницы,
+            // которую открыли и забыли.
+            Ok(password) => fill_tab(app, tab, frame, origin, &account.username, password, true),
             Err(err) => tracing::warn!(%err, "пароль не расшифрован"),
         }
     }
@@ -393,13 +454,14 @@ fn fill_offered(
         .password_secret(id)?
         .ok_or_else(|| anyhow::anyhow!("пароль удалён"))?;
     let password = vault::reveal(&secret)?;
-    fill_tab(app, tab, frame, origin, &entry.username, password);
+    fill_tab(app, tab, frame, origin, &entry.username, password, false);
     Ok(())
 }
 
 /// Учётку — в документ вкладки или во фрейм. `origin` — адрес документа,
 /// которому показали список: во вкладке он сверяется с документом прямо перед
 /// отправкой, во фрейме — скриптом страницы (`location.origin`).
+#[allow(clippy::too_many_arguments)]
 fn fill_tab(
     app: &AppHandle,
     tab: u32,
@@ -407,10 +469,11 @@ fn fill_tab(
     origin: &str,
     username: &str,
     password: String,
+    auto: bool,
 ) {
     let origin = origin.to_string();
     let username = username.to_string();
-    with_host_later(app, move |host| {
+    later(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| {
             if frame.is_none() && origin_of(&view.source_url()).as_deref() != Some(origin.as_str())
             {
@@ -422,6 +485,8 @@ fn fill_tab(
                 "origin": origin,
                 "username": username,
                 "password": password,
+                // Автозаполнение страница придержит до первого касания.
+                "auto": auto,
             });
             match view.post_to(frame, &message.to_string()) {
                 Ok(()) => tracing::debug!(tab, ?frame, %origin, "учётка отправлена в форму"),
@@ -433,7 +498,7 @@ fn fill_tab(
 
 fn post_to_page(app: &AppHandle, tab: u32, frame: Option<u32>, message: serde_json::Value) {
     let json = message.to_string();
-    with_host_later(app, move |host| {
+    later(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| {
             if let Err(err) = view.post_to(frame, &json) {
                 tracing::warn!(%err, "список учёток не отправлен");
@@ -444,7 +509,7 @@ fn post_to_page(app: &AppHandle, tab: u32, frame: Option<u32>, message: serde_js
 
 /// Адрес документа вкладки. Ждёт главный поток — звать только из фоновых.
 fn tab_origin(app: &AppHandle, tab: u32) -> Option<String> {
-    with_host(app, move |host| {
+    with_tab(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| view.source_url())
     })
     .ok()

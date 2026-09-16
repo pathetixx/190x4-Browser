@@ -3,9 +3,12 @@
 import { invoke, isNative, listen } from "./bridge.js";
 import {
   bookmarkCurrent,
+  goHome,
   hooks,
   isNewTabUrl,
+  newWindow,
   openDownloadsPage,
+  openHistoryPage,
   openMediaExtension,
   openSettings,
   tabAction,
@@ -25,8 +28,20 @@ import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette
 import { initPanels, isLivePanel, isPanelOpen, openPanel, renderPanel, toggle } from "./panels.js";
 import { initPopups, onPopupAction, openPopup } from "./popups.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
-import { activeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
-import { activate, close, cycle, initTabs, open, renderTabs, reopenClosed } from "./tabs.js";
+import { activeTab, removeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
+import {
+  activate,
+  close,
+  cycle,
+  endSplit,
+  initTabs,
+  open,
+  openSleeping,
+  parseInternal,
+  renderTabs,
+  reopenClosed,
+  togglePin,
+} from "./tabs.js";
 import { initToolbar, loadWindowState, renderToolbar, syncWindowState } from "./toolbar.js";
 import { initUpdates } from "./updates.js";
 
@@ -52,6 +67,13 @@ await loadPrefs();
 applyTheme();
 applyStatusbar();
 state.adblockOn = pref("adblock_enabled");
+
+// Какое это окно: приватное не пишет историю и красится иначе.
+state.window = await invoke("window_info").catch(() => state.window);
+if (state.window.private) document.documentElement.dataset.private = "true";
+
+// Масштаб помнит сайт, а не вкладка — как в Chrome.
+state.zoomSites = await invoke("zoom_sites").catch(() => ({}));
 
 hooks.togglePanel = toggle;
 hooks.openPanel = openPanel;
@@ -84,6 +106,28 @@ initPalette([
   { group: "Вкладки", title: "Новая вкладка", icon: "tab-add", keys: "Ctrl+T", run: () => open("about:newtab") },
   { group: "Вкладки", title: "Закрыть вкладку", icon: "stop", keys: "Ctrl+W", run: () => activeTab() && close(activeTab().id) },
   { group: "Вкладки", title: "Открыть закрытую вкладку", icon: "history", keys: "Ctrl+Shift+T", run: reopenClosed },
+  {
+    group: "Вкладки",
+    title: "Закрепить вкладку",
+    icon: "pin-16",
+    run: () => activeTab() && togglePin(activeTab().id),
+    when: web,
+  },
+  { group: "Окна", title: "Новое окно", icon: "window-16", keys: "Ctrl+N", run: () => newWindow() },
+  {
+    group: "Окна",
+    title: "Новое приватное окно",
+    icon: "private-16",
+    keys: "Ctrl+Shift+N",
+    run: () => newWindow({ private: true }),
+  },
+  {
+    group: "Окна",
+    title: "Выйти из разделения экрана",
+    icon: "split-16",
+    run: endSplit,
+    when: () => state.splitId !== null,
+  },
   { group: "Страница", title: "Обновить", icon: "reload", keys: "Ctrl+R", run: () => tabAction("reload"), when: web },
   { group: "Страница", title: "Найти на странице", icon: "find", keys: "Ctrl+F", run: () => hooks.openFind(), when: web },
   { group: "Страница", title: "Добавить в закладки", icon: "star-20", keys: "Ctrl+D", run: bookmarkCurrent, when: web },
@@ -91,7 +135,7 @@ initPalette([
   { group: "Страница", title: "Скачать видео со страницы", icon: "video", keys: "Ctrl+Shift+D", run: () => openMediaExtension() },
   { group: "Страница", title: "Инструменты разработчика", icon: "code", keys: "F12", run: () => tabAction("devtools"), when: web },
   { group: "Браузер", title: "Загрузки", icon: "download", keys: "Ctrl+J", run: openDownloadsPage },
-  { group: "Браузер", title: "История", icon: "history", keys: "Ctrl+H", run: () => openPanel("history") },
+  { group: "Браузер", title: "История", icon: "history", keys: "Ctrl+H", run: openHistoryPage },
   { group: "Браузер", title: "Диспетчер закладок", icon: "favorites", keys: "Ctrl+Shift+O", run: () => openSettings("bookmarks") },
   { group: "Браузер", title: "Показать или скрыть панель закладок", icon: "favorites", keys: "Ctrl+Shift+B", run: toggleBookmarksBar },
   { group: "Браузер", title: "Пароли", icon: "key", keywords: "password логин", run: () => openSettings("passwords") },
@@ -151,6 +195,11 @@ listen("tab", (event) => {
         document.dispatchEvent(new CustomEvent("browser:focus-omnibox"));
       }
       break;
+    case "open_failed":
+      // Движок не отдал контроллер: вкладки-призрака в строке быть не должно.
+      removeTab(event.id);
+      toast("Вкладка не открылась — движок не ответил");
+      break;
     case "started":
       upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
       onNavigation(event.id);
@@ -160,6 +209,7 @@ listen("tab", (event) => {
       // Навигация, ушедшая в загрузку, документ не меняет: в адресной строке —
       // адрес, который остался у вкладки, а не набранный.
       upsertTab(event.id, event.url ? { loading: false, url: event.url } : { loading: false });
+      applySiteZoom(event.id);
       break;
     case "title": {
       upsertTab(event.id, { title: event.title });
@@ -176,11 +226,22 @@ listen("tab", (event) => {
     case "history":
       upsertTab(event.id, { canBack: event.can_back, canForward: event.can_forward });
       break;
-    case "favicon":
-      upsertTab(event.id, { favicon: event.url || null });
+    case "favicon": {
+      // Значок запоздавшей страницы не должен сесть на новую: движок
+      // сообщает, к какому адресу он относится.
+      const tab = state.tabs.get(event.id);
+      if (!tab || !event.page || sameDocument(tab.url, event.page)) {
+        upsertTab(event.id, { favicon: event.url || null });
+      }
+      break;
+    }
+    case "blocked":
+      // Счётчик щита — по этой вкладке, а не по всему браузеру.
+      upsertTab(event.id, { blocked: event.count });
       break;
     case "zoom":
       upsertTab(event.id, { zoom: event.factor });
+      rememberSiteZoom(event.id, event.factor);
       break;
     case "popup":
       open(event.url, { index: tabIndex(event.opener) + 1 });
@@ -209,6 +270,40 @@ listen("tab", (event) => {
       break;
   }
 });
+
+/** Один ли это документ: сравниваем адрес без якоря. */
+function sameDocument(a, b) {
+  return String(a ?? "").split("#")[0] === String(b ?? "").split("#")[0];
+}
+
+/* ── Масштаб по сайтам ─────────────────────────────────────── */
+
+function zoomKey(url) {
+  const host = hostOf(url);
+  return host && !isNewTabUrl(url) ? host : "";
+}
+
+/** Страница открылась — ставим ей масштаб, который помнит сайт. */
+function applySiteZoom(id) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.internal) return;
+  const key = zoomKey(tab.url);
+  const factor = key ? (state.zoomSites[key] ?? 1) : 1;
+  if (Math.abs((tab.zoom ?? 1) - factor) < 0.001) return;
+  invoke("tab_zoom_set", { id, factor }).catch(() => {});
+}
+
+/** Масштаб поменяли колесом или кнопкой — запоминаем его за сайтом. */
+function rememberSiteZoom(id, factor) {
+  const tab = state.tabs.get(id);
+  const key = tab ? zoomKey(tab.url) : "";
+  if (!key) return;
+  const known = state.zoomSites[key] ?? 1;
+  if (Math.abs(known - factor) < 0.001) return;
+  if (Math.abs(factor - 1) < 0.001) delete state.zoomSites[key];
+  else state.zoomSites[key] = factor;
+  invoke("zoom_site_set", { host: key, factor }).catch(() => {});
+}
 
 /**
  * Сообщение со страницы. Источник недоверенный: разбираем строго, всё
@@ -326,6 +421,15 @@ function runShortcut(combo) {
     case "ctrl+w":
       if (tab) close(tab.id);
       return true;
+    case "ctrl+n":
+      newWindow();
+      return true;
+    case "ctrl+shift+n":
+      newWindow({ private: true });
+      return true;
+    case "ctrl+shift+w":
+      invoke("window_command", { action: "close" }).catch(() => {});
+      return true;
     case "ctrl+shift+t":
       reopenClosed();
       return true;
@@ -349,7 +453,7 @@ function runShortcut(combo) {
       openDownloadsPage();
       return true;
     case "ctrl+h":
-      toggle("history");
+      openHistoryPage();
       return true;
     case "ctrl+p":
       tabAction("print");
@@ -376,9 +480,13 @@ function runShortcut(combo) {
       openMediaExtension();
       return true;
     case "ctrl+r":
-    case "ctrl+shift+r":
     case "f5":
       tabAction("reload");
+      return true;
+    case "ctrl+shift+r":
+    case "ctrl+f5":
+      // Обновление мимо кэша: тот же смысл, что у Ctrl+F5 в Chrome.
+      tabAction("reload_hard");
       return true;
     case "alt+left":
       tabAction("back");
@@ -386,7 +494,11 @@ function runShortcut(combo) {
     case "alt+right":
       tabAction("forward");
       return true;
+    case "alt+home":
+      goHome();
+      return true;
     case "f12":
+    case "ctrl+shift+j":
       tabAction("devtools");
       return true;
     case "alt+f":
@@ -409,6 +521,7 @@ function runShortcut(combo) {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && isPaletteOpen()) return closePalette();
   if (event.key === "Escape" && isFindOpen()) return closeFind();
+  if (event.key === "Escape" && state.splitId !== null) return endSplit();
   if (event.defaultPrevented) return;
 
   const parts = [];
@@ -512,13 +625,14 @@ function toast(text) {
 /* ── Счётчики фильтра ──────────────────────────────────────── */
 
 async function pollStats() {
+  // Свёрнутому или скрытому окну статистика не нужна: это лишний IPC каждую
+  // секунду на каждое открытое окно.
+  if (document.hidden) return;
   try {
     const snapshot = await invoke("adblock_stats");
     state.blockedTotal = snapshot.blocked;
     state.latencyMicros = snapshot.avg_micros;
-    const tab = activeTab();
-    if (tab && !tab.internal) upsertTab(tab.id, { blocked: snapshot.blocked });
-    else renderStatus();
+    renderStatus();
   } catch {
     /* фильтр ещё не поднялся */
   }
@@ -534,8 +648,8 @@ invoke("services_state")
   })
   .catch(() => {});
 
-// Ссылка из другой программы, пока браузер открыт: адреса ждут в очереди Rust.
-// До конца восстановления сессии их заберёт restoreSession.
+// Ссылка из другой программы или файл, брошенный на окно: адреса ждут в
+// очереди Rust. До конца восстановления сессии их заберёт restoreSession.
 listen("launch", () => {
   if (sessionReady) openLaunched();
 });
@@ -549,6 +663,9 @@ try {
 /**
  * Что открыть при запуске — по настройке «При запуске». Если браузер запустили
  * ссылкой или файлом, пустая новая вкладка не нужна: откроется сама ссылка.
+ *
+ * Вкладки прошлого сеанса сначала спят: место в строке есть, страницы нет.
+ * Так двадцать вкладок в сессии не поднимают двадцать страниц на старте.
  */
 async function restoreSession() {
   const mode = pref("startup");
@@ -572,7 +689,14 @@ async function restoreSession() {
       let activeIndex = saved.findIndex((tab) => tab.active);
       if (activeIndex < 0) activeIndex = 0;
       const ids = [];
-      for (const tab of saved) ids.push(await open(tab.url, { background: true }));
+      for (const tab of saved) {
+        // Встроенные страницы рисует сам интерфейс — им спать незачем.
+        ids.push(
+          parseInternal(tab.url)
+            ? await open(tab.url, { background: true })
+            : openSleeping(tab)
+        );
+      }
       if (blank && ids[activeIndex] != null) await activate(ids[activeIndex]);
     }
   } else if (blank) {
@@ -593,7 +717,12 @@ async function openLaunched() {
 function sessionTabs() {
   return [...state.tabs.values()]
     .filter((tab) => tab.internal || (tab.url && !isNewTabUrl(tab.url) && !tab.url.startsWith("about:")))
-    .map((tab) => ({ url: tab.url, title: tab.title ?? "", active: tab.id === state.activeId }));
+    .map((tab) => ({
+      url: tab.url,
+      title: tab.title ?? "",
+      active: tab.id === state.activeId,
+      pinned: Boolean(tab.pinned),
+    }));
 }
 
 function scheduleSessionSave() {
@@ -608,6 +737,14 @@ async function saveSessionNow() {
   clearTimeout(sessionTimer);
   await invoke("session_save", { tabs: sessionTabs() }).catch(() => {});
 }
+
+// Окно закрывают: сессию пишем сразу. Отложенный таймер сюда уже не успеет, а
+// Rust дублирует эту же запись в обработчике закрытия окна.
+window.addEventListener("beforeunload", () => {
+  if (!sessionReady) return;
+  clearTimeout(sessionTimer);
+  invoke("session_save", { tabs: sessionTabs() }).catch(() => {});
+});
 
 /* ── Режим без Rust: макет для ревью вёрстки ───────────────── */
 
@@ -625,6 +762,7 @@ if (!isNative) {
     else if (demo === "find") openFind();
     else if (demo === "settings") openSettings(params.get("section") ?? "");
     else if (demo === "downloads") openDownloadsPage();
+    else if (demo === "history-page") openHistoryPage();
     else if (demo) openPanel(demo);
   }, 200);
 }

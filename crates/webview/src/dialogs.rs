@@ -234,6 +234,9 @@ impl Pending {
 pub(crate) struct DialogState {
     next: Cell<u64>,
     pending: RefCell<HashMap<u64, Pending>>,
+    /// Окна запуска приложения: движок их уже отменил и ответа не ждёт, но
+    /// показывает их браузер — и при уходе со страницы их надо убрать с экрана.
+    external: RefCell<Vec<u64>>,
     /// «Запретить странице показывать новые окна» — до следующей навигации.
     suppressed: Cell<bool>,
 }
@@ -422,11 +425,9 @@ fn wire_external(
                     origin: read(|out| args.InitiatingOrigin(out))?,
                     user_initiated: read_flag(|out| args.IsUserInitiated(out))?,
                 };
-                sink(TabEvent::Dialog {
-                    id,
-                    token: dialogs.issue(),
-                    request,
-                });
+                let token = dialogs.issue();
+                dialogs.external.borrow_mut().push(token);
+                sink(TabEvent::Dialog { id, token, request });
                 Ok(())
             })),
             &mut token,
@@ -441,6 +442,10 @@ pub(crate) fn answer(
     token: u64,
     answer: &DialogAnswer,
 ) -> windows_core::Result<Option<bool>> {
+    dialogs
+        .external
+        .borrow_mut()
+        .retain(|other| *other != token);
     let Some(pending) = dialogs.pending.borrow_mut().remove(&token) else {
         return Ok(None);
     };
@@ -457,6 +462,9 @@ pub(crate) fn answer(
 /// трогаем: навигация, ради которой оно показано, начнётся только после ответа.
 pub(crate) fn navigation_started(dialogs: &DialogState) -> Vec<u64> {
     dialogs.suppressed.set(false);
+    // Окно «Открыть приложение?» ответа движку не ждёт, но висеть над новой
+    // страницей ему тоже незачем.
+    let external = std::mem::take(&mut *dialogs.external.borrow_mut());
     let stale: Vec<(u64, Pending)> = {
         let mut pending = dialogs.pending.borrow_mut();
         let tokens: Vec<u64> = pending
@@ -478,6 +486,7 @@ pub(crate) fn navigation_started(dialogs: &DialogState) -> Vec<u64> {
             }
             token
         })
+        .chain(external)
         .collect()
 }
 

@@ -5,10 +5,15 @@
 //!   (и её всплывающее окно) имеет доступ к командам из [`ipc`];
 //! * [`browser190x4_webview`] — вкладки поверх того же HWND, из того же Environment;
 //! * [`browser190x4_adblock`] — сетевой фильтр на горячем пути WebResourceRequested.
+//!
+//! Окон браузера может быть несколько (обычные и приватные), у каждого свой
+//! хост вкладок — см. [`browser_windows`].
 
+mod browser_windows;
 mod default_browser;
 mod external;
 mod filters;
+mod hello;
 pub mod ipc;
 mod launch;
 mod newtab;
@@ -17,19 +22,20 @@ mod popup;
 mod resources;
 mod site_icons;
 mod state;
+mod suggest;
 mod transfers;
 mod updates;
 mod vault;
 mod weather;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use browser190x4_adblock::Guard;
 use browser190x4_services::{Services, ServicesConfig};
 use browser190x4_store::Store;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager};
 
+use browser_windows::WindowKind;
 use state::App;
 
 pub fn run() {
@@ -92,6 +98,8 @@ pub fn run() {
             transfers: Default::default(),
             popup: Default::default(),
             external: Default::default(),
+            windows: Default::default(),
+            sessions: Default::default(),
         })
         .manage(updates::Updates::default())
         .manage(newtab::NewTab::default())
@@ -100,18 +108,22 @@ pub fn run() {
             ipc::tab_open,
             ipc::tab_close,
             ipc::tab_activate,
+            ipc::tab_split,
             ipc::tab_navigate,
             ipc::tab_action,
             ipc::tab_post,
             ipc::tab_context_menu,
             ipc::tab_dialog,
             ipc::tab_mute,
+            ipc::tab_zoom_set,
             ipc::tab_find,
             ipc::tab_find_step,
             ipc::layout_set,
             ipc::overlay_set,
             ipc::window_command,
             ipc::window_state,
+            ipc::window_info,
+            ipc::window_open,
             ipc::chrome_focus,
             ipc::adblock_stats,
             ipc::adblock_set_enabled,
@@ -123,8 +135,13 @@ pub fn run() {
             ipc::history_record,
             ipc::history_recent,
             ipc::history_search,
+            ipc::history_page,
             ipc::history_forget,
+            ipc::history_forget_visit,
             ipc::history_clear,
+            ipc::history_clear_period,
+            ipc::search_suggest,
+            ipc::site_icon,
             ipc::bookmarks_tree,
             ipc::bookmark_find,
             ipc::bookmark_add,
@@ -157,6 +174,8 @@ pub fn run() {
             ipc::browsing_data_clear,
             ipc::site_permissions,
             ipc::site_permission_reset,
+            ipc::zoom_sites,
+            ipc::zoom_site_set,
             ipc::about_info,
             ipc::profile_open,
             ipc::popup_open,
@@ -178,79 +197,61 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            create_chrome_window(app)?;
             updates::spawn_checker(handle.clone());
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
 
-            #[cfg(windows)]
-            {
-                let window = app
-                    .get_webview_window("chrome")
-                    .expect("окно chrome описано в tauri.conf.json");
-                // `with_webview` требует Send-замыкание, а HWND — сырой
-                // указатель и не Send. Переносим его числом и собираем
-                // обратно уже внутри, на UI-потоке, где он и живёт.
-                let hwnd_bits = window.hwnd()?.0 as isize;
-                apply_window_icon(&window);
-                let guard = guard.clone();
-                let policy = ipc::download_policy(&store);
-                // Папка со встроенными страницами: в dev — из репозитория,
-                // в бандле — из ресурсов приложения.
-                let pages_dir = handle.path().resource_dir().map(|dir| dir.join("pages"));
-                let handle_for_sink = handle.clone();
-
-                // Выполняется на главном потоке — там же, где живёт COM.
-                window.with_webview(move |platform| {
-                    let hwnd = windows::Win32::Foundation::HWND(hwnd_bits as *mut std::ffi::c_void);
-                    let controller = platform.controller();
-                    let env = browser190x4_webview::interop::environment_of(&controller)
-                        .expect("Environment chrome-вебвью");
-
-                    let sink: browser190x4_webview::tab::EventSink =
-                        std::rc::Rc::new(move |event: browser190x4_webview::TabEvent| {
-                            route_event(&handle_for_sink, event);
-                        });
-
-                    match browser190x4_webview::TabHost::new(hwnd, env, guard, sink) {
-                        Ok(host) => {
-                            if let Ok(dir) = pages_dir {
-                                host.set_pages_dir(dir);
-                            }
-                            host.set_download_policy(policy);
-                            host.set_chrome_controller(controller.clone());
-                            state::install_host(host);
-                        }
-                        Err(err) => tracing::error!(%err, "контейнер вкладок не создан"),
-                    }
-                })?;
-            }
-
-            let window = app.get_webview_window("chrome").unwrap();
-            wire_main_window(&handle, &window);
-            window.show()?;
-
-            // Всплывающее окно поднимаем заранее, когда браузер уже на экране:
-            // первое меню не должно ждать запуска ещё одного вебвью.
-            let popup_handle = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                if let Err(err) = popup::ensure(&popup_handle) {
-                    tracing::warn!(%err, "всплывающее окно не создано");
-                }
-            });
+            // Первое окно — всегда; остальные поднимаются, если в прошлый раз
+            // их было больше и пользователь просил восстанавливать сессию.
+            browser_windows::create(&handle, WindowKind::Normal, true)?;
+            restore_windows(&handle, &store);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("не удалось запустить 190x4 Browser");
+        .build(tauri::generate_context!())
+        .expect("не удалось запустить 190x4 Browser")
+        .run(|handle, event| {
+            // Выход: в базе остаются сессии только тех окон, что были открыты.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = handle.state::<App>();
+                let alive: Vec<i64> = state
+                    .windows
+                    .labels()
+                    .iter()
+                    .filter_map(|label| state.windows.session(label))
+                    .collect();
+                if !alive.is_empty() {
+                    let _ = state.store.keep_sessions(&alive);
+                }
+            }
+        });
+}
+
+/// Второе и следующие окна прошлого сеанса. Первое уже создано, его вкладки
+/// восстановит интерфейс сам.
+fn restore_windows(app: &tauri::AppHandle, store: &Store) {
+    if store.setting_str("startup").as_deref().unwrap_or("restore") != "restore" {
+        return;
+    }
+    let saved = store.session_windows().unwrap_or_default();
+    for _ in saved.iter().skip(1) {
+        if let Err(err) = browser_windows::create(app, WindowKind::Normal, false) {
+            tracing::warn!(%err, "окно прошлого сеанса не открылось");
+            break;
+        }
+    }
 }
 
 /// Разводка событий вкладок.
 ///
 /// Часть событий chrome-у не нужна вовсе или нужна уже обработанной:
-/// загрузки сначала попадают в базу, пароли не должны покидать Rust.
+/// загрузки сначала попадают в базу, пароли не должны покидать Rust. Ярлык
+/// окна нужен, чтобы событие ушло именно в то окно, где живёт вкладка.
 #[cfg(windows)]
-fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
+pub(crate) fn route_event(
+    app: &tauri::AppHandle,
+    label: &str,
+    event: browser190x4_webview::TabEvent,
+) {
     use browser190x4_webview::{DialogRequest, TabEvent};
 
     match &event {
@@ -264,7 +265,7 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
             error,
             ..
         } => {
-            transfers::on_engine_event(app, *key, phase, url, path, *bytes, *total, error);
+            transfers::on_engine_event(app, label, *key, phase, url, path, *bytes, *total, error);
             return;
         }
         TabEvent::DownloadAsk { key, path, .. } => {
@@ -279,7 +280,7 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
         } => {
             // Фреймам доступен только менеджер паролей: новая вкладка и chrome
             // принимают сообщения лишь от документа вкладки.
-            if passwords::handle_message(app, *id, *frame, source, payload)
+            if passwords::handle_message(app, label, *id, *frame, source, payload)
                 || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)
             {
@@ -297,10 +298,14 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
                     user_initiated,
                 },
         } => {
-            external::on_request(app, *id, *token, uri, origin, *user_initiated);
+            external::on_request(app, label, *id, *token, uri, origin, *user_initiated);
             return;
         }
-        TabEvent::Started { id, .. } => passwords::on_navigation(app, *id),
+        TabEvent::Started { id, .. } => {
+            passwords::on_navigation(app, *id);
+            // Ссылки на приложения прежней страницы больше никто не откроет.
+            external::forget_tab(&app.state::<App>(), *id);
+        }
         TabEvent::Favicon { page, url, .. } => {
             let state = app.state::<App>();
             if state.store.set_bookmark_icon(page, url).unwrap_or(false) {
@@ -309,26 +314,7 @@ fn route_event(app: &tauri::AppHandle, event: browser190x4_webview::TabEvent) {
         }
         _ => {}
     }
-    let _ = app.emit_to("chrome", "tab", &event);
-}
-
-/// Окно браузера — из `tauri.conf.json`, но создаётся здесь: пробе с отдельным
-/// профилем движку нужен порт отладки.
-fn create_chrome_window(app: &tauri::App) -> tauri::Result<()> {
-    let config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|window| window.label == "chrome")
-        .expect("окно chrome описано в tauri.conf.json")
-        .clone();
-    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
-    if let Some(args) = debug_browser_args() {
-        builder = builder.additional_browser_args(&args);
-    }
-    builder.build()?;
-    Ok(())
+    let _ = app.emit_to(label, "tab", &event);
 }
 
 /// Аргументы движка с портом отладки (CDP) — только при отдельном профиле и
@@ -347,36 +333,13 @@ pub(crate) fn debug_browser_args() -> Option<String> {
     ))
 }
 
-/// Главное окно: состояние «развёрнуто» для кнопки окна и закрытие попапа,
-/// когда окно уехало из-под него.
-fn wire_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    let handle = app.clone();
-    let main = window.clone();
-    window.on_window_event(move |event| match event {
-        WindowEvent::Moved(_) => popup::main_moved(&handle, &handle.state::<App>().popup),
-        #[cfg(windows)]
-        WindowEvent::ScaleFactorChanged { .. } => apply_window_icon(&main),
-        WindowEvent::Resized(_) => {
-            popup::hide(&handle);
-            let maximized = main.is_maximized().unwrap_or(false);
-            let minimized = main.is_minimized().unwrap_or(false);
-            let _ = handle.emit_to(
-                "chrome",
-                "window-state",
-                serde_json::json!({ "maximized": maximized, "minimized": minimized }),
-            );
-        }
-        _ => {}
-    });
-}
-
 /// Значок окна для панели задач и Alt+Tab — из ресурсов exe, нужного размера.
 ///
 /// Tauri ставит окну одну картинку, и Windows растягивала её под панель задач.
 /// В ресурсах exe лежат все размеры `icon.ico` (tauri-build кладёт иконку под
 /// номером 32512), и `LoadImageW` берёт нарисованный под текущий DPI.
 #[cfg(windows)]
-fn apply_window_icon(window: &tauri::WebviewWindow) {
+pub(crate) fn apply_window_icon(window: &tauri::WebviewWindow) {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HINSTANCE, LPARAM, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -524,7 +487,6 @@ fn init_logging() {
     }
 }
 
-/// Какие списки фильтров включены: из настроек, иначе — стартовый набор.
 /// Какие списки фильтров включены. `adblock_lists` хранит включённые списки;
 /// в сохранённом до версии 2 наборе нет списков, появившихся позже, и они не
 /// должны оказаться выключенными молча.
@@ -563,16 +525,16 @@ pub(crate) fn enabled_lists(store: &Store) -> Vec<String> {
     }
 }
 
-/// Списки фильтров собираются в фоне и въезжают одним `swap`.
-///
-/// До этого момента браузер уже работает — просто без блокировок (или со
-/// старым набором правил). Первый запуск не должен ждать разбор сотен тысяч
-/// правил.
 /// Скачанные фильтры: расширенные списки и ресурсы скриптлетов.
 pub(crate) fn filters_dir() -> std::path::PathBuf {
     profile_dir().join("filters")
 }
 
+/// Списки фильтров собираются в фоне и въезжают одним `swap`.
+///
+/// До этого момента браузер уже работает — просто без блокировок (или со
+/// старым набором правил). Первый запуск не должен ждать разбор сотен тысяч
+/// правил.
 pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::AppHandle) {
     use browser190x4_adblock::{FilterList, ListSource, Subscriptions};
 

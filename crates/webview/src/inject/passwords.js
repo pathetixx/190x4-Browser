@@ -9,9 +9,10 @@
 (() => {
   "use strict";
 
-  // Скрипт ставится при создании документа; повторно (DOMContentLoaded, см.
-  // tab.rs) он не нужен. Метка скрытая и хранит этап установки и ошибку.
-  const MARK = "__190x4Passwords";
+  // Скрипт ставится при создании документа; повторно он не нужен. Метка —
+  // безымянный символ: по говорящему имени в window сайт узнавал бы браузер,
+  // а это лишняя строчка в отпечатке.
+  const MARK = Symbol.for("pm");
   if (window[MARK]) return;
   const status = { stage: "start", asked: "", filled: "", accounts: 0, posts: 0, error: "" };
   try {
@@ -531,6 +532,30 @@
 
   /* ── Сообщения браузера ─────────────────────────────────────── */
 
+  // Пароль сам собой в поле не появляется: браузер подставляет единственную
+  // учётку сайта только после того, как человек тронул страницу. Так пароль
+  // не окажется в DOM у страницы, которую открыли и сразу забыли, — Chrome
+  // держит то же правило.
+  let interacted = false;
+  let waiting = null;
+  const wake = () => {
+    if (interacted) return;
+    interacted = true;
+    const fill = waiting;
+    waiting = null;
+    if (fill) applyFill(fill);
+  };
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+    on(
+      window,
+      type,
+      (event) => {
+        if (event.isTrusted) wake();
+      },
+      { capture: true, passive: true }
+    );
+  }
+
   // React и компания держат значение поля у себя: простое присваивание они
   // перетрут на следующем рендере. Нативный сеттер плюс событие input — как
   // при вводе с клавиатуры.
@@ -559,6 +584,16 @@
     }
 
     if (data.cmd !== "password_fill") return;
+    // Автозаполнение ждёт первого касания страницы; выбранная человеком
+    // учётка подставляется сразу — он уже её выбрал.
+    if (data.auto && !interacted) {
+      waiting = data;
+      return;
+    }
+    applyFill(data);
+  };
+
+  const applyFill = (data) => {
     // Форма — вокруг поля, у которого выбрали учётку; без него — первая на странице.
     const anchor = lastField && lastField.isConnected && usable(lastField) ? lastField : null;
     const password =

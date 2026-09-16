@@ -1,4 +1,5 @@
-//! Хост вкладок: раскладка, активная вкладка, режим оверлея.
+//! Хост вкладок одного окна браузера: раскладка, активная вкладка, режим
+//! оверлея, разделённый экран.
 //!
 //! # Почему раскладкой занимается Rust, а не CSS
 //!
@@ -17,20 +18,29 @@
 //! `TabId` сразу, а достраивается вкладка в коллбеке, когда цикл сообщений
 //! доберётся до него. Состояние из-за этого лежит в `Rc<RefCell<…>>`: коллбек
 //! переживает вызов `open`.
+//!
+//! # Несколько окон
+//!
+//! У каждого окна браузера свой `TabHost` со своим контейнером, но общий
+//! `ICoreWebView2Environment` — иначе окна разъехались бы по разным процессам
+//! движка. Номера вкладок и загрузок глобальные ([`next_tab_id`]): так любая
+//! команда находит вкладку, не зная, в каком она окне.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use browser190x4_adblock::Guard;
 use webview2_com::CreateCoreWebView2ControllerCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Profile4, ICoreWebView2_13,
-    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment10,
+    ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
+use windows_core::{Interface, HSTRING};
 
 use crate::container;
 use crate::dialogs::{self, PermissionSetting};
@@ -40,6 +50,18 @@ use crate::tab::{EventSink, Tab, TabEvent};
 /// Хост встроенных страниц. `.invalid` — зарезервированный TLD (RFC 2606):
 /// такое имя гарантированно не уедет в реальный DNS, если маппинг не встал.
 pub const PAGES_HOST: &str = "190x4-pages.invalid";
+
+/// Профиль движка для приватных окон. Отдельное имя обязательно: InPrivate
+/// работает поверх профиля, и смешивать его с обычным нельзя.
+const PRIVATE_PROFILE: &str = "private";
+
+/// Номера вкладок общие на все окна: команда находит вкладку по номеру, не
+/// зная окна, а сессия и загрузки не путают вкладки разных окон.
+static NEXT_TAB: AtomicU32 = AtomicU32::new(1);
+
+fn next_tab_id() -> TabId {
+    TabId(NEXT_TAB.fetch_add(1, Ordering::Relaxed))
+}
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -99,7 +121,7 @@ fn read_processes(
         COREWEBVIEW2_PROCESS_KIND_PPAPI_PLUGIN, COREWEBVIEW2_PROCESS_KIND_RENDERER,
         COREWEBVIEW2_PROCESS_KIND_SANDBOX_HELPER, COREWEBVIEW2_PROCESS_KIND_UTILITY,
     };
-    use windows_core::{Interface, BOOL, PWSTR};
+    use windows_core::{BOOL, PWSTR};
 
     let mut count = 0u32;
     unsafe { collection.Count(&mut count)? };
@@ -164,37 +186,77 @@ struct HostState {
     tabs: HashMap<TabId, Tab>,
     order: Vec<TabId>,
     active: Option<TabId>,
+    /// Вторая вкладка разделённого экрана: она справа, активная — слева.
+    split: Option<TabId>,
     layout: Layout,
     overlay: bool,
-    next_id: u32,
     pages_dir: Option<PathBuf>,
     /// Загрузки живут дольше вкладок, из которых начались.
     downloads: SharedDownloads,
     /// Вебвью интерфейса: ему возвращается клавиатура, когда горячая клавиша
     /// со страницы открывает поле ввода браузера.
     chrome: Option<ICoreWebView2Controller>,
+    /// Приватное окно: вкладки живут в профиле InPrivate, история и пароли
+    /// в базу не пишутся.
+    private: bool,
 }
 
 impl HostState {
-    /// Видимость: внутри контейнера видна только активная вкладка, а сам
-    /// контейнер скрывается целиком на время оверлея.
+    /// Видимость: внутри контейнера видны активная вкладка и её пара по
+    /// разделённому экрану, а сам контейнер скрывается целиком на время оверлея.
     fn apply_visibility(&mut self) -> anyhow::Result<()> {
         let active = self.active;
+        let split = self.split;
         for (id, tab) in self.tabs.iter_mut() {
-            tab.set_visible(Some(*id) == active)?;
+            tab.set_visible(Some(*id) == active || Some(*id) == split)?;
         }
         container::set_visible(self.container, !self.overlay);
         Ok(())
     }
 
-    /// Вкладки всегда занимают контейнер целиком — двигаем только его.
-    fn tab_bounds(&self) -> RECT {
-        RECT {
+    /// Куда встаёт вкладка внутри контейнера. Без разделённого экрана — целиком,
+    /// с ним — половина: активная слева, вторая справа.
+    fn bounds_for(&self, id: TabId) -> RECT {
+        let full = RECT {
             left: 0,
             top: 0,
             right: self.layout.width,
             bottom: self.layout.height,
+        };
+        let Some(split) = self.split else { return full };
+        if Some(id) != self.active && id != split {
+            return full;
         }
+        // Полоса-разделитель между половинами: её рисует контейнер (он тёмный),
+        // потому что HTML под нативной поверхностью не виден.
+        const GAP: i32 = 2;
+        let half = (self.layout.width - GAP) / 2;
+        if id == split {
+            RECT {
+                left: half + GAP,
+                top: 0,
+                right: self.layout.width,
+                bottom: self.layout.height,
+            }
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: half,
+                bottom: self.layout.height,
+            }
+        }
+    }
+
+    /// Переставить видимые вкладки после смены раскладки или пары split.
+    fn apply_bounds(&self) -> anyhow::Result<()> {
+        for id in [self.active, self.split].into_iter().flatten() {
+            let bounds = self.bounds_for(id);
+            if let Some(tab) = self.tabs.get(&id) {
+                tab.set_bounds(bounds)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -211,6 +273,7 @@ impl TabHost {
         env: ICoreWebView2Environment,
         guard: Arc<Guard>,
         sink: EventSink,
+        private: bool,
     ) -> anyhow::Result<Self> {
         let container = container::create(hwnd)?;
         Ok(Self {
@@ -222,14 +285,20 @@ impl TabHost {
                 tabs: HashMap::new(),
                 order: Vec::new(),
                 active: None,
+                split: None,
                 layout: Layout::default(),
                 overlay: false,
-                next_id: 1,
                 pages_dir: None,
                 downloads: SharedDownloads::default(),
                 chrome: None,
+                private,
             })),
         })
+    }
+
+    /// Приватное окно: вкладки в профиле InPrivate, ничего не пишется на диск.
+    pub fn is_private(&self) -> bool {
+        self.inner.borrow().private
     }
 
     /// Где лежат newtab и страницы ошибок. Ставится один раз при старте.
@@ -237,13 +306,18 @@ impl TabHost {
         self.inner.borrow_mut().pages_dir = Some(dir);
     }
 
+    /// Есть ли такая вкладка в этом окне — по номеру команда находит окно.
+    pub fn has_tab(&self, id: TabId) -> bool {
+        let state = self.inner.borrow();
+        state.order.contains(&id) || state.tabs.contains_key(&id)
+    }
+
     /// Завести вкладку. Возвращает id сразу; сама вкладка появится, когда
     /// WebView2 отдаст контроллер, и сообщит о себе событием навигации.
     pub fn open(&self, url: &str) -> anyhow::Result<TabId> {
-        let (id, container, env) = {
+        let (id, container, env, private) = {
             let mut state = self.inner.borrow_mut();
-            let id = TabId(state.next_id);
-            state.next_id += 1;
+            let id = next_tab_id();
             state.order.push(id);
             // Намерение показать именно её: к моменту готовности контроллера
             // пользователь может успеть переключиться, и тогда мы не будем
@@ -251,12 +325,13 @@ impl TabHost {
             if state.active.is_none() {
                 state.active = Some(id);
             }
-            (id, state.container, state.env.clone())
+            (id, state.container, state.env.clone(), state.private)
         };
 
         let inner = self.inner.clone();
         let url = url.to_string();
 
+        let failed = self.inner.clone();
         let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
             move |code, controller| {
                 let controller = match (|| {
@@ -266,13 +341,14 @@ impl TabHost {
                     Ok(controller) => controller,
                     Err(err) => {
                         tracing::error!(?id, %err, "контроллер вкладки не создан");
+                        drop_failed(&failed, id);
                         return Ok(());
                     }
                 };
 
                 let mut state = inner.borrow_mut();
-                let bounds = state.tab_bounds();
-                let visible = state.active == Some(id);
+                let bounds = state.bounds_for(id);
+                let visible = state.active == Some(id) || state.split == Some(id);
 
                 let tab = match Tab::from_controller(
                     id,
@@ -287,6 +363,8 @@ impl TabHost {
                     Ok(tab) => tab,
                     Err(err) => {
                         tracing::error!(?id, %err, "вкладка не настроена");
+                        drop(state);
+                        drop_failed(&inner, id);
                         return Ok(());
                     }
                 };
@@ -312,7 +390,15 @@ impl TabHost {
 
         // Родитель — контейнер, а не окно приложения: иначе поверхность
         // окажется под chrome-вебвью.
-        unsafe { env.CreateCoreWebView2Controller(container, &handler)? };
+        unsafe {
+            match private_options(&env, private)? {
+                Some(options) => {
+                    let env10: ICoreWebView2Environment10 = env.cast()?;
+                    env10.CreateCoreWebView2ControllerWithOptions(container, &options, &handler)?
+                }
+                None => env.CreateCoreWebView2Controller(container, &handler)?,
+            }
+        }
         Ok(id)
     }
 
@@ -328,14 +414,21 @@ impl TabHost {
             tab.close()?;
         }
 
+        if state.split == Some(id) {
+            state.split = None;
+        }
         if state.active == Some(id) {
             // Фокус уходит на соседа справа, как в любом браузере; если
             // соседа нет — на последнюю оставшуюся.
             state.active = position
                 .and_then(|pos| state.order.get(pos).or_else(|| state.order.last()))
                 .copied();
-            state.apply_visibility()?;
+            if state.active == state.split {
+                state.split = None;
+            }
         }
+        state.apply_visibility()?;
+        state.apply_bounds()?;
 
         Ok(state.active)
     }
@@ -350,11 +443,34 @@ impl TabHost {
             anyhow::bail!("нет вкладки {id:?}");
         }
         state.active = Some(id);
-        let bounds = state.tab_bounds();
-        if let Some(tab) = state.tabs.get(&id) {
-            tab.set_bounds(bounds)?;
+        if state.split == Some(id) {
+            state.split = None;
         }
+        state.apply_bounds()?;
         state.apply_visibility()
+    }
+
+    /// Вторая вкладка разделённого экрана (`None` — выйти из режима).
+    pub fn set_split(&self, id: Option<TabId>) -> anyhow::Result<()> {
+        let mut state = self.inner.borrow_mut();
+        match id {
+            Some(id) => {
+                if !state.order.contains(&id) {
+                    anyhow::bail!("нет вкладки {id:?}");
+                }
+                if state.active == Some(id) {
+                    anyhow::bail!("эта вкладка уже открыта слева");
+                }
+                state.split = Some(id);
+            }
+            None => state.split = None,
+        }
+        state.apply_bounds()?;
+        state.apply_visibility()
+    }
+
+    pub fn split_id(&self) -> Option<TabId> {
+        self.inner.borrow().split
     }
 
     /// Chrome сдвинул границы контента (открылась боковая панель, свернулась
@@ -371,13 +487,7 @@ impl TabHost {
             layout.height,
         )?;
 
-        let bounds = state.tab_bounds();
-        if let Some(id) = state.active {
-            if let Some(tab) = state.tabs.get(&id) {
-                tab.set_bounds(bounds)?;
-            }
-        }
-        Ok(())
+        state.apply_bounds()
     }
 
     /// Оверлей chrome-а (командная палитра, меню, модалка) требует, чтобы
@@ -439,6 +549,11 @@ impl TabHost {
         self.inner.borrow().downloads.set_policy(policy);
     }
 
+    /// Знает ли это окно такую загрузку: команда приходит без номера окна.
+    pub fn has_download(&self, key: u64) -> bool {
+        self.inner.borrow().downloads.has(key)
+    }
+
     /// Пауза, продолжение или отмена загрузки по её номеру в реестре.
     pub fn download_control(&self, key: u64, action: &str) -> anyhow::Result<()> {
         let downloads = self.inner.borrow().downloads.clone();
@@ -451,16 +566,12 @@ impl TabHost {
         downloads::answer(&downloads, key, path)
     }
 
-    /// Удалить куки, хранилища сайтов и кэш. Профиль общий, так что хватает
-    /// любой живой вкладки.
+    /// Удалить куки, хранилища сайтов и кэш. Профиль общий на все окна и
+    /// вкладки, так что годится любое живое вебвью — в том числе интерфейс,
+    /// когда открыты только встроенные страницы.
     pub fn clear_browsing_data(&self, site_data: bool, cache: bool) -> anyhow::Result<()> {
-        let state = self.inner.borrow();
-        let tab = state
-            .tabs
-            .values()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("нет ни одной открытой вкладки"))?;
-        tab.clear_browsing_data(site_data, cache)
+        let core = self.any_core()?;
+        crate::tab::clear_browsing_data(&core, site_data, cache)
     }
 
     /// Разрешения, которые пользователь дал или запретил сайтам. Список приходит
@@ -484,22 +595,27 @@ impl TabHost {
         dialogs::permission_reset(&self.profile()?, permission, origin, done)
     }
 
-    /// Профиль движка. Он общий на все вкладки и окно интерфейса: годится любая
-    /// вкладка, а без вкладок — вебвью интерфейса.
-    fn profile(&self) -> anyhow::Result<ICoreWebView2Profile4> {
-        use windows_core::Interface;
-
+    /// Любое живое вебвью окна: вкладка, а без вкладок — интерфейс.
+    fn any_core(
+        &self,
+    ) -> anyhow::Result<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {
         let state = self.inner.borrow();
-        let core = match state.tabs.values().next() {
-            Some(tab) => tab.core().clone(),
-            None => unsafe {
+        match state.tabs.values().next() {
+            Some(tab) => Ok(tab.core().clone()),
+            None => Ok(unsafe {
                 state
                     .chrome
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("движок ещё не запущен"))?
                     .CoreWebView2()?
-            },
-        };
+            }),
+        }
+    }
+
+    /// Профиль движка. Он общий на все вкладки и окно интерфейса: годится любая
+    /// вкладка, а без вкладок — вебвью интерфейса.
+    fn profile(&self) -> anyhow::Result<ICoreWebView2Profile4> {
+        let core = self.any_core()?;
         let unsupported = || anyhow::anyhow!("движок не хранит разрешения сайтов");
         let profile = unsafe {
             core.cast::<ICoreWebView2_13>()
@@ -550,7 +666,6 @@ impl TabHost {
     ) -> anyhow::Result<()> {
         use webview2_com::GetProcessExtendedInfosCompletedHandler;
         use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment13;
-        use windows_core::Interface;
 
         let env: ICoreWebView2Environment13 = self
             .inner
@@ -583,4 +698,45 @@ impl TabHost {
     pub fn is_empty(&self) -> bool {
         self.inner.borrow().order.is_empty()
     }
+}
+
+/// Настройки контроллера приватной вкладки. `None` — обычное окно или движок
+/// старее 1.0.1518: приватного режима у него нет, окно будет обычным.
+fn private_options(
+    env: &ICoreWebView2Environment,
+    private: bool,
+) -> windows_core::Result<
+    Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2ControllerOptions>,
+> {
+    if !private {
+        return Ok(None);
+    }
+    let Ok(env10) = env.cast::<ICoreWebView2Environment10>() else {
+        tracing::warn!("движок не умеет приватный режим — окно будет обычным");
+        return Ok(None);
+    };
+    unsafe {
+        let options = env10.CreateCoreWebView2ControllerOptions()?;
+        options.SetProfileName(&HSTRING::from(PRIVATE_PROFILE))?;
+        options.SetIsInPrivateModeEnabled(true)?;
+        Ok(Some(options))
+    }
+}
+
+/// Вкладка, которая так и не родилась: убрать её из порядка и сказать окну,
+/// иначе она навсегда остаётся пустым местом, которое нечем закрыть.
+fn drop_failed(inner: &Rc<RefCell<HostState>>, id: TabId) {
+    let sink = {
+        let mut state = inner.borrow_mut();
+        state.order.retain(|other| *other != id);
+        if state.active == Some(id) {
+            state.active = state.order.last().copied();
+        }
+        if state.split == Some(id) {
+            state.split = None;
+        }
+        let _ = state.apply_visibility();
+        state.sink.clone()
+    };
+    sink(TabEvent::OpenFailed { id: id.0 });
 }

@@ -8,13 +8,15 @@ import { onDownloads, summary } from "./downloads-model.js";
 import { openMenu } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
-import { hasClosedTabs, open, reopenClosed } from "./tabs.js";
+import { endSplit, hasClosedTabs, open, reopenClosed } from "./tabs.js";
 import { openUpdateBubble, update } from "./updates.js";
 import {
   closeBrowser,
   goHome,
   hooks,
+  newWindow,
   openDownloadsBubble,
+  openHistoryPage,
   openMediaExtension,
   openSettings,
   tabAction,
@@ -93,7 +95,12 @@ function showMainMenu(button) {
       ? [{ id: "update", label: `Обновить 190x4 до версии ${update.info.version}`, icon: "reload" }, { separator: true }]
       : []),
     { id: "new-tab", label: "Новая вкладка", icon: "tab-add", keys: "Ctrl+T" },
+    { id: "new-window", label: "Новое окно", icon: "window-16", keys: "Ctrl+N" },
+    { id: "new-private", label: "Новое приватное окно", icon: "private-16", keys: "Ctrl+Shift+N" },
     { id: "reopen", label: "Открыть закрытую вкладку", icon: "history", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
+    ...(state.splitId !== null
+      ? [{ id: "end-split", label: "Выйти из разделения экрана", icon: "split-16" }]
+      : []),
     { separator: true },
     { id: "history", label: "История", icon: "history", keys: "Ctrl+H" },
     { id: "downloads", label: "Загрузки", icon: "download", keys: "Ctrl+J" },
@@ -123,10 +130,16 @@ function showMainMenu(button) {
           return openUpdateBubble();
         case "new-tab":
           return open("about:newtab");
+        case "new-window":
+          return newWindow();
+        case "new-private":
+          return newWindow({ private: true });
+        case "end-split":
+          return endSplit();
         case "reopen":
           return reopenClosed();
         case "history":
-          return hooks.openPanel("history");
+          return openHistoryPage();
         case "downloads":
           return open("190x4://downloads");
         case "bookmarks":

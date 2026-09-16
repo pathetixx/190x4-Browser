@@ -20,6 +20,7 @@ export const DEFAULTS = {
   startup: "restore",
   startup_pages: [],
   search_engine: "duckduckgo",
+  search_suggest: true,
   passwords_offer: true,
   passwords_autofill: true,
   adblock_enabled: true,
@@ -32,6 +33,7 @@ export const DEFAULTS = {
   ext_media_enabled: true,
   ext_media_pinned: true,
   updates_auto: true,
+  zoom_sites: {},
 };
 
 const values = { ...DEFAULTS };

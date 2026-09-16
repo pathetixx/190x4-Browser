@@ -241,3 +241,39 @@
 .tabs__new:active {
   background: var(--overlay-4);
 }
+
+/* ── Закреплённые, спящие и разделённый экран ───────────────── */
+
+/* Закреплённая вкладка — только значок: место в строке она занимает
+   минимальное, зато переживает закрытие соседей. */
+.tab[data-pinned="true"] {
+  flex: 0 0 44px;
+  min-width: 44px;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.tab[data-pinned="true"] .tab__title,
+.tab[data-pinned="true"] .tab__close {
+  display: none;
+}
+
+/* Вкладка из прошлого сеанса, которую ещё не открывали: подпись бледнее —
+   страницы под ней пока нет. */
+.tab[data-sleeping="true"] .tab__title,
+.tab[data-sleeping="true"] .tab__glyph,
+.tab[data-sleeping="true"] .tab__favicon {
+  opacity: 0.55;
+}
+
+/* Вторая вкладка разделённого экрана подсвечена как активная, но полоской
+   снизу показано, что она справа. */
+.tab[data-split="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}

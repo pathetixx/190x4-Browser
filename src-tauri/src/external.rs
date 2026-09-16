@@ -141,6 +141,7 @@ fn remember(app: &AppHandle, store: &Store, offer: &Offer) {
 /// Страница открывает ссылку на приложение.
 pub fn on_request(
     app: &AppHandle,
+    window: &str,
     tab: u32,
     token: u64,
     uri: &str,
@@ -181,7 +182,7 @@ pub fn on_request(
             app: name,
         },
     );
-    let _ = app.emit_to("chrome", "tab", payload);
+    let _ = app.emit_to(window, "tab", payload);
 }
 
 /// Ответ на окно. `false` — окно не про приложение, ответ нужен движку.

@@ -10,8 +10,11 @@
 //! попап — собственное маленькое окно, принадлежащее главному: так же
 //! устроены пузыри в самом Chrome.
 //!
-//! Окно одно на всё и создаётся заранее: первый показ меню не должен ждать
-//! запуска вебвью.
+//! Окно одно **на каждое окно браузера** и создаётся заранее: первый показ
+//! меню не должен ждать запуска вебвью, а меню второго окна не должно
+//! выпрыгивать поверх первого.
+
+use std::collections::HashMap;
 
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -22,27 +25,50 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-pub const LABEL: &str = "popup";
 /// Окно, которое просит страница: alert, запрос разрешения, вход на сайт.
 pub const DIALOG: &str = "dialog";
 
+/// Ярлык попапа своего окна браузера.
+pub fn label_for(owner: &str) -> String {
+    format!("popup--{owner}")
+}
+
+/// Чей это попап: ярлык окна браузера, которому он принадлежит.
+pub fn owner_of(label: &str) -> Option<&str> {
+    label.strip_prefix("popup--")
+}
+
+/// Состояние попапов всех окон.
 #[derive(Default)]
-pub struct Popup {
+pub struct Popup(Mutex<HashMap<String, State>>);
+
+impl Popup {
+    fn with<R>(&self, owner: &str, f: impl FnOnce(&mut State) -> R) -> R {
+        let mut map = self.0.lock();
+        f(map.entry(owner.to_string()).or_default())
+    }
+
+    fn forget(&self, owner: &str) {
+        self.0.lock().remove(owner);
+    }
+}
+
+#[derive(Default)]
+struct State {
     /// Что рисовать: окно могло ещё не загрузиться к моменту первого вызова.
-    pending: Mutex<Option<Value>>,
-    width: Mutex<f64>,
+    pending: Option<Value>,
+    width: f64,
     /// Где кончается окно браузера — ниже попап не растёт.
-    max_height: Mutex<f64>,
+    max_height: f64,
     /// Вид и место последнего показа: тот же попап на том же месте
     /// перерисовывается без переезда окна.
-    placement: Mutex<Option<(String, i32, i32, i64)>>,
+    placement: Option<(String, i32, i32, i64)>,
     /// Меню у точки щелчка (`align = "point"`): высота точки в окне браузера.
-    /// Вверх или вниз от неё раскрываться, решает `show`, когда высота известна.
-    point: Mutex<Option<f64>>,
+    point: Option<f64>,
     /// Окно страницы и где было окно браузера, когда его показали. Такое окно
     /// не закрывается от потери фокуса и едет вместе с окном браузера:
     /// страница ждёт ответа.
-    sticky: Mutex<Option<PhysicalPosition<i32>>>,
+    sticky: Option<PhysicalPosition<i32>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -53,16 +79,17 @@ pub struct Anchor {
     pub height: f64,
 }
 
-/// Создать окно попапа, если его ещё нет.
-pub fn ensure(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    if let Some(window) = app.get_webview_window(LABEL) {
+/// Создать окно попапа для окна браузера, если его ещё нет.
+pub fn ensure(app: &AppHandle, owner: &str) -> tauri::Result<WebviewWindow> {
+    let label = label_for(owner);
+    if let Some(window) = app.get_webview_window(&label) {
         return Ok(window);
     }
     let main = app
-        .get_webview_window("chrome")
+        .get_webview_window(owner)
         .ok_or(tauri::Error::WindowNotFound)?;
 
-    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("popup.html".into()));
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("popup.html".into()));
     if let Some(args) = crate::debug_browser_args() {
         builder = builder.additional_browser_args(&args);
     }
@@ -82,21 +109,28 @@ pub fn ensure(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 
     let handle = app.clone();
     let closing = window.clone();
+    let owner = owner.to_string();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
             // Окно страницы ждёт ответа: щелчок мимо его не закрывает.
             let sticky = handle
                 .state::<crate::state::App>()
                 .popup
-                .sticky
-                .lock()
-                .is_some();
+                .with(&owner, |state| state.sticky.is_some());
             if !sticky {
-                hide_window(&handle, &closing);
+                hide_window(&handle, &owner, &closing);
             }
         }
     });
     Ok(window)
+}
+
+/// Окно браузера закрылось — его попап больше не нужен.
+pub fn destroy(app: &AppHandle, owner: &str) {
+    if let Some(window) = app.get_webview_window(&label_for(owner)) {
+        let _ = window.destroy();
+    }
+    app.state::<crate::state::App>().popup.forget(owner);
 }
 
 /// Видимость попапа ведём сами, через Win32, а не через `show()`/`hide()`
@@ -156,51 +190,53 @@ fn native_hide(window: &WebviewWindow) {
     let _ = window.hide();
 }
 
-fn hide_window(app: &AppHandle, window: &WebviewWindow) {
+fn hide_window(app: &AppHandle, owner: &str, window: &WebviewWindow) {
     if native_visible(window) {
         native_hide(window);
-        let _ = app.emit_to("chrome", "popup-closed", ());
+        let _ = app.emit_to(owner, "popup-closed", ());
     }
 }
 
-pub fn hide(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        hide_window(app, &window);
+pub fn hide(app: &AppHandle, owner: &str) {
+    if let Some(window) = app.get_webview_window(&label_for(owner)) {
+        hide_window(app, owner, &window);
     }
 }
 
 /// Окно браузера сдвинули. Меню и пузыри закрываются, а окно страницы едет
 /// вместе с ним: страница ждёт ответа, и прятать окно незачем.
-pub fn main_moved(app: &AppHandle, state: &Popup) {
-    let Some(popup) = app.get_webview_window(LABEL) else {
+pub fn main_moved(app: &AppHandle, owner: &str) {
+    let Some(popup) = app.get_webview_window(&label_for(owner)) else {
         return;
     };
-    let followed = (|| -> Option<()> {
-        let now = app.get_webview_window("chrome")?.inner_position().ok()?;
-        let mut sticky = state.sticky.lock();
-        let before = sticky.as_mut()?;
-        if !native_visible(&popup) {
-            return None;
-        }
-        let at = popup.outer_position().ok()?;
-        popup
-            .set_position(PhysicalPosition::new(
-                at.x + now.x - before.x,
-                at.y + now.y - before.y,
-            ))
-            .ok()?;
-        *before = now;
-        Some(())
-    })();
+    let state = &app.state::<crate::state::App>().popup;
+    let followed = state.with(owner, |state| {
+        (|| -> Option<()> {
+            let now = app.get_webview_window(owner)?.inner_position().ok()?;
+            let before = state.sticky.as_mut()?;
+            if !native_visible(&popup) {
+                return None;
+            }
+            let at = popup.outer_position().ok()?;
+            popup
+                .set_position(PhysicalPosition::new(
+                    at.x + now.x - before.x,
+                    at.y + now.y - before.y,
+                ))
+                .ok()?;
+            *before = now;
+            Some(())
+        })()
+    });
     if followed.is_none() {
-        hide_window(app, &popup);
+        hide_window(app, owner, &popup);
     }
 }
 
 /// Показать попап под элементом chrome-а. Размеры — в CSS-пикселях окна.
 pub fn open(
     app: &AppHandle,
-    state: &Popup,
+    owner: &str,
     kind: &str,
     anchor: Anchor,
     width: f64,
@@ -208,9 +244,9 @@ pub fn open(
     payload: Value,
 ) -> anyhow::Result<()> {
     let main = app
-        .get_webview_window("chrome")
+        .get_webview_window(owner)
         .ok_or_else(|| anyhow::anyhow!("нет окна браузера"))?;
-    let popup = ensure(app)?;
+    let popup = ensure(app, owner)?;
 
     let scale = main.scale_factor()?;
     let origin = main.inner_position()?;
@@ -233,32 +269,42 @@ pub fn open(
         anchor.y + anchor.height + 4.0
     };
 
-    *state.width.lock() = width;
-    *state.max_height.lock() = if point {
-        (main_height - 16.0).max(160.0)
-    } else {
-        (main_height - top - 12.0).max(160.0)
-    };
-    *state.point.lock() = point.then_some(anchor.y);
-    *state.sticky.lock() = (kind == DIALOG).then_some(origin);
-
     let x = origin.x + (left * scale).round() as i32;
     let y = origin.y + (top * scale).round() as i32;
     let placement = (kind.to_string(), x, y, (width * 100.0).round() as i64);
+
+    let state = &app.state::<crate::state::App>().popup;
     // Подсказки адресной строки приходят на каждую клавишу: если тот же попап
     // уже стоит на этом месте, меняется только содержимое. Переезд и сжатие
     // окна до черновой высоты на каждый символ заставляли его мигать.
-    let reuse = native_visible(&popup) && state.placement.lock().as_ref() == Some(&placement);
+    let reuse = state.with(owner, |state| {
+        state.width = width;
+        state.max_height = if point {
+            (main_height - 16.0).max(160.0)
+        } else {
+            (main_height - top - 12.0).max(160.0)
+        };
+        state.point = point.then_some(anchor.y);
+        state.sticky = (kind == DIALOG).then_some(origin);
+        let reuse = native_visible(&popup) && state.placement.as_ref() == Some(&placement);
+        state.placement = Some(placement);
+        reuse
+    });
+
     if !reuse {
         popup.set_position(PhysicalPosition::new(x, y))?;
         popup.set_size(LogicalSize::new(width, 80.0))?;
     }
-    *state.placement.lock() = Some(placement);
 
-    let message =
-        serde_json::json!({ "kind": kind, "payload": payload, "width": width, "reuse": reuse });
-    *state.pending.lock() = Some(message.clone());
-    app.emit_to(LABEL, "popup-render", message)?;
+    let message = serde_json::json!({
+        "kind": kind,
+        "payload": payload,
+        "width": width,
+        "reuse": reuse,
+        "owner": owner,
+    });
+    state.with(owner, |state| state.pending = Some(message.clone()));
+    app.emit_to(label_for(owner).as_str(), "popup-render", message)?;
     Ok(())
 }
 
@@ -268,13 +314,19 @@ pub fn open(
 ///
 /// `focus = false` — показать, не забирая фокус: так живут подсказки адресной
 /// строки, пока пользователь печатает.
-pub fn show(app: &AppHandle, state: &Popup, height: f64, focus: bool) -> anyhow::Result<f64> {
-    let popup = ensure(app)?;
-    let width = *state.width.lock();
-    let height = height.min(*state.max_height.lock()).max(24.0);
+pub fn show(app: &AppHandle, owner: &str, height: f64, focus: bool) -> anyhow::Result<f64> {
+    let popup = ensure(app, owner)?;
+    let state = &app.state::<crate::state::App>().popup;
+    let (width, height, point) = state.with(owner, |state| {
+        (
+            state.width,
+            height.min(state.max_height).max(24.0),
+            state.point,
+        )
+    });
     popup.set_size(LogicalSize::new(width, height))?;
-    if let Some(y) = *state.point.lock() {
-        place_at_point(app, &popup, y, height)?;
+    if let Some(y) = point {
+        place_at_point(app, owner, &popup, y, height)?;
     }
     native_show(&popup, focus)?;
     Ok(height)
@@ -283,12 +335,13 @@ pub fn show(app: &AppHandle, state: &Popup, height: f64, focus: bool) -> anyhow:
 /// Меню у точки щелчка: под точкой, а если снизу не помещается — над ней.
 fn place_at_point(
     app: &AppHandle,
+    owner: &str,
     popup: &WebviewWindow,
     y: f64,
     height: f64,
 ) -> anyhow::Result<()> {
     let main = app
-        .get_webview_window("chrome")
+        .get_webview_window(owner)
         .ok_or_else(|| anyhow::anyhow!("нет окна браузера"))?;
     let scale = main.scale_factor()?;
     let origin = main.inner_position()?;
@@ -310,19 +363,27 @@ fn place_at_point(
 
 /// Содержимое попапа поменялось (пришёл список форматов, выросла загрузка) —
 /// подогнать высоту, не показывая окно заново.
-pub fn resize(app: &AppHandle, state: &Popup, height: f64) -> anyhow::Result<f64> {
-    let height = height.min(*state.max_height.lock()).max(24.0);
-    let Some(popup) = app.get_webview_window(LABEL) else {
+pub fn resize(app: &AppHandle, owner: &str, height: f64) -> anyhow::Result<f64> {
+    let state = &app.state::<crate::state::App>().popup;
+    let (width, height, point) = state.with(owner, |state| {
+        (
+            state.width,
+            height.min(state.max_height).max(24.0),
+            state.point,
+        )
+    });
+    let Some(popup) = app.get_webview_window(&label_for(owner)) else {
         return Ok(height);
     };
-    let width = *state.width.lock();
     popup.set_size(LogicalSize::new(width, height))?;
-    if let Some(y) = *state.point.lock() {
-        place_at_point(app, &popup, y, height)?;
+    if let Some(y) = point {
+        place_at_point(app, owner, &popup, y, height)?;
     }
     Ok(height)
 }
 
-pub fn take_pending(state: &Popup) -> Option<Value> {
-    state.pending.lock().take()
+pub fn take_pending(app: &AppHandle, owner: &str) -> Option<Value> {
+    app.state::<crate::state::App>()
+        .popup
+        .with(owner, |state| state.pending.take())
 }

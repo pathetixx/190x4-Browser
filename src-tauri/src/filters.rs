@@ -142,7 +142,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let tmp = path.with_extension("download");
+    // Имя временного файла — с суффиксом, а не с подменённым расширением:
+    // `list.txt` и `list.json` иначе спорили бы за один и тот же `list.download`.
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    let tmp = path.with_file_name(name);
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())

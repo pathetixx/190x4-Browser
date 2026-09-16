@@ -611,3 +611,33 @@ svg {
   background: var(--text-faint);
   box-shadow: none;
 }
+
+/* ── Приватное окно ─────────────────────────────────────────── */
+
+/* Приватное окно должно быть видно с одного взгляда: в Chrome это тёмная
+   шапка, у нас — акцентная полоса над строкой вкладок и значок в рельсе. */
+:root[data-private="true"] .chrome {
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+:root[data-private="true"] .rail {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 220px);
+}
+
+.private-badge {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+:root[data-private="true"] .private-badge {
+  display: inline-flex;
+}

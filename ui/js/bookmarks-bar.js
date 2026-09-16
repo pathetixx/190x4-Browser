@@ -19,6 +19,10 @@ import {
   editBookmark,
   isNewTabUrl,
   navigate,
+  openInNewTab,
+  openInNewWindow,
+  openInPrivateWindow,
+  openInSplit,
   openSettings,
   toggleBookmarksBar,
 } from "./actions.js";
@@ -48,9 +52,12 @@ export async function initBookmarksBar() {
       if (node) editBookmark(node, folderAnchor?.isConnected ? folderAnchor : overflowButton);
     }
     if (action === "open") navigate(url);
-    if (action === "open-new") navigate(url, { newTab: true, background: true });
+    if (action === "open-new") openInNewTab(url);
+    if (action === "open-window") openInNewWindow(url);
+    if (action === "open-split") openInSplit(url);
+    if (action === "open-private") openInPrivateWindow(url);
     if (action === "open-all") {
-      for (const link of urls ?? []) navigate(link, { newTab: true, background: true });
+      for (const link of urls ?? []) openInNewTab(link);
     }
   });
 
@@ -144,7 +151,9 @@ function makeItem(node) {
     if (node.kind === "folder") {
       openFolder(node.id, button, { title: node.title });
     } else {
-      navigate(node.url, { newTab: event.ctrlKey || event.shiftKey, background: event.ctrlKey });
+      if (event.shiftKey) openInNewWindow(node.url);
+      else if (event.ctrlKey) openInNewTab(node.url);
+      else navigate(node.url);
     }
   });
   button.addEventListener("auxclick", (event) => {
@@ -194,11 +203,27 @@ function showMenu(node, event) {
   const items = [];
 
   if (node?.kind === "url") {
+    // Порядок как в Edge: сначала то, чем пользуются, и без «Открыть» —
+    // для этого достаточно щелчка по самой закладке.
     items.push(
-      { id: "open", label: "Открыть", icon: "globe" },
       { id: "open-new", label: "Открыть в новой вкладке", icon: "tab-add" },
+      { id: "open-window", label: "Открыть в новом окне", icon: "window-16" },
+      { id: "open-split", label: "Открыть в режиме разделения экрана", icon: "split-16" },
+      { id: "open-private", label: "Открыть в приватном окне", icon: "private-16" },
       { separator: true }
     );
+  }
+  if (node?.kind === "folder") {
+    const links = nodes
+      .filter((item) => item.parent_id === node.id && item.kind === "url")
+      .map((item) => item.url);
+    if (links.length) {
+      items.push(
+        { id: "open-all", label: `Открыть все (${links.length})`, icon: "tab-add" },
+        { id: "open-all-window", label: "Открыть все в новом окне", icon: "window-16" },
+        { separator: true }
+      );
+    }
   }
   if (node) {
     items.push(
@@ -217,11 +242,26 @@ function showMenu(node, event) {
 
   const target = node ? itemsNode.querySelector(`[data-id="${node.id}"]`) ?? anchor : anchor;
   openMenu(`bookmark:${node?.id ?? "bar"}`, anchor, items, (action) => {
+    const links = () =>
+      nodes.filter((item) => item.parent_id === node?.id && item.kind === "url").map((item) => item.url);
     switch (action) {
-      case "open":
-        return navigate(node.url);
+      // Новая вкладка открывается в фоне: пользователь ещё не закончил с этой.
       case "open-new":
-        return navigate(node.url, { newTab: true });
+        return openInNewTab(node.url);
+      case "open-window":
+        return openInNewWindow(node.url);
+      case "open-split":
+        return openInSplit(node.url);
+      case "open-private":
+        return openInPrivateWindow(node.url);
+      case "open-all":
+        return links().forEach((url) => openInNewTab(url));
+      case "open-all-window": {
+        const [first, ...rest] = links();
+        if (!first) return undefined;
+        openInNewWindow(first);
+        return rest.forEach((url) => openInNewTab(url));
+      }
       case "edit":
         return editBookmark(node, target);
       case "remove":
