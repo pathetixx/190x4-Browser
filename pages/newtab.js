@@ -363,6 +363,10 @@
     link.href = tile.url;
     link.draggable = false;
     link.title = `${tile.title}\n${hostOf(tile.url)}`;
+    // Значок из кэша страницы — до первой отрисовки плитки: иначе плитка
+    // рисовалась буквой, а пришедший следом такой же значок считался «без
+    // изменений», и буква оставалась навсегда.
+    requestIcon(tile.url);
     const plate = h("span", "dial__plate");
     fillPlate(plate, tile);
     link.append(plate, h("span", "dial__name", tile.title));
@@ -409,7 +413,6 @@
       saveTiles();
     });
 
-    requestIcon(tile.url);
     return node;
   }
 
@@ -578,9 +581,13 @@
     } catch {
       // Переполнено — не страшно, в профиле браузера значок есть.
     }
-    if (known?.data === icon?.data) return;
     for (const node of dials.querySelectorAll(".dial[data-origin]")) {
       if (node.dataset.origin !== origin) continue;
+      // Перерисовываем, только если плитка показывает не этот значок: так нет
+      // мигания, а плитка с буквой получает картинку, даже когда значок в кэше
+      // страницы уже был.
+      const shown = node.querySelector(".dial__plate img")?.getAttribute("src") ?? null;
+      if (shown === (icon?.data ?? null) && known?.data === icon?.data) continue;
       const tile = state.tiles[Number(node.dataset.index)];
       if (tile) fillPlate(node.querySelector(".dial__plate"), tile);
     }

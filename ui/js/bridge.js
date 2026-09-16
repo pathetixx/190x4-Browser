@@ -34,15 +34,33 @@ export async function invoke(command, args = {}) {
   return call;
 }
 
-export async function listen(event, handler) {
-  if (isNative) return tauri.event.listen(event, ({ payload }) => handler(payload));
-  return mock.listen(event, handler);
+/**
+ * Ярлык этого окна. Подписка Tauri по умолчанию получает события, адресованные
+ * *любому* окну: при двух окнах меню, открытое во втором, рисовал и показывал
+ * ещё и попап первого — и забирал себе фокус. Поэтому каждое окно слушает
+ * только свои события и общие (`app.emit`), а попап разговаривает только со
+ * своим окном браузера.
+ */
+const currentLabel = isNative ? tauri.webviewWindow?.getCurrentWebviewWindow?.().label ?? null : null;
+
+/** С кем говорит это окно: попап — со своим окном браузера, окно — со своим попапом. */
+function partnerLabel() {
+  if (!currentLabel) return null;
+  return currentLabel.startsWith("popup--") ? currentLabel.slice("popup--".length) : `popup--${currentLabel}`;
 }
 
-/** Событие другим окнам приложения (попап ↔ окно браузера). */
+export async function listen(event, handler) {
+  if (!isNative) return mock.listen(event, handler);
+  const options = currentLabel ? { target: { kind: "AnyLabel", label: currentLabel } } : undefined;
+  return tauri.event.listen(event, ({ payload }) => handler(payload), options);
+}
+
+/** Событие парному окну: попап ↔ его окно браузера. */
 export async function emit(event, payload) {
-  if (isNative) return tauri.event.emit(event, payload);
-  return mock.emit(event, payload);
+  if (!isNative) return mock.emit(event, payload);
+  const target = partnerLabel();
+  if (target) return tauri.event.emitTo(target, event, payload);
+  return tauri.event.emit(event, payload);
 }
 
 /** Вызовы раскладки летят пачками при ресайзе — ошибки тут не новость. */

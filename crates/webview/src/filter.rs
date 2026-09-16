@@ -28,7 +28,15 @@ use webview2_com::{
 use windows_core::{h, HSTRING, PWSTR};
 
 use crate::errors;
+use crate::host::PAGES_HOST;
 use crate::tab::{EventSink, TabEvent};
+
+/// Документ — страница самого браузера, а не сайт.
+fn is_browser_page(url: &str) -> bool {
+    url.strip_prefix("http://")
+        .and_then(|rest| rest.strip_prefix(PAGES_HOST))
+        .is_some_and(|rest| rest.starts_with('/'))
+}
 
 /// Счётчик блокировок вкладки в интерфейс — не чаще этого: событие идёт в
 /// chrome через IPC, а запросы летят сотнями за загрузку страницы.
@@ -151,6 +159,12 @@ pub fn install(
                 };
 
                 let document = source.borrow();
+                // Страницы браузера (новая вкладка) — не сайт: списки
+                // блокировки к ним не относятся, а их общие правила вроде
+                // «прятать ссылки на dzen.ru» ломали плитки.
+                if is_browser_page(&document) {
+                    return Ok(());
+                }
                 let main_frame = context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
                     && url.as_str() == document.as_str();
                 if main_frame {
@@ -232,6 +246,9 @@ pub fn install_cosmetics(core: &ICoreWebView2, guard: Arc<Guard>) -> windows_cor
                 let Some(host) = document_host(&url) else {
                     return Ok(());
                 };
+                if host == PAGES_HOST {
+                    return Ok(());
+                }
                 let Some(script) = document_script(&host, &guard.cosmetics(&url)) else {
                     return Ok(());
                 };
