@@ -48,12 +48,26 @@ const HIDDEN_LABEL = /InPrivate|Microsoft|Edge|Copilot|QR/i;
 
 let current = null;
 let translate = () => {};
+/**
+ * «Открыть ссылку в новой вкладке» открывает её в фоне — как в Chrome.
+ * Команду выполняет движок, вкладка приходит событием `popup`, поэтому
+ * помечаем ожидание: ближайшее такое событие не переключает вкладку.
+ */
+let backgroundUntil = 0;
 
 export function initContextMenu(options) {
   translate = options.translate;
   listen("popup-closed", () => answer(null));
   onPopupAction("context", ({ action, token }) => {
-    if (current && token === current.menu) runAction(action, current);
+    if (!current || token !== current.menu) return;
+    // Команду «Открыть ссылку в новой вкладке» выполняет движок, а попап лишь
+    // предупреждает: вкладка, которая сейчас придёт, открыта из меню и
+    // переключать на неё не нужно — так же ведёт себя Chrome.
+    if (action === "background-tab") {
+      backgroundUntil = performance.now() + 2000;
+      return;
+    }
+    runAction(action, current);
   });
 }
 
@@ -182,6 +196,13 @@ function tidySeparators(rows) {
   }
   while (out.length && out[out.length - 1].separator) out.pop();
   return out;
+}
+
+/** Ждёт ли интерфейс вкладку, которую открывать нужно в фоне. */
+export function wantsBackgroundTab() {
+  if (performance.now() > backgroundUntil) return false;
+  backgroundUntil = 0;
+  return true;
 }
 
 async function runAction(action, menu) {

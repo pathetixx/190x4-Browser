@@ -257,6 +257,20 @@ export function popupDemo(kind) {
           { id: "cmd:5", command: 5, name: "inspectElement", label: "Просмотреть код", keys: "Ctrl+Shift+I" },
         ],
       };
+    case "group":
+      return {
+        group: { id: 1, title: "Работа", color: "teal", collapsed: false },
+        tabs: 4,
+        colors: [
+          ["rose", "Багровый"],
+          ["amber", "Янтарный"],
+          ["lime", "Лаймовый"],
+          ["teal", "Бирюзовый"],
+          ["sky", "Небесный"],
+          ["violet", "Фиолетовый"],
+          ["slate", "Серый"],
+        ],
+      };
     case "update":
       return {
         version: "0.2.0",

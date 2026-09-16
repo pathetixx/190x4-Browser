@@ -648,7 +648,8 @@ VIEWS.group = function group({ group: data = {}, tabs = 0, colors = [] }) {
     actions.append(item);
   }
   box.append(actions);
-  return box;
+  // Вид сам кладёт разметку в корень попапа и возвращает уборку (её тут нет).
+  root.append(box);
 };
 
 VIEWS.context = function context({ tab, token, rows = [] }) {
@@ -672,6 +673,11 @@ VIEWS.context = function context({ tab, token, rows = [] }) {
       if (row.command == null) {
         act("context", row.id, { tab, token });
         return;
+      }
+      // Ссылка из меню открывается в фоне: движок откроет вкладку сам, а окну
+      // браузера нужно знать, что переключаться на неё не надо.
+      if (row.name === "openLinkInNewWindow") {
+        act("context", "background-tab", { tab, token }, { keepOpen: true });
       }
       if (isNative) await invoke("tab_context_menu", { id: tab, menu: token, command: row.command }).catch(() => {});
       close();

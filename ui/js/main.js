@@ -16,7 +16,7 @@ import {
   zoom,
 } from "./actions.js";
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
-import { initContextMenu, openContextMenu } from "./context-menu.js";
+import { initContextMenu, openContextMenu, wantsBackgroundTab } from "./context-menu.js";
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
 import { el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
@@ -244,7 +244,9 @@ listen("tab", (event) => {
       rememberSiteZoom(event.id, event.factor);
       break;
     case "popup":
-      open(event.url, { index: tabIndex(event.opener) + 1 });
+      // Вкладка по ссылке: щелчок по target=_blank переключает на неё, а
+      // «Открыть ссылку в новой вкладке» из меню — оставляет в фоне.
+      open(event.url, { index: tabIndex(event.opener) + 1, background: wantsBackgroundTab() });
       break;
     case "message":
       handlePageMessage(event);
