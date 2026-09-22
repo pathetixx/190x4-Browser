@@ -79,6 +79,18 @@ export function isFindOpen() {
   return !bar.hidden;
 }
 
+/**
+ * F3 и Ctrl+G — следующее совпадение, Shift+F3 и Ctrl+Shift+G — предыдущее.
+ * Строка поиска закрыта — открывается с прежним запросом, как в Chrome.
+ */
+export function findAgain(direction) {
+  if (bar.hidden || searched !== state.activeId) {
+    openFind();
+    return;
+  }
+  step(direction);
+}
+
 /** Событие от движка: сколько нашли и на каком совпадении стоим. */
 export function renderFindResult({ id, total, current }) {
   if (id !== searched) return;

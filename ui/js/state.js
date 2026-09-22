@@ -39,6 +39,8 @@ export const state = {
   passwordSites: new Map(),
   /// Масштаб, который помнит сайт: хост → множитель.
   zoomSites: {},
+  /// Сколько окон, закрытых крестиком, можно вернуть (Ctrl+Shift+T).
+  closedWindows: 0,
 };
 
 export function subscribe(fn) {
@@ -72,6 +74,8 @@ function blankTab(id) {
     /// Вкладку закрывают и ждут ответа её страницы («Покинуть сайт?»): в
     /// строке и на экране её уже нет.
     closing: false,
+    /// Процесс страницы упал: при показе вкладка загружается заново.
+    crashed: false,
     /// Встроенная страница: "settings" | "downloads" | "history" | null.
     internal: null,
     section: "",

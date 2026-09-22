@@ -8,7 +8,7 @@ import { onDownloads, summary } from "./downloads-model.js";
 import { openMenu } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
-import { endSplit, hasClosedTabs, open, reopenClosed } from "./tabs.js";
+import { endSplit, hasClosedTabs, open, reopenClosed, reopenLabel } from "./tabs.js";
 import { openUpdateBubble, update } from "./updates.js";
 import {
   closeBrowser,
@@ -100,7 +100,7 @@ function showMainMenu(button) {
     { id: "new-tab", label: "Новая вкладка", icon: "tab-add", keys: "Ctrl+T" },
     { id: "new-window", label: "Новое окно", icon: "window-16", keys: "Ctrl+N" },
     { id: "new-private", label: "Новое приватное окно", icon: "private-16", keys: "Ctrl+Shift+N" },
-    { id: "reopen", label: "Открыть закрытую вкладку", icon: "history", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
+    { id: "reopen", label: reopenLabel(), icon: "history", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
     ...(state.splitId !== null
       ? [{ id: "end-split", label: "Выйти из разделения экрана", icon: "split-16" }]
       : []),
@@ -114,6 +114,7 @@ function showMainMenu(button) {
     { type: "zoom", id: "zoom", label: "Масштаб", value: tab?.zoom ?? 1, disabled: !web },
     { separator: true },
     { id: "print", label: "Печать…", icon: "print", keys: "Ctrl+P", disabled: !web },
+    { id: "save-as", label: "Сохранить страницу как…", icon: "document", keys: "Ctrl+S", disabled: !web },
     { id: "find", label: "Найти на странице", icon: "find", keys: "Ctrl+F", disabled: !web },
     { id: "devtools", label: "Инструменты разработчика", icon: "code", keys: "F12", disabled: !web },
     { separator: true },
@@ -157,6 +158,8 @@ function showMainMenu(button) {
           return tabAction(action);
         case "print":
           return tabAction("print");
+        case "save-as":
+          return tabAction("save_as");
         case "find":
           return hooks.openFind();
         case "devtools":

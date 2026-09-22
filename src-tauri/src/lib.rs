@@ -39,11 +39,23 @@ use tauri::{Emitter, Manager};
 use browser_windows::WindowKind;
 use state::App;
 
+/// Перезапуск после падения движка: новый процесс получает номер старого и
+/// ждёт, пока тот выйдет, — иначе застал бы его живым и, как повторный запуск,
+/// отдал бы ему свои адреса.
+const WAIT_PID: &str = "BROWSER190X4_WAIT_PID";
+
+/// Когда запущен процесс: падение движка в первые секунды перезапуском не
+/// лечится, а только пошло бы по кругу.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 pub fn run() {
+    let _ = STARTED.get_or_init(std::time::Instant::now);
     // Установщик запускает exe только ради регистрации в Windows.
     if let Some(code) = default_browser::installer_flag() {
         std::process::exit(code);
     }
+    #[cfg(windows)]
+    wait_for_previous();
 
     // Повторный запуск передаёт адреса первому процессу и выходит (плагин
     // single-instance). Профиль ему не трогать: лог открывается с обрезкой, а
@@ -109,6 +121,7 @@ pub fn run() {
                     .unwrap_or_else(|| "duckduckgo".into()),
             ),
             sessions: Default::default(),
+            closed_windows: Default::default(),
         })
         .manage(updates::Updates::default())
         .manage(newtab::NewTab::default())
@@ -136,6 +149,7 @@ pub fn run() {
             ipc::window_state,
             ipc::window_info,
             ipc::window_open,
+            ipc::window_reopen_closed,
             ipc::app_quit,
             ipc::chrome_focus,
             ipc::adblock_stats,
@@ -330,6 +344,11 @@ pub(crate) fn route_event(
             external::on_request(app, label, *id, *token, uri, origin, *user_initiated);
             return;
         }
+        // Упал весь движок: вместе с вкладками умер и интерфейс окон.
+        TabEvent::Crashed { what, .. } if *what == "browser" => {
+            relaunch_after_engine_crash(app);
+            return;
+        }
         // Сайт открыли с неверным сертификатом: движок помнит это решение до
         // выхода для всех окон профиля, значит, и помечать его надо во всех.
         TabEvent::Insecure { host, .. } => {
@@ -353,6 +372,53 @@ pub(crate) fn route_event(
         _ => {}
     }
     let _ = app.emit_to(label, "tab", &event);
+}
+
+/// Движок WebView2 упал целиком: окна пусты и не отвечают, вернуть их можно
+/// только новым процессом — вкладки придут из сессии в базе. Один раз за
+/// процесс и не в первые полминуты работы.
+#[cfg(windows)]
+fn relaunch_after_engine_crash(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ONCE: AtomicBool = AtomicBool::new(false);
+    if ONCE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let uptime = STARTED.get().map(|at| at.elapsed()).unwrap_or_default();
+    if uptime < std::time::Duration::from_secs(30) {
+        tracing::error!(?uptime, "движок WebView2 упал сразу после запуска");
+        return;
+    }
+    tracing::error!("движок WebView2 упал — браузер перезапускается");
+    let spawned = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .env(WAIT_PID, std::process::id().to_string())
+            .spawn()
+    });
+    match spawned {
+        Ok(_) => app.exit(0),
+        Err(err) => tracing::error!(%err, "браузер не перезапущен"),
+    }
+}
+
+/// Процесс, перезапущенный после падения движка, ждёт выхода прежнего.
+#[cfg(windows)]
+fn wait_for_previous() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+
+    let pid = std::env::var(WAIT_PID).ok();
+    std::env::remove_var(WAIT_PID);
+    let Some(pid) = pid.and_then(|pid| pid.parse::<u32>().ok()) else {
+        return;
+    };
+    unsafe {
+        if let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            let _ = WaitForSingleObject(process, 10_000);
+            let _ = CloseHandle(process);
+        }
+    }
 }
 
 /// Аргументы движка с портом отладки (CDP) — только при отдельном профиле и
@@ -515,6 +581,9 @@ fn init_logging() {
             tracing_subscriber::EnvFilter::new("info,browser190x4=debug,browser190x4_webview=debug")
         });
 
+    // Лог прошлого запуска остаётся рядом: браузер после падения открывают
+    // заново, и без этого первый же запуск стирал бы причину.
+    let _ = std::fs::rename(dir.join("browser.log"), dir.join("browser.old.log"));
     match std::fs::File::create(dir.join("browser.log")) {
         Ok(file) => tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -568,6 +637,11 @@ pub(crate) fn filters_dir() -> std::path::PathBuf {
     profile_dir().join("filters")
 }
 
+/// Номер последней пересборки фильтра. Списки переключают быстрее, чем они
+/// собираются: набор, начатый раньше, но собранный позже, не должен перебить
+/// свежий.
+static FILTER_BUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Списки фильтров собираются в фоне и въезжают одним `swap`.
 ///
 /// До этого момента браузер уже работает — просто без блокировок (или со
@@ -575,7 +649,9 @@ pub(crate) fn filters_dir() -> std::path::PathBuf {
 /// правил.
 pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::AppHandle) {
     use browser190x4_adblock::{FilterList, ListSource, Subscriptions};
+    use std::sync::atomic::Ordering;
 
+    let build = FILTER_BUILD.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         let bundled = match app.path().resource_dir() {
             Ok(dir) => dir.join("lists"),
@@ -622,6 +698,10 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
         let count = lists.len();
         let scriptlets = resources.len();
         let engine = Guard::build(lists, resources);
+        if FILTER_BUILD.load(Ordering::SeqCst) != build {
+            tracing::debug!("списки сменились, пока фильтр собирался — этот набор устарел");
+            return;
+        }
         guard.swap(engine);
         tracing::info!(
             lists = count,

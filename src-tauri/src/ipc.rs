@@ -196,6 +196,7 @@ pub fn tab_action(app: AppHandle, id: u32, action: String) -> Result<(), String>
                 Ok(())
             }
             "print" => tab.print().map_err(text),
+            "save_as" => tab.save_as().map_err(text),
             "devtools" => tab.open_devtools().map_err(text),
             "zoom_in" => tab.zoom(1).map(|_| ()).map_err(text),
             "zoom_out" => tab.zoom(-1).map(|_| ()).map_err(text),
@@ -408,6 +409,7 @@ pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
         "private": registry.is_private(&label),
         "session": registry.session(&label),
         "windows": registry.len(),
+        "closed_windows": windows::closed_count(&app),
     })
 }
 
@@ -424,6 +426,16 @@ pub fn window_open(
         WindowKind::Normal
     };
     windows::open(&app, kind, url).map(|_| ()).map_err(text)
+}
+
+/// Вернуть последнее окно, закрытое крестиком, со всеми вкладками: Ctrl+Shift+T,
+/// когда закрытых вкладок в окне не осталось. `false` — возвращать нечего.
+#[tauri::command(async)]
+pub fn window_reopen_closed(app: AppHandle) -> Result<bool, String> {
+    let Some(tabs) = windows::take_closed(&app) else {
+        return Ok(false);
+    };
+    windows::reopen(&app, &tabs).map(|_| true).map_err(text)
 }
 
 /* ── Адресная строка ────────────────────────────────────────────────────── */
@@ -464,6 +476,10 @@ fn normalize_url(input: &str, engine: &str) -> String {
             return format!("{}{}", search_prefix(engine), urlencode(query));
         }
     }
+    // Путь к файлу, скопированный из проводника: `C:\Users\…\отчёт.pdf`.
+    if let Some(url) = file_path_url(trimmed) {
+        return url;
+    }
     // Схемы, которые исполняют код в той странице, где их открыли: вставленные
     // в адресную строку, они бывают только просьбой мошенника «вставьте это
     // сюда». Ищем их как текст, как это делает Chrome.
@@ -474,15 +490,19 @@ fn normalize_url(input: &str, engine: &str) -> String {
     if dangerous {
         return format!("{}{}", search_prefix(engine), urlencode(trimmed));
     }
-    if trimmed.contains("://") || trimmed.starts_with("about:") {
+    // «как настроить https://…» — это вопрос, а не адрес: схема — только в
+    // начале строки.
+    let spaced = trimmed.contains(char::is_whitespace);
+    if has_scheme(trimmed) || (trimmed.starts_with("about:") && !spaced) {
         return trimmed.to_string();
     }
-    let looks_like_host = !trimmed.contains(' ')
+    let looks_like_host = !spaced
         && trimmed.contains('.')
         && !trimmed.starts_with('.')
         && !trimmed.ends_with('.')
         && (names_a_site(trimmed) || is_local_address(trimmed));
-    if looks_like_host || trimmed == "localhost" || trimmed.starts_with("localhost:") {
+    // localhost, localhost:5173, localhost/app — точки в них нет.
+    if looks_like_host || (!spaced && is_local_address(trimmed)) {
         // Домашний роутер и сосед по локальной сети по https не отвечают:
         // туда идём по http, во внешний интернет — по https.
         let scheme = if is_local_address(trimmed) {
@@ -521,23 +541,46 @@ fn names_a_site(input: &str) -> bool {
     psl::suffix(host.as_bytes()).is_some_and(|suffix| suffix.is_known())
 }
 
+/// Адрес со схемой в начале: `https://…`, `ftp://…`.
+fn has_scheme(input: &str) -> bool {
+    input.split_once("://").is_some_and(|(scheme, _)| {
+        let mut chars = scheme.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// Путь Windows — адрес файла: `C:\…` и `C:/…` — `file:///C:/…`, сетевая папка
+/// `\\сервер\папка` — `file://сервер/папка`. Кириллицу движок кодирует сам,
+/// а пробел, `%` и `#` в имени файла сломали бы адрес.
+fn file_path_url(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(1) == Some(&b':')
+        && matches!(bytes.get(2), Some(b'\\' | b'/'));
+    let share = input.starts_with("\\\\") && input.len() > 2;
+    if !drive && !share {
+        return None;
+    }
+    let path = input
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('\\', "/");
+    let prefix = if drive { "file:///" } else { "file:" };
+    Some(format!("{prefix}{path}"))
+}
+
 /// Адрес внутри локальной сети: его открываем по http.
 fn is_local_address(input: &str) -> bool {
-    let host = input
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(input)
-        .rsplit_once(':')
-        .map(|(host, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) {
-                host
-            } else {
-                input
-            }
-        })
-        .unwrap_or(input)
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
+    // Хост — до пути; порт отрезается, только если он из цифр. «192.168.1.1/admin»
+    // раньше терял хост вместе с путём и уходил по https.
+    let address = input.split(['/', '?', '#']).next().unwrap_or(input);
+    let host = match address.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => address,
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
 
     if host == "localhost" || host.ends_with(".localhost") {
         return true;
@@ -633,6 +676,49 @@ mod tests {
         assert_eq!(
             normalize_url("? habr.com", "duckduckgo"),
             "https://duckduckgo.com/?q=habr.com"
+        );
+    }
+
+    #[test]
+    fn local_addresses_with_a_path_go_over_http() {
+        assert_eq!(
+            normalize_url("localhost/app", "google"),
+            "http://localhost/app"
+        );
+        assert_eq!(
+            normalize_url("192.168.1.1/admin", "google"),
+            "http://192.168.1.1/admin"
+        );
+        assert_eq!(
+            normalize_url("nas.local/files", "google"),
+            "http://nas.local/files"
+        );
+        assert_eq!(normalize_url("localhost", "google"), "http://localhost");
+    }
+
+    #[test]
+    fn a_scheme_counts_only_at_the_start() {
+        let url = normalize_url("как настроить https://habr.com", "duckduckgo");
+        assert!(url.starts_with("https://duckduckgo.com/?q="), "{url}");
+        assert_eq!(
+            normalize_url("ftp://files.example.org/a", "google"),
+            "ftp://files.example.org/a"
+        );
+    }
+
+    #[test]
+    fn windows_paths_open_as_files() {
+        assert_eq!(
+            normalize_url(r"C:\Users\user\Мои документы\отчёт #1.pdf", "google"),
+            "file:///C:/Users/user/Мои%20документы/отчёт%20%231.pdf"
+        );
+        assert_eq!(
+            normalize_url("d:/video/clip.mp4", "google"),
+            "file:///d:/video/clip.mp4"
+        );
+        assert_eq!(
+            normalize_url(r"\\nas\share\doc.txt", "google"),
+            "file://nas/share/doc.txt"
         );
     }
 

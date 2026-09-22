@@ -57,6 +57,9 @@ pub struct App {
     /// Последняя сохранённая сессия каждого окна: окно закрывается раньше,
     /// чем интерфейс успевает записать её сам.
     pub sessions: Mutex<HashMap<String, Vec<browser190x4_store::SessionTab>>>,
+    /// Вкладки окон, закрытых крестиком, пока были открыты другие: до выхода их
+    /// возвращает Ctrl+Shift+T. Последнее закрытое — в конце.
+    pub closed_windows: Mutex<Vec<Vec<browser190x4_store::SessionTab>>>,
 }
 
 pub fn install_host(label: &str, host: TabHost) {

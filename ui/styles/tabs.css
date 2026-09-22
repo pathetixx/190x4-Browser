@@ -26,7 +26,11 @@
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
-  overflow: hidden;
+  /* Вкладок больше, чем места, — строка прокручивается колесом (tabs.js),
+     полосы прокрутки нет, как в Edge. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   /* Ушки активной вкладки выходят за её края на 8px — не обрезаем их. */
   padding-inline: 8px;
   margin-inline: -8px;
@@ -267,15 +271,13 @@
 }
 
 /* Вторая вкладка разделённого экрана подсвечена как активная, но полоской
-   снизу показано, что она справа. */
-.tab[data-split="true"]::after {
-  content: "";
-  position: absolute;
-  inset-inline: 8px;
-  bottom: 0;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--accent);
+   снизу показано, что она справа. Полоска — фоном, а не ::after: псевдоэлементы
+   заняты ушками активной вкладки. */
+.tabstrip .tab[data-split="true"] {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: calc(100% - 16px) 2px;
+  background-position: center bottom;
+  background-repeat: no-repeat;
 }
 
 /* ── Группы вкладок ─────────────────────────────────────────── */
@@ -336,13 +338,18 @@
   --group: #6b7280;
 }
 
-/* Вкладка в группе помечена полоской её цвета. */
-.tab[data-group]:not([data-group=""])::before {
-  content: "";
-  position: absolute;
-  inset-inline: 6px;
-  top: 0;
-  height: 2px;
-  border-radius: 0 0 2px 2px;
-  background: var(--group);
+/* Вкладка в группе помечена полоской её цвета по верхнему краю — тенью, а не
+   ::before: у активной вкладки псевдоэлементы заняты ушками, и полоска
+   съедала левое. У активной вкладки группы риска — цвета группы. */
+.tab[data-group]:not([data-group=""]) {
+  box-shadow: inset 0 2px 0 -0.5px var(--group);
+}
+
+/* Упавшая страница: значок предупреждения вместо значка сайта. */
+.tab__glyph--crashed {
+  color: var(--warn);
+}
+
+.tabstrip::-webkit-scrollbar {
+  display: none;
 }

@@ -121,6 +121,13 @@ export function createHistoryPage(root) {
       if (event.ctrlKey) openInNewTab(item.url);
       else navigate(item.url);
     });
+    // Средняя кнопка — в фоновой вкладке, как у ссылок на любой странице.
+    link.addEventListener("mousedown", (event) => {
+      if (event.button === 1) event.preventDefault(); // без автопрокрутки
+    });
+    link.addEventListener("auxclick", (event) => {
+      if (event.button === 1) openInNewTab(item.url);
+    });
     node.append(link);
 
     node.append(

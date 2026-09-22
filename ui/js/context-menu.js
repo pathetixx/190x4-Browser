@@ -15,7 +15,7 @@ import { invoke, listen } from "./bridge.js";
 import { hooks, openInNewWindow, openInPrivateWindow, openInSplit, openMediaExtension } from "./actions.js";
 import { onPopupAction, openPopup } from "./popups.js";
 import { pref } from "./prefs.js";
-import { rightPaneId, state, tabIndex } from "./state.js";
+import { rightPaneId, state } from "./state.js";
 import { open } from "./tabs.js";
 
 /** Сочетания в нашей записи: у движка они длиннее («Alt+Стрелка влево»). */
@@ -232,7 +232,10 @@ async function runAction(action, menu) {
   } else if (action === "translate" && target.selection) {
     translate(target.selection);
   } else if (action === "search" && target.selection) {
-    open(target.selection.trim().slice(0, 500), { index: tabIndex(menu.tab) + 1 });
+    // «? » — всегда поиск: выделенное «habr.com» пункт «Найти…» ищет, а не
+    // открывает сайтом.
+    const query = target.selection.trim().replace(/\s+/g, " ").slice(0, 500);
+    open(`? ${query}`, { opener: menu.tab });
   } else if (action === "media" && target.source_url) {
     openMediaExtension(target.source_url);
   } else if (action === "adblock" && menu.site?.site) {

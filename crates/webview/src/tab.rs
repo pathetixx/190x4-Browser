@@ -246,6 +246,12 @@ pub enum TabEvent {
         id: u32,
         tokens: Vec<u64>,
     },
+    /// Процесс страницы упал (`exited`) или завис (`unresponsive`). `browser` —
+    /// упал весь движок, и вместе с вкладками умер интерфейс окна.
+    Crashed {
+        id: u32,
+        what: &'static str,
+    },
 }
 
 /// По чему щёлкнули правой кнопкой.
@@ -985,6 +991,7 @@ fn report_find(id: u32, find: &ICoreWebView2Find, sink: &EventSink) -> windows_c
 /// (Ctrl+C, Ctrl+A, Ctrl+Z и прочее).
 fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
     const VK_TAB: u32 = 0x09;
+    const VK_F3: u32 = 0x72;
     const VK_PRIOR: u32 = 0x21;
     const VK_NEXT: u32 = 0x22;
     const VK_LEFT: u32 = 0x25;
@@ -1044,6 +1051,12 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
         (false, false, true, VK_RIGHT) => "alt+right",
         (false, false, false, VK_F5) => "f5",
         (false, false, false, VK_F12) => "f12",
+        // Сохранить страницу, следующее и предыдущее совпадение поиска.
+        (true, false, false, 0x53) => "ctrl+s",
+        (false, false, false, VK_F3) => "f3",
+        (false, true, false, VK_F3) => "shift+f3",
+        (true, false, false, 0x47) => "ctrl+g",
+        (true, true, false, 0x47) => "ctrl+shift+g",
         _ => return None,
     };
     Some(combo.to_string())
@@ -1194,6 +1207,38 @@ impl Tab {
             self.controller.add_GotFocus(
                 &FocusChangedEventHandler::create(Box::new(move |_, _| {
                     s(TabEvent::Focused { id });
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+
+            // Процесс страницы упал или завис. На месте упавшей страницы
+            // страницу ошибки ставит сам движок; интерфейс помечает вкладку, а
+            // падение всего движка лечит перезапуск браузера (`route_event`).
+            let s = sink.clone();
+            core.add_ProcessFailed(
+                &webview2_com::ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::{
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+                    };
+
+                    let Some(args) = args else { return Ok(()) };
+                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED;
+                    args.ProcessFailedKind(&mut kind)?;
+                    let what = match kind {
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => "browser",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => "exited",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => {
+                            "unresponsive"
+                        }
+                        // Упавший фрейм, видеокарта, служебный процесс: движок
+                        // поднимает их сам, страница живёт дальше.
+                        _ => return Ok(()),
+                    };
+                    tracing::warn!(tab = id, what, "процесс страницы упал");
+                    s(TabEvent::Crashed { id, what });
                     Ok(())
                 })),
                 &mut token,
@@ -1854,6 +1899,27 @@ impl Tab {
             Ok(()) => take_pwstr(raw),
             Err(_) => String::new(),
         }
+    }
+
+    /// «Сохранить страницу как» (Ctrl+S) — системное окно сохранения, как в Edge.
+    /// Встроенные сочетания движка выключены, поэтому Ctrl+S делает браузер.
+    pub fn save_as(&self) -> anyhow::Result<()> {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_25;
+        use webview2_com::ShowSaveAsUICompletedHandler;
+
+        let core25: ICoreWebView2_25 = self
+            .core
+            .cast()
+            .map_err(|_| anyhow::anyhow!("движок не умеет сохранять страницу"))?;
+        unsafe {
+            core25.ShowSaveAsUI(&ShowSaveAsUICompletedHandler::create(Box::new(|code, _| {
+                if let Err(err) = code {
+                    tracing::debug!(%err, "страница не сохранена");
+                }
+                Ok(())
+            })))?;
+        }
+        Ok(())
     }
 
     /// Диалог печати браузерного вида (с предпросмотром), как в Edge.

@@ -20,7 +20,7 @@ import { initContextMenu, openContextMenu, wantsBackgroundTab } from "./context-
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
 import { displayHost, el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
-import { closeFind, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
+import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
 import { initLayout, syncDuring } from "./layout.js";
@@ -29,7 +29,7 @@ import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette
 import { initPanels, isLivePanel, isPanelOpen, openPanel, renderPanel, toggle } from "./panels.js";
 import { initPopups, onPopupAction, openPopup } from "./popups.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
-import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
+import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, upsertTab } from "./state.js";
 import {
   activate,
   close,
@@ -78,9 +78,20 @@ state.adblockOn = pref("adblock_enabled");
 // Какое это окно: приватное не пишет историю и красится иначе.
 state.window = await invoke("window_info").catch(() => state.window);
 if (state.window.private) document.documentElement.dataset.private = "true";
+// Окна, закрытые крестиком, возвращает Ctrl+Shift+T — счёт общий на все окна.
+state.closedWindows = state.window.closed_windows ?? 0;
+listen("closed-windows", (count) => {
+  state.closedWindows = Number(count) || 0;
+});
 
 // Масштаб помнит сайт, а не вкладка — как в Chrome.
 state.zoomSites = await invoke("zoom_sites").catch(() => ({}));
+// Масштаб сайта поменяли в другом окне — вкладки этого сайта здесь следуют ему.
+onPref((key, value) => {
+  if (key !== "zoom_sites" || !value || typeof value !== "object") return;
+  state.zoomSites = { ...value };
+  for (const tab of state.tabs.values()) applySiteZoom(tab.id);
+});
 
 hooks.togglePanel = toggle;
 hooks.openPanel = openPanel;
@@ -140,6 +151,7 @@ initPalette([
   { group: "Страница", title: "Найти на странице", icon: "find", keys: "Ctrl+F", run: () => hooks.openFind(), when: web },
   { group: "Страница", title: "Добавить в закладки", icon: "star-20", keys: "Ctrl+D", run: bookmarkCurrent, when: web },
   { group: "Страница", title: "Печать", icon: "print", keys: "Ctrl+P", run: () => tabAction("print"), when: web },
+  { group: "Страница", title: "Сохранить страницу как", icon: "document", keys: "Ctrl+S", run: () => tabAction("save_as"), when: web },
   { group: "Страница", title: "Скачать видео со страницы", icon: "video", keys: "Ctrl+Shift+D", run: () => openMediaExtension() },
   { group: "Страница", title: "Инструменты разработчика", icon: "code", keys: "F12", run: () => tabAction("devtools"), when: web },
   { group: "Браузер", title: "Загрузки", icon: "download", keys: "Ctrl+J", run: openDownloadsPage },
@@ -224,7 +236,11 @@ listen("tab", (event) => {
     case "finished": {
       // Навигация, ушедшая в загрузку, документ не меняет: в адресной строке —
       // адрес, который остался у вкладки, а не набранный.
-      upsertTab(event.id, event.url ? { loading: false, url: event.url } : { loading: false });
+      const patch = event.url ? { loading: false, url: event.url } : { loading: false };
+      // Страница снова открылась — упавшей она больше не считается. Страница
+      // ошибки, которую движок ставит на место упавшей, отметку не снимает.
+      if (event.ok) patch.crashed = false;
+      upsertTab(event.id, patch);
       applySiteZoom(event.id);
       // Заголовок у страницы тот же, что у прошлой, — события о нём не будет,
       // а посещение всё равно записать нужно.
@@ -311,8 +327,35 @@ listen("tab", (event) => {
     case "dialogs_closed":
       onDialogsClosed(event);
       break;
+    case "crashed":
+      onPageCrashed(event);
+      break;
   }
 });
+
+/**
+ * Процесс страницы упал или завис. На месте упавшей страницы движок сам
+ * ставит страницу ошибки; вкладка помечается и при показе загружается заново.
+ * Падение всего движка обрабатывает Rust — перезапуском браузера.
+ */
+const unresponsiveAt = new Map();
+function onPageCrashed({ id, what }) {
+  const tab = state.tabs.get(id);
+  if (!tab) return;
+  const name = tab.title || hostOf(tab.url) || "Страница";
+  if (what === "exited") {
+    upsertTab(id, { crashed: true, loading: false, audible: false });
+    if (id === state.activeId || id === state.splitId) {
+      toast(`«${name}» перестала работать — щёлкните по вкладке, чтобы загрузить заново`);
+    }
+  } else if (what === "unresponsive") {
+    // Движок повторяет это, пока страница висит: сообщаем раз в полминуты.
+    const now = performance.now();
+    if (now - (unresponsiveAt.get(id) ?? -Infinity) < 30_000) return;
+    unresponsiveAt.set(id, now);
+    toast(`«${name}» не отвечает — подождите или закройте вкладку (Ctrl+W)`);
+  }
+}
 
 /**
  * Посещение — одно на загрузку страницы. Заголовок меняется и потом (счётчик
@@ -351,8 +394,8 @@ function onPagePopup({ opener, url, token, user_initiated: userInitiated, backgr
   }
   // Щелчок по target=_blank переключает на вкладку, а Ctrl+щелчок и «Открыть
   // ссылку в новой вкладке» из меню оставляют её в фоне.
+  // Место в строке — за страницей-родителем и открытыми ею раньше (tabs.js).
   open(url, {
-    index: tabIndex(opener) + 1,
     background: background || fromMenu,
     popup: token,
     opener,
@@ -386,14 +429,18 @@ function zoomKey(url) {
 /** Страница открылась — ставим ей масштаб, который помнит сайт. */
 function applySiteZoom(id) {
   const tab = state.tabs.get(id);
-  if (!tab || tab.internal) return;
+  if (!tab || tab.internal || tab.sleeping) return;
   const key = zoomKey(tab.url);
   const factor = key ? (state.zoomSites[key] ?? 1) : 1;
   if (Math.abs((tab.zoom ?? 1) - factor) < 0.001) return;
   invoke("tab_zoom_set", { id, factor }).catch(() => {});
 }
 
-/** Масштаб поменяли колесом или кнопкой — запоминаем его за сайтом. */
+/**
+ * Масштаб поменяли колесом или кнопкой — запоминаем его за сайтом, и другие
+ * вкладки того же сайта следуют ему, как в Chrome. Приватное окно масштаб
+ * помнит только до закрытия: список сайтов на диске выдал бы, где в нём были.
+ */
 function rememberSiteZoom(id, factor) {
   const tab = state.tabs.get(id);
   const key = tab ? zoomKey(tab.url) : "";
@@ -402,7 +449,10 @@ function rememberSiteZoom(id, factor) {
   if (Math.abs(known - factor) < 0.001) return;
   if (Math.abs(factor - 1) < 0.001) delete state.zoomSites[key];
   else state.zoomSites[key] = factor;
-  invoke("zoom_site_set", { host: key, factor }).catch(() => {});
+  for (const other of state.tabs.values()) {
+    if (other.id !== id && zoomKey(other.url ?? "") === key) applySiteZoom(other.id);
+  }
+  if (!state.window.private) invoke("zoom_site_set", { host: key, factor }).catch(() => {});
 }
 
 /**
@@ -569,6 +619,17 @@ function runShortcut(combo) {
       return true;
     case "ctrl+p":
       tabAction("print");
+      return true;
+    case "ctrl+s":
+      tabAction("save_as");
+      return true;
+    case "f3":
+    case "ctrl+g":
+      if (web()) findAgain("next");
+      return true;
+    case "shift+f3":
+    case "ctrl+shift+g":
+      if (web()) findAgain("prev");
       return true;
     case "ctrl+=":
       zoom(1);

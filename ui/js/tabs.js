@@ -64,6 +64,16 @@ export function initTabs() {
 
   // Ширина вкладок меняется и без перерисовки — окно развернули или сузили.
   new ResizeObserver(() => updateNarrow()).observe(strip);
+  // Вкладки не поместились — колесо прокручивает строку, как в Edge.
+  strip.addEventListener(
+    "wheel",
+    (event) => {
+      if (strip.scrollWidth <= strip.clientWidth) return;
+      event.preventDefault();
+      strip.scrollLeft += Math.abs(event.deltaY) > Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+    },
+    { passive: false }
+  );
   strip.addEventListener("click", onClick);
   strip.addEventListener("auxclick", (event) => {
     // Средняя кнопка закрывает вкладку — мышечная память из любого браузера.
@@ -128,11 +138,17 @@ export async function open(url, { background = false, index = null, popup = null
   if (url === "about:newtab") prewarmSoon(400);
   // События движка могли прийти раньше ответа команды — не затираем их.
   const known = state.tabs.has(id);
-  const at = index != null ? index : defaultIndex();
+  const parent = opener != null ? state.tabs.get(opener) : null;
+  // Обычная вкладка не встаёт среди закреплённых.
+  const at = Math.max(index ?? (parent ? openerIndex(opener, background) : defaultIndex()), groupBounds(false).from);
   const patch = known ? {} : { loading: true };
-  if (opener != null) patch.opener = opener;
-  if (index != null || !known) insertTabAt(id, patch, at);
-  else if (opener != null) upsertTab(id, { opener });
+  if (parent) {
+    patch.opener = opener;
+    // Ссылка из вкладки группы открывается в той же группе — как в Chrome.
+    if (parent.group) patch.group = { ...parent.group, collapsed: false };
+  }
+  if (index != null || parent || !known) insertTabAt(id, patch, at);
+  settleGroup(id);
   if (!background) {
     await activate(id);
     if (url === "about:newtab") focusOmnibox();
@@ -151,9 +167,60 @@ export function prewarmSoon(delay = 1200) {
   prewarmTimer = setTimeout(() => invoke("tab_prewarm").catch(() => {}), delay);
 }
 
-/** Новая вкладка встаёт после закреплённых и после текущей — как в Chrome. */
+/** Новая вкладка (Ctrl+T, «+») встаёт в конец строки — как в Chrome. */
 function defaultIndex() {
   return state.tabs.size;
+}
+
+/**
+ * Место вкладки, которую открыла страница, — как в Chrome: сразу за
+ * страницей-родителем, а фоновые — ещё и за теми, что она уже открыла. Иначе
+ * ссылки 1, 2, 3, открытые Ctrl+щелчком, ложились бы в строку задом наперёд.
+ */
+function openerIndex(opener, background) {
+  const ids = [...state.tabs.keys()];
+  let at = ids.indexOf(opener);
+  if (at < 0) return defaultIndex();
+  const parent = state.tabs.get(opener);
+  // Из закреплённой вкладки — сразу за закреплёнными.
+  if (parent.pinned) at = Math.max(at, groupBounds(false).from - 1);
+  if (background) {
+    // Прежние вкладки этой страницы — только из её же группы: за край группы
+    // новая вкладка не уходит.
+    const group = parent.group?.id ?? null;
+    const sibling = (tab) => tab?.opener === opener && (tab.group?.id ?? null) === group;
+    while (at + 1 < ids.length && sibling(state.tabs.get(ids[at + 1]))) at += 1;
+  }
+  return at + 1;
+}
+
+/**
+ * Вкладки группы стоят подряд, как в Chrome: вкладка, вставшая между двумя
+ * вкладками одной группы, входит в неё, а ушедшая от своей группы — выходит.
+ * Без этого группа разрывалась надвое и её ярлык терял часть вкладок.
+ */
+function settleGroup(id) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.pinned) return;
+  const ids = [...state.tabs.keys()];
+  const at = ids.indexOf(id);
+  const prev = state.tabs.get(ids[at - 1]);
+  const next = state.tabs.get(ids[at + 1]);
+  const around = prev?.group && prev.group.id === next?.group?.id ? prev.group : null;
+  if (around) {
+    if (tab.group?.id === around.id) return;
+    if (tab.internal) {
+      // Встроенная страница в группу не входит — встаёт сразу за группой.
+      moveTab(id, tabIndex(groupTabs(around.id).at(-1).id));
+      return;
+    }
+    upsertTab(id, { group: { ...around } });
+    return;
+  }
+  if (!tab.group) return;
+  const own = tab.group.id;
+  if (prev?.group?.id === own || next?.group?.id === own) return;
+  if (groupTabs(own).length > 1) upsertTab(id, { group: null });
 }
 
 /**
@@ -197,8 +264,8 @@ function openInternal(name, section, { background, index }) {
     url: internalUrl(name, section),
     loading: false,
   };
-  if (index != null) insertTabAt(id, patch, index);
-  else insertTabAt(id, patch, defaultIndex());
+  insertTabAt(id, patch, Math.max(index ?? defaultIndex(), groupBounds(false).from));
+  settleGroup(id);
   if (!background) activate(id);
   return id;
 }
@@ -245,6 +312,12 @@ export async function activate(id) {
   // иначе на кадр мелькнёт предыдущий сайт.
   await invoke("tab_activate", { id }).catch(() => {});
   if (state.activeId === id) setPageHidden("internal", false);
+  // Страница упала, пока вкладка была в фоне, — при показе она загружается
+  // заново, как в Chrome. Щелчок по упавшей активной вкладке делает то же.
+  if (tab.crashed && state.activeId === id) {
+    upsertTab(id, { crashed: false });
+    invoke("tab_action", { id, action: "reload" }).catch(() => {});
+  }
 }
 
 /** Вторая вкладка рядом с активной: режим разделения экрана. */
@@ -388,21 +461,36 @@ export function togglePin(id) {
   const tab = state.tabs.get(id);
   if (!tab || tab.internal) return;
   const pinned = !tab.pinned;
-  upsertTab(id, { pinned });
+  // Закреплённая вкладка выходит из группы — как в Chrome.
+  upsertTab(id, pinned ? { pinned, group: null } : { pinned });
   const bounds = groupBounds(pinned);
   moveTab(id, pinned ? bounds.to : bounds.from);
 }
 
-/** Ctrl+Shift+T. */
+/**
+ * Ctrl+Shift+T: последняя закрытая вкладка этого окна, а если их нет —
+ * последнее окно, закрытое крестиком, со всеми его вкладками.
+ */
 export async function reopenClosed() {
   const last = closedTabs.pop();
-  if (!last) return;
+  if (!last) {
+    if (state.closedWindows > 0) await invoke("window_reopen_closed").catch(() => {});
+    return;
+  }
   const id = await open(last.url, { index: last.index });
-  if (last.pinned) upsertTab(id, { pinned: true });
+  if (last.pinned) {
+    upsertTab(id, { pinned: true, group: null });
+    moveTab(id, last.index);
+  }
 }
 
 export function hasClosedTabs() {
-  return closedTabs.length > 0;
+  return closedTabs.length > 0 || state.closedWindows > 0;
+}
+
+/** Подпись пункта «открыть закрытое»: вкладку или целое окно. */
+export function reopenLabel() {
+  return !closedTabs.length && state.closedWindows > 0 ? "Открыть закрытое окно" : "Открыть закрытую вкладку";
 }
 
 /** Ctrl+Tab / Ctrl+Shift+Tab: по видимым вкладкам, свёрнутые группы пропускаются. */
@@ -418,6 +506,7 @@ export function moveActive(delta) {
   const id = state.activeId;
   if (id === null || !state.tabs.has(id)) return;
   moveTab(id, tabIndex(id) + delta);
+  settleGroup(id);
 }
 
 /**
@@ -440,6 +529,11 @@ function showTabMenu(id, event) {
   const index = ids.indexOf(id);
   const web = !tab.internal;
   const splitting = state.splitId !== null;
+  // «Закрыть другие», «слева» и «справа» закреплённые вкладки не трогают —
+  // как в Chrome: закрепляют именно то, что должно пережить уборку.
+  const closable = (list) => list.filter((other) => other !== id && !state.tabs.get(other)?.pinned);
+  const left = closable(ids.slice(0, index));
+  const right = closable(ids.slice(index + 1));
 
   const items = [
     { id: "new-right", label: "Новая вкладка справа", icon: "tab-add" },
@@ -465,11 +559,11 @@ function showTabMenu(id, event) {
     ...groupItems(tab),
     { separator: true },
     { id: "close", label: "Закрыть", icon: "dismiss-16", keys: "Ctrl+W" },
-    { id: "close-left", label: "Закрыть вкладки слева", disabled: index === 0 },
-    { id: "close-right", label: "Закрыть вкладки справа", disabled: index === ids.length - 1 },
-    { id: "close-others", label: "Закрыть другие вкладки", disabled: ids.length < 2 },
+    { id: "close-left", label: "Закрыть вкладки слева", disabled: !left.length },
+    { id: "close-right", label: "Закрыть вкладки справа", disabled: !right.length },
+    { id: "close-others", label: "Закрыть другие вкладки", disabled: !left.length && !right.length },
     { separator: true },
-    { id: "reopen", label: "Открыть закрытую вкладку", keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
+    { id: "reopen", label: reopenLabel(), keys: "Ctrl+Shift+T", disabled: !hasClosedTabs() },
   ];
 
   const anchor = { x: event.clientX, y: event.clientY, width: 0, height: 0 };
@@ -515,18 +609,14 @@ function showTabMenu(id, event) {
         close(id);
         break;
       case "close-others":
-        closeMany([...state.tabs.keys()].filter((other) => other !== id), id);
+        closeMany([...left, ...right], id);
         break;
-      case "close-left": {
-        const all = [...state.tabs.keys()];
-        closeMany(all.slice(0, all.indexOf(id)), id);
+      case "close-left":
+        closeMany(left, id);
         break;
-      }
-      case "close-right": {
-        const all = [...state.tabs.keys()];
-        closeMany(all.slice(all.indexOf(id) + 1), id);
+      case "close-right":
+        closeMany(right, id);
         break;
-      }
       case "reopen":
         reopenClosed();
         break;
@@ -675,6 +765,9 @@ function wireDrag() {
 
   const finish = () => {
     strip.querySelector('[data-dragging="true"]')?.removeAttribute("data-dragging");
+    // Вкладку бросили: между вкладками группы она входит в группу, а унесённая
+    // от своей — выходит из неё.
+    if (dragged != null) settleGroup(dragged);
     dragged = null;
   };
   strip.addEventListener("drop", (event) => {
@@ -713,12 +806,18 @@ export function renderTabs() {
     }
   }
 
-  // Порядок в строке: перед первой вкладкой группы стоит её ярлык.
+  // Порядок в строке: перед первой вкладкой группы стоит её ярлык. Ярлык у
+  // группы один, даже если её вкладки на миг разошлись (вкладку тащат
+  // через группу): один и тот же узел дважды сбил бы порядок строки.
   const order = [];
+  const placed = new Set();
   let lastGroup = null;
   for (const tab of tabs) {
     const group = tab.group ?? null;
-    if (group && group.id !== lastGroup) order.push(pillFor(group));
+    if (group && group.id !== lastGroup && !placed.has(group.id)) {
+      placed.add(group.id);
+      order.push(pillFor(group));
+    }
     lastGroup = group?.id ?? null;
     order.push(tabNode(tab));
   }
@@ -731,7 +830,30 @@ export function renderTabs() {
   // место появлялось (окно развернули, вкладки закрыли).
   const visible = tabs.filter((tab) => !tab.group?.collapsed && !tab.closing).length;
   strip.parentElement.style.setProperty("--tab-count", String(visible + pills.size));
-  requestAnimationFrame(updateNarrow);
+  requestAnimationFrame(() => {
+    updateNarrow();
+    revealActive();
+  });
+}
+
+/**
+ * Вкладок больше, чем помещается: строка прокручивается, а активная вкладка
+ * всегда на виду. Раньше лишние вкладки просто обрезались краем окна, и до
+ * них нельзя было дотянуться мышью.
+ */
+let revealed = null;
+function revealActive() {
+  const id = state.activeId;
+  if (id === revealed) return;
+  revealed = id;
+  const node = nodes.get(id);
+  if (!node || node.hidden || strip.scrollWidth <= strip.clientWidth) return;
+  const box = strip.getBoundingClientRect();
+  const rect = node.getBoundingClientRect();
+  // Запас на ушки активной вкладки, выходящие за её края.
+  const pad = 8;
+  if (rect.left < box.left + pad) strip.scrollLeft -= box.left + pad - rect.left;
+  else if (rect.right > box.right - pad) strip.scrollLeft += rect.right - (box.right - pad);
 }
 
 function tabNode(tab) {
@@ -804,21 +926,27 @@ function updateTab(node, tab) {
   setAttr(node, "data-split", String(split));
 
   const title = tab.title || hostOf(tab.url) || "Новая вкладка";
-  if (node.title !== title) node.title = title;
+  const hint = tab.crashed ? `${title}\nСтраница перестала работать — щёлкните, чтобы загрузить заново` : title;
+  if (node.title !== hint) node.title = hint;
 
   const iconKind = tab.internal
     ? `internal:${tab.internal}`
-    : tab.loading
-      ? "spinner"
-      : tab.favicon
-        ? `favicon:${tab.favicon}`
-        : "globe";
+    : tab.crashed
+      ? "crashed"
+      : tab.loading
+        ? "spinner"
+        : tab.favicon
+          ? `favicon:${tab.favicon}`
+          : "globe";
   if (node.dataset.icon !== iconKind) {
     node.dataset.icon = iconKind;
     node.querySelector("[data-slot='icon']")?.remove();
     let iconNode;
     if (tab.internal) {
       iconNode = icon(`${INTERNAL[tab.internal].icon}`, 16, "tab__glyph tab__glyph--brand");
+    } else if (tab.crashed) {
+      // Страница упала: щелчок по вкладке загрузит её заново.
+      iconNode = icon("warning-16", 16, "tab__glyph tab__glyph--crashed");
     } else if (tab.loading) {
       iconNode = el("span", "tab__spinner");
       // Фаза — от общих часов: колесо не начинает оборот заново каждый раз,

@@ -11,7 +11,7 @@ import { emit, invoke, isNative, listen } from "./bridge.js";
 import { anchorOf, displayHost, displayPath, displayUrl, el, favicon, hostOf, icon } from "./dom.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
-import { activeTab, emit as emitState, state, tabIndex } from "./state.js";
+import { activeTab, emit as emitState, state } from "./state.js";
 import { open } from "./tabs.js";
 import { bookmarkCurrent, hooks, isNewTabUrl, navigate, openSettings, tabAction } from "./actions.js";
 
@@ -70,6 +70,15 @@ export function initOmnibox() {
       return;
     }
     if (event.key === "Escape") field.blur();
+    // Shift+Delete убирает выбранную строку истории из подсказок и из истории —
+    // как в Chrome: опечатка или случайный сайт больше не всплывает.
+    if (event.key === "Delete" && event.shiftKey && picked && rows[selected]?.iconId === "history-16") {
+      event.preventDefault();
+      const url = rows[selected].value;
+      invoke("history_forget", { url })
+        .then(() => renderSuggest(field.value))
+        .catch(() => {});
+    }
   });
 
   suggest.addEventListener("mousedown", (event) => {
@@ -303,7 +312,7 @@ function openBlockedPopups() {
       if (action?.startsWith("open:")) {
         const entry = recent[Number(action.slice(5))];
         if (entry) {
-          open(entry.url, { index: tabIndex(tab.id) + 1 }).catch(() => {});
+          open(entry.url, { opener: tab.id }).catch(() => {});
           state.blockedPopups.set(
             tab.id,
             current.filter((other) => other !== entry)
@@ -391,7 +400,10 @@ function buildRows(value, history, words) {
     return out;
   }
 
-  const looksLikeUrl = value.includes("://") || (/\./.test(value) && !/\s/.test(value));
+  // Так же решает Rust (`normalize_url`): localhost и адреса с точкой — переход.
+  const looksLikeUrl =
+    /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(value) ||
+    (!/\s/.test(value) && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value)));
   out.push(
     looksLikeUrl
       ? { text: displayUrl(value), hint: "перейти", value, iconId: "globe-16" }

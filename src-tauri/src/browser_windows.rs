@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use browser190x4_store::SessionTab;
 use browser190x4_webview::{TabEvent, TabHost};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -190,6 +191,27 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
     *LAST_GEOMETRY.lock() = Some(geometry);
 }
 
+/// Видно ли сохранённое место окна хотя бы на одном мониторе. Монитор, на
+/// котором окно было в прошлый раз, могли отключить — и окно открылось бы за
+/// краем экрана, где его не достать.
+fn on_screen(app: &AppHandle, geometry: &Geometry) -> bool {
+    let monitors = app.available_monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        return true;
+    }
+    monitors.iter().any(|monitor| {
+        let scale = monitor.scale_factor();
+        let position = monitor.position().to_logical::<f64>(scale);
+        let size = monitor.size().to_logical::<f64>(scale);
+        // Заголовок окна должен быть на экране: за него окно перетаскивают.
+        let left = geometry.x.max(position.x);
+        let right = (geometry.x + geometry.width).min(position.x + size.width);
+        right - left >= 120.0
+            && geometry.y >= position.y - 16.0
+            && geometry.y <= position.y + size.height - 48.0
+    })
+}
+
 /// Создать окно браузера. Возвращает его ярлык. `restore` — окно прошлого
 /// сеанса: оно восстановит вкладки, сохранённые под его номером.
 pub fn create(
@@ -197,6 +219,18 @@ pub fn create(
     kind: WindowKind,
     first: bool,
     restore: bool,
+) -> tauri::Result<String> {
+    create_window(app, kind, first, restore, None)
+}
+
+/// Окно с вкладками: `tabs` записываются в его сессию до того, как интерфейс
+/// окна её прочтёт, — так возвращается окно, закрытое крестиком.
+fn create_window(
+    app: &AppHandle,
+    kind: WindowKind,
+    first: bool,
+    restore: bool,
+    tabs: Option<&[SessionTab]>,
 ) -> tauri::Result<String> {
     let label = if first {
         FIRST.to_string()
@@ -220,14 +254,18 @@ pub fn create(
 
     // Размер и место — те, что остались от прошлого раза; каждое следующее
     // окно сеанса встаёт со сдвигом, как в Chrome.
+    // Место, оставшееся за отключённым монитором, не годится: окно встаёт по
+    // центру экрана с прежним размером.
     let geometry = saved_geometry(app);
     if let Some(geometry) = geometry {
         config.width = geometry.width;
         config.height = geometry.height;
-        config.center = false;
-        let shift = f64::from(app.state::<App>().windows.len() as u32) * 28.0;
-        config.x = Some(geometry.x + shift);
-        config.y = Some(geometry.y + shift);
+        if on_screen(app, &geometry) {
+            config.center = false;
+            let shift = f64::from(app.state::<App>().windows.len() as u32) * 28.0;
+            config.x = Some(geometry.x + shift);
+            config.y = Some(geometry.y + shift);
+        }
     }
 
     let mut builder = tauri::WebviewWindowBuilder::from_config(app, &config)?;
@@ -241,12 +279,17 @@ pub fn create(
     } else {
         Some(app.state::<App>().windows.free_session())
     };
+    if let (Some(session), Some(tabs)) = (session, tabs) {
+        if let Err(err) = app.state::<App>().store.save_session(session, tabs) {
+            tracing::warn!(%err, "вкладки закрытого окна не записаны");
+        }
+    }
     app.state::<App>().windows.add(
         &label,
         WindowMeta {
             kind,
             session,
-            restore,
+            restore: restore || tabs.is_some(),
         },
     );
 
@@ -455,6 +498,9 @@ fn closing(app: &AppHandle, label: &str) {
         return;
     };
     let result = if state.windows.others_normal(label) {
+        // При запуске такое окно не вернётся, но до выхода его возвращает
+        // Ctrl+Shift+T — как в Chrome.
+        remember_closed(app, tabs);
         state.store.forget_session(session)
     } else {
         state.store.save_session(session, &tabs)
@@ -462,6 +508,47 @@ fn closing(app: &AppHandle, label: &str) {
     if let Err(err) = result {
         tracing::warn!(%err, "сессия окна не записана");
     }
+}
+
+/// Сколько окон, закрытых крестиком, браузер помнит до выхода.
+const CLOSED_WINDOWS: usize = 10;
+
+/// Запомнить вкладки закрытого окна: Ctrl+Shift+T вернёт его целиком.
+fn remember_closed(app: &AppHandle, tabs: Vec<SessionTab>) {
+    if tabs.is_empty() {
+        return;
+    }
+    let state = app.state::<App>();
+    let count = {
+        let mut closed = state.closed_windows.lock();
+        closed.push(tabs);
+        if closed.len() > CLOSED_WINDOWS {
+            closed.remove(0);
+        }
+        closed.len()
+    };
+    let _ = app.emit("closed-windows", count);
+}
+
+/// Сколько закрытых окон можно вернуть.
+pub fn closed_count(app: &AppHandle) -> usize {
+    app.state::<App>().closed_windows.lock().len()
+}
+
+/// Забрать последнее закрытое окно — его вкладки откроет [`reopen`].
+pub fn take_closed(app: &AppHandle) -> Option<Vec<SessionTab>> {
+    let state = app.state::<App>();
+    let (tabs, count) = {
+        let mut closed = state.closed_windows.lock();
+        (closed.pop()?, closed.len())
+    };
+    let _ = app.emit("closed-windows", count);
+    Some(tabs)
+}
+
+/// Вернуть закрытое окно: вкладки встают спящими, как после перезапуска.
+pub fn reopen(app: &AppHandle, tabs: &[SessionTab]) -> tauri::Result<String> {
+    create_window(app, WindowKind::Normal, false, true, Some(tabs))
 }
 
 /// Обычное окно, если оно открыто: то, что впереди, иначе первое попавшееся.
