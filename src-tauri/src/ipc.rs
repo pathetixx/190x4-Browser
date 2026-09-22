@@ -64,6 +64,72 @@ pub fn tab_open(
     result
 }
 
+/// Прогреть новую вкладку окна: Ctrl+T покажет её уже нарисованной.
+#[tauri::command]
+pub fn tab_prewarm(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+) -> Result<(), String> {
+    let url = normalize_url("about:newtab", &search_engine(&state));
+    with_host(&app, &owner(&window), move |host| {
+        host.prewarm(&url).map_err(text)
+    })?
+}
+
+/// Спросить страницу, можно ли закрыть вкладку («Покинуть сайт?»). Ответ —
+/// событием `close_confirmed` или `close_cancelled`; `false` — спрашивать
+/// некого, закрывать сразу.
+#[tauri::command]
+pub fn tab_close_request(app: AppHandle, id: u32) -> Result<bool, String> {
+    with_tab(&app, id, move |host| host.request_close(TabId(id)))
+}
+
+/// Цвет страниц браузера под тему: `#08080A` у тёмной, `#FAFAF8` у светлой,
+/// «как в системе» — по настройке Windows для приложений.
+pub fn page_color(store: &Store) -> [u8; 3] {
+    const DARK: [u8; 3] = [0x08, 0x08, 0x0A];
+    const LIGHT: [u8; 3] = [0xFA, 0xFA, 0xF8];
+    match store.setting_str("theme").as_deref() {
+        Some("shiro") => LIGHT,
+        Some("system") if system_prefers_light() => LIGHT,
+        _ => DARK,
+    }
+}
+
+/// Цвет фона вебвью до первой отрисовки — движку до создания контроллера
+/// (`WEBVIEW2_DEFAULT_BACKGROUND_COLOR`, ARGB). Контроллеру потом ставится тот
+/// же цвет (`SetDefaultBackgroundColor`), но успевает он не к первому кадру.
+pub fn apply_engine_background(store: &Store) {
+    let [r, g, b] = page_color(store);
+    std::env::set_var(
+        "WEBVIEW2_DEFAULT_BACKGROUND_COLOR",
+        format!("FF{r:02X}{g:02X}{b:02X}"),
+    );
+}
+
+/// Приложения в светлой теме Windows (`AppsUseLightTheme`).
+fn system_prefers_light() -> bool {
+    use ::windows::core::w;
+    use ::windows::Win32::Foundation::ERROR_SUCCESS;
+    use ::windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+    let mut value = 1u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut std::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    status != ERROR_SUCCESS || value != 0
+}
+
 /// Не открывать окно, которое страница открыла сама по себе: `window.open`
 /// на ней получит `null`.
 #[tauri::command]
@@ -747,6 +813,13 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
                 .store
                 .setting_str("search_engine")
                 .unwrap_or_else(|| "duckduckgo".into());
+        }
+        "theme" => {
+            apply_engine_background(&state.store);
+            let color = page_color(&state.store);
+            for label in state.windows.labels() {
+                let _ = with_host(app, &label, move |host| host.set_page_color(color));
+            }
         }
         _ => {}
     }

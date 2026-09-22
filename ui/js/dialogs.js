@@ -76,6 +76,12 @@ export function onDialogsClosed({ id, tokens }) {
   forget(id, tokens);
 }
 
+/** Ждёт ли вкладка ответа на «Покинуть сайт?» — показанного или в очереди. */
+export function hasLeaveDialog(id) {
+  const leave = (item) => item.tab === id && item.request.type === "script" && item.request.kind === "beforeunload";
+  return queue.some(leave);
+}
+
 /** Новая страница во вкладке — счёт её окон заново. */
 export function onNavigation(id) {
   counts.delete(id);

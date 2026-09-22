@@ -1,7 +1,7 @@
-param([int]$Vk = 0, [int]$Mod = 0, [int]$X = -1, [int]$Y = -1)
+param([int]$Vk = 0, [int]$Mod = 0, [int]$X = -1, [int]$Y = -1, [int]$Right = 0)
 $out = "E:\test\probe\input.txt"
 Remove-Item $out -ErrorAction SilentlyContinue
-$inner = "& 'E:\test\probe\key.ps1' -Vk $Vk -Mod $Mod -X $X -Y $Y"
+$inner = "& 'E:\test\probe\key.ps1' -Vk $Vk -Mod $Mod -X $X -Y $Y -Right $Right"
 $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "' + $inner + ' *> ''' + $out + '''"'
 $a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg
 $p = New-ScheduledTaskPrincipal -UserId "Administrator" -LogonType Interactive -RunLevel Highest

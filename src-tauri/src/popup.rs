@@ -269,8 +269,14 @@ pub fn open(
         anchor.y + anchor.height + 4.0
     };
 
-    let x = origin.x + (left * scale).round() as i32;
-    let y = origin.y + (top * scale).round() as i32;
+    // Окно с тенью окружено невидимой рамкой: `set_position` ставит её угол, а
+    // видимое содержимое съезжало на её толщину вправо и вниз от кнопки.
+    let (frame_x, frame_y) = match (popup.inner_position(), popup.outer_position()) {
+        (Ok(inner), Ok(outer)) => (inner.x - outer.x, inner.y - outer.y),
+        _ => (0, 0),
+    };
+    let x = origin.x + (left * scale).round() as i32 - frame_x;
+    let y = origin.y + (top * scale).round() as i32 - frame_y;
     let placement = (kind.to_string(), x, y, (width * 100.0).round() as i64);
 
     let state = &app.state::<crate::state::App>().popup;
@@ -353,10 +359,12 @@ fn place_at_point(
     } else {
         (main_height - 8.0 - height).max(8.0)
     };
-    let x = popup.outer_position()?.x;
+    let outer = popup.outer_position()?;
+    // Невидимая рамка окна с тенью (см. `open`).
+    let frame_y = popup.inner_position().map_or(0, |inner| inner.y - outer.y);
     popup.set_position(PhysicalPosition::new(
-        x,
-        origin.y + (top * scale).round() as i32,
+        outer.x,
+        origin.y + (top * scale).round() as i32 - frame_y,
     ))?;
     Ok(())
 }

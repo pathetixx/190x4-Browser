@@ -33,14 +33,18 @@ import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, ta
 import {
   activate,
   close,
+  closeAnswered,
   cycle,
   endSplit,
   initTabs,
+  isLeaving,
   moveActive,
   open,
   openSleeping,
   parseInternal,
+  prewarmSoon,
   renderTabs,
+  returnLeaving,
   reopenClosed,
   togglePin,
   visibleIds,
@@ -261,11 +265,20 @@ listen("tab", (event) => {
     case "close_requested": {
       // Окно входа закончило работу (`window.close()`) или вкладка, открытая
       // ссылкой на файл, ушла в загрузку. Вкладку, по которой уже ходили,
-      // загрузка не закрывает.
+      // загрузка не закрывает; вкладку без документа спрашивать не о чем.
       const tab = state.tabs.get(event.id);
-      if (tab && !(event.download && tab.canBack)) close(event.id, { toOpener: true });
+      if (tab && !(event.download && tab.canBack)) close(event.id, { toOpener: true, force: event.download });
       break;
     }
+    case "close_confirmed":
+      closeAnswered(event.id, true);
+      break;
+    case "close_cancelled":
+      closeAnswered(event.id, false);
+      break;
+    case "insecure":
+      markInsecure(event.host);
+      break;
     case "fullscreen":
       onPageFullscreen(event.id, event.on);
       break;
@@ -291,6 +304,9 @@ listen("tab", (event) => {
       break;
     case "dialog":
       onDialog(event);
+      // «Покинуть сайт?» у вкладки, которую закрывают: она уже ушла из строки
+      // и с экрана — возвращается на место, и окно встаёт над ней.
+      if (event.request?.kind === "beforeunload" && isLeaving(event.id)) returnLeaving(event.id);
       break;
     case "dialogs_closed":
       onDialogsClosed(event);
@@ -342,6 +358,18 @@ function onPagePopup({ opener, url, token, user_initiated: userInitiated, backgr
     opener,
   }).catch(() => invoke("tab_popup_deny", { opener, token }).catch(() => {}));
 }
+
+/**
+ * Сайт открыт с неверным сертификатом по просьбе пользователя. Движок помнит
+ * это решение до выхода, и адресная строка до выхода показывает, что
+ * подключение к нему не защищено.
+ */
+function markInsecure(host) {
+  if (!host || state.insecureHosts.has(host)) return;
+  state.insecureHosts.add(host);
+  renderOmnibox();
+}
+listen("insecure-host", (host) => markInsecure(host));
 
 /** Один ли это документ: сравниваем адрес без якоря. */
 function sameDocument(a, b) {
@@ -807,6 +835,8 @@ async function restoreSession() {
   }
   for (const url of launched) await open(url);
   sessionReady = true;
+  // Первая Ctrl+T окна — уже прогретой вкладкой.
+  prewarmSoon(2500);
   // Повторный запуск мог прийти, пока открывалась сессия.
   await openLaunched();
 }
@@ -819,6 +849,7 @@ async function openLaunched() {
 
 function sessionTabs() {
   return [...state.tabs.values()]
+    .filter((tab) => !tab.closing)
     .filter((tab) => tab.internal || (tab.url && !isNewTabUrl(tab.url) && !tab.url.startsWith("about:")))
     .map((tab) => ({
       url: tab.url,

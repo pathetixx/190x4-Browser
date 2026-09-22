@@ -29,7 +29,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ use windows_core::{Interface, HSTRING};
 use crate::container;
 use crate::dialogs::{self, PermissionSetting};
 use crate::downloads::{self, DownloadPolicy, SharedDownloads};
-use crate::tab::{EventSink, PopupSlots, Tab, TabEvent};
+use crate::tab::{EventSink, PageColor, PopupSlots, Tab, TabEvent};
 
 /// Хост встроенных страниц. `.invalid` — зарезервированный TLD (RFC 2606):
 /// такое имя гарантированно не уедет в реальный DNS, если маппинг не встал.
@@ -208,19 +208,103 @@ struct HostState {
     /// Приватное окно: вкладки живут в профиле InPrivate, история и пароли
     /// в базу не пишутся.
     private: bool,
+    /// Прогретая новая вкладка: создана заранее, уже нарисована и ждёт Ctrl+T
+    /// невидимой. Её нет в `order`, и интерфейс о ней не знает.
+    spare: Option<TabId>,
+    /// Прогретая вкладка создаётся (движок ещё не отдал контроллер).
+    spare_pending: bool,
+    /// Адрес, на котором стоит прогретая вкладка.
+    spare_url: String,
+    /// Цвет темы для страниц браузера и для вкладки до первой отрисовки.
+    page_color: PageColor,
+    /// Окно каждой вкладки внутри контейнера: им управляет порядок наложения
+    /// при переключении.
+    windows: HashMap<TabId, HWND>,
+    /// Сам хост — для отложенных действий (таймер не держит его живым).
+    weak: Weak<RefCell<HostState>>,
 }
+
+/// Сколько прежняя вкладка остаётся на экране после переключения: новой
+/// хватает этого, чтобы нарисовать первый кадр под ней.
+const HANDOVER_MS: u32 = 120;
 
 impl HostState {
     /// Видимость: внутри контейнера видны активная вкладка и её пара по
     /// разделённому экрану, а сам контейнер скрывается целиком на время оверлея.
+    ///
+    /// Вкладка, которая ни разу не была на экране (прогретая новая вкладка),
+    /// рисует первый кадр не сразу. Чтобы между страницами не мелькал пустой
+    /// фон, её окно встаёт под прежнюю вкладку, а прежняя прячется чуть позже
+    /// (`HANDOVER_MS`), когда новая уже нарисована.
     fn apply_visibility(&mut self) -> anyhow::Result<()> {
         let active = self.active;
         let split = self.split;
+        let keep = |id: &TabId| Some(*id) == active || Some(*id) == split;
+        // Показывать есть что, только если активная вкладка уже создана: иначе
+        // прежнюю держать незачем — на её месте будет фон новой.
+        let ready = active.is_some_and(|id| self.tabs.contains_key(&id));
+        let mut shown = false;
         for (id, tab) in self.tabs.iter_mut() {
-            tab.set_visible(Some(*id) == active || Some(*id) == split)?;
+            if keep(id) && !tab.visible() {
+                if let Some(hwnd) = self.windows.get(id) {
+                    container::lower(*hwnd);
+                }
+                tab.set_visible(true)?;
+                shown = true;
+            }
+        }
+        let mut later = false;
+        for (id, tab) in self.tabs.iter_mut() {
+            if !keep(id) && tab.visible() {
+                if shown && ready && !self.overlay {
+                    later = true;
+                } else {
+                    tab.set_visible(false)?;
+                }
+            }
+        }
+        if later {
+            let weak = self.weak.clone();
+            crate::later::after(HANDOVER_MS, move || {
+                let Some(inner) = weak.upgrade() else { return };
+                let Ok(mut state) = inner.try_borrow_mut() else {
+                    return;
+                };
+                state.hide_offscreen();
+            });
         }
         container::set_visible(self.container, !self.overlay);
         Ok(())
+    }
+
+    /// Спрятать вкладки, которые больше не на экране.
+    fn hide_offscreen(&mut self) {
+        let active = self.active;
+        let split = self.split;
+        for (id, tab) in self.tabs.iter_mut() {
+            if Some(*id) != active && Some(*id) != split && tab.visible() {
+                let _ = tab.set_visible(false);
+            }
+        }
+    }
+
+    /// Окно только что созданной вкладки: его нет среди окон других вкладок, и
+    /// оно видно ровно тогда, когда видна вкладка. Если вкладки создаются
+    /// одновременно, окно может достаться не той — хуже от этого не станет:
+    /// опущенное чужое окно просто ничего не меняет на экране.
+    fn remember_window(&mut self, id: TabId) {
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        let Some(visible) = self.tabs.get(&id).map(Tab::visible) else {
+            return;
+        };
+        let known: Vec<HWND> = self.windows.values().copied().collect();
+        if let Some(hwnd) = container::children(self.container)
+            .into_iter()
+            .filter(|hwnd| !known.contains(hwnd))
+            .find(|hwnd| unsafe { IsWindowVisible(*hwnd) }.as_bool() == visible)
+        {
+            self.windows.insert(id, hwnd);
+        }
     }
 
     /// Куда встаёт вкладка внутри контейнера. Без разделённого экрана — целиком,
@@ -310,8 +394,15 @@ impl TabHost {
                 popups: PopupSlots::default(),
                 chrome: None,
                 private,
+                spare: None,
+                spare_pending: false,
+                spare_url: String::new(),
+                page_color: Rc::new(std::cell::Cell::new([8, 8, 10])),
+                windows: HashMap::new(),
+                weak: Weak::new(),
             })),
         };
+        host.inner.borrow_mut().weak = Rc::downgrade(&host.inner);
         // Загрузка закрытой вкладки кончилась — теперь закрывается и она.
         let weak = Rc::downgrade(&host.inner);
         host.inner
@@ -320,7 +411,10 @@ impl TabHost {
             .set_on_idle(Rc::new(move |tab| {
                 let Some(inner) = weak.upgrade() else { return };
                 let parked = match inner.try_borrow_mut() {
-                    Ok(mut state) => state.parked.remove(&TabId(tab)),
+                    Ok(mut state) => {
+                        state.windows.remove(&TabId(tab));
+                        state.parked.remove(&TabId(tab))
+                    }
                     Err(_) => None,
                 };
                 if let Some(parked) = parked {
@@ -357,15 +451,67 @@ impl TabHost {
     /// сам поведёт её на адрес окна, а странице достанется ссылка на неё.
     /// Если окна уже никто не ждёт, вкладка просто откроет `url`.
     pub fn open_with(&self, url: &str, popup: Option<u64>) -> anyhow::Result<TabId> {
+        if popup.is_none() {
+            if let Some(id) = self.adopt_spare(url) {
+                return Ok(id);
+            }
+        }
+        self.create(url, popup, false)
+    }
+
+    /// Прогреть новую вкладку: создать её заранее, невидимой, чтобы Ctrl+T
+    /// показал уже нарисованную страницу. Иначе каждое открытие проходило
+    /// через пустой кадр, белый фон нового вебвью и отрисовку страницы с нуля —
+    /// вкладка «вписывалась» в окно рывками. Так же делает Chrome.
+    pub fn prewarm(&self, url: &str) -> anyhow::Result<()> {
+        {
+            let state = self.inner.borrow();
+            if state.spare.is_some() || state.spare_pending {
+                return Ok(());
+            }
+        }
+        self.create(url, None, true).map(|_| ())
+    }
+
+    /// Отдать прогретую вкладку, если она стоит на нужном адресе.
+    fn adopt_spare(&self, url: &str) -> Option<TabId> {
+        let mut state = self.inner.borrow_mut();
+        let id = state.spare?;
+        if state.spare_url != url {
+            return None;
+        }
+        // Страница могла уйти с адреса (сама или по ссылке) — такую не отдаём.
+        if state.tabs.get(&id)?.source_url() != url {
+            return None;
+        }
+        state.spare = None;
+        state.order.push(id);
+        if state.active.is_none() {
+            state.active = Some(id);
+        }
+        let bounds = state.bounds_for(id);
+        let tab = state.tabs.get(&id)?;
+        let _ = tab.set_bounds(bounds);
+        tracing::debug!(?id, "новая вкладка — прогретая");
+        tab.announce();
+        Some(id)
+    }
+
+    fn create(&self, url: &str, popup: Option<u64>, spare: bool) -> anyhow::Result<TabId> {
         let (id, container, env, private) = {
             let mut state = self.inner.borrow_mut();
             let id = next_tab_id();
-            state.order.push(id);
-            // Намерение показать именно её: к моменту готовности контроллера
-            // пользователь может успеть переключиться, и тогда мы не будем
-            // дёргать экран.
-            if state.active.is_none() {
-                state.active = Some(id);
+            if spare {
+                state.spare_pending = true;
+                state.spare_url = url.to_string();
+            } else {
+                state.order.push(id);
+                // Намерение показать именно её: к моменту готовности контроллера
+                // пользователь может успеть переключиться, и тогда мы не будем
+                // дёргать экран.
+                if state.active.is_none() {
+                    state.active = Some(id);
+                }
             }
             (id, state.container, state.env.clone(), state.private)
         };
@@ -383,6 +529,10 @@ impl TabHost {
                     Ok(controller) => controller,
                     Err(err) => {
                         tracing::error!(?id, %err, "контроллер вкладки не создан");
+                        if spare {
+                            failed.borrow_mut().spare_pending = false;
+                            return Ok(());
+                        }
                         let waiting = popup
                             .and_then(|token| failed.borrow().popups.borrow_mut().remove(&token));
                         if let Some(popup) = waiting {
@@ -397,7 +547,7 @@ impl TabHost {
                 let popup = popup.and_then(|token| state.popups.borrow_mut().remove(&token));
                 // Вкладку закрыли раньше, чем движок её достроил: закрываем и
                 // контроллер, иначе живая страница осталась бы без места в строке.
-                if !state.order.contains(&id) {
+                if !spare && !state.order.contains(&id) {
                     tracing::debug!(?id, "вкладку закрыли до готовности");
                     let _ = unsafe { controller.Close() };
                     if let Some(popup) = popup {
@@ -416,6 +566,8 @@ impl TabHost {
                     state.sink.clone(),
                     state.downloads.clone(),
                     state.popups.clone(),
+                    state.page_color.clone(),
+                    Rc::new(std::cell::Cell::new(!spare)),
                     bounds,
                     visible,
                 ) {
@@ -424,6 +576,10 @@ impl TabHost {
                         tracing::error!(?id, %err, "вкладка не настроена");
                         if let Some(popup) = popup {
                             popup.deny();
+                        }
+                        if spare {
+                            state.spare_pending = false;
+                            return Ok(());
                         }
                         drop(state);
                         drop_failed(&inner, id);
@@ -447,6 +603,12 @@ impl TabHost {
                 }
 
                 state.tabs.insert(id, tab);
+                state.remember_window(id);
+                if spare {
+                    state.spare_pending = false;
+                    state.spare = Some(id);
+                    return Ok(());
+                }
                 (state.sink)(TabEvent::Opened {
                     id: id.0,
                     url: url.clone(),
@@ -483,6 +645,7 @@ impl TabHost {
                 tab.set_visible(false)?;
                 state.parked.insert(id, tab);
             } else {
+                state.windows.remove(&id);
                 tab.close()?;
             }
         }
@@ -612,6 +775,26 @@ impl TabHost {
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
         tab.find(&state.env, query, state.sink.clone())
+    }
+
+    /// Спросить страницу, можно ли её закрыть (`Tab::request_close`).
+    /// `false` — спрашивать некого (вкладка не достроена), закрывать сразу.
+    pub fn request_close(&self, id: TabId) -> bool {
+        let state = self.inner.borrow();
+        match state.tabs.get(&id) {
+            Some(tab) => tab.request_close().is_ok(),
+            None => false,
+        }
+    }
+
+    /// Цвет темы для страниц браузера: им заливаются новые вкладки до
+    /// отрисовки, а страницы браузера — сразу.
+    pub fn set_page_color(&self, rgb: [u8; 3]) {
+        let state = self.inner.borrow();
+        state.page_color.set(rgb);
+        for tab in state.tabs.values() {
+            tab.apply_page_color();
+        }
     }
 
     /// Окно, которое открыла страница, не открывается: `window.open` получит

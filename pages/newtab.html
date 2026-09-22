@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru" data-theme="kurogane">
+<html lang="ru" data-theme="kurogane" data-boot="true">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,6 +7,21 @@
     <!-- Страница живёт в обычной вкладке на 190x4-pages.invalid и о Tauri ничего
          не знает: с браузером она говорит только через window.chrome.webview.
          Разметка — здесь, данные и поведение — в newtab.js. -->
+    <!-- Первый кадр — уже в цвет темы: пока стили не загрузились, страница
+         иначе мелькала бы белым или серым. Тему страница помнит сама. Пока
+         нет плиток и шрифтов, содержимое не показывается: иначе оно
+         дорисовывалось бы на глазах по частям (data-boot, newtab.js). -->
+    <script>
+      try {
+        const theme = localStorage.getItem("190x4-theme");
+        if (theme) document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <style>
+      html { background: #08080a; }
+      html[data-theme="shiro"] { background: #fafaf8; }
+      html[data-boot] body { visibility: hidden; }
+    </style>
     <link rel="stylesheet" href="./newtab.css" />
   </head>
   <body>

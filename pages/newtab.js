@@ -156,11 +156,30 @@
 
     if (state.weather && (!weatherAt || Date.now() - weatherAt > WEATHER_EVERY)) requestWeather(false);
     state.loaded = true;
+    reveal();
   }
+
+  /**
+   * Показать страницу целиком, когда есть плитки и загружены шрифты: без этого
+   * часы, поиск и карточки появлялись по очереди, а текст перескакивал со
+   * шрифта системы на свой. Дольше полусекунды не ждём.
+   */
+  function reveal() {
+    if (!root.dataset.boot) return;
+    const fonts = document.fonts?.ready ?? Promise.resolve();
+    Promise.race([fonts, new Promise((resolve) => setTimeout(resolve, 250))]).then(() =>
+      requestAnimationFrame(() => delete root.dataset.boot)
+    );
+  }
+  setTimeout(() => delete root.dataset.boot, 500);
 
   function applyTheme() {
     const dark = matchMedia("(prefers-color-scheme: dark)").matches;
     root.dataset.theme = state.theme === "system" ? (dark ? "kurogane" : "shiro") : state.theme === "shiro" ? "shiro" : "kurogane";
+    // Следующая новая вкладка встанет в эту тему с первого кадра (newtab.html).
+    try {
+      localStorage.setItem("190x4-theme", root.dataset.theme);
+    } catch {}
   }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 

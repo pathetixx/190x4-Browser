@@ -97,10 +97,12 @@ export async function openContextMenu({ id, menu, x, y, target, items }) {
 
   const stage = document.getElementById("stage").getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
-  // Точка щелчка — от левого края своей вкладки; правая половина разделённого
-  // экрана начинается там же, где её ставит Rust (`TabHost::bounds_for`).
+  // Точка щелчка — от левого края своей вкладки и уже в CSS-пикселях: движок
+  // отдаёт её в логических единицах (на 150% делёная ещё раз на масштаб, она
+  // уезжала к углу страницы). Правая половина разделённого экрана начинается
+  // там же, где её ставит Rust (`TabHost::bounds_for`), — в физических.
   const offset = id === rightPaneId() ? paneOffset(stage.width * scale) / scale : 0;
-  const point = { x: stage.left + offset + x / scale, y: stage.top + y / scale, width: 0, height: 0 };
+  const point = { x: stage.left + offset + x, y: stage.top + y, width: 0, height: 0 };
   const opened = await openPopup("context", point, {
     width: 292,
     align: "point",

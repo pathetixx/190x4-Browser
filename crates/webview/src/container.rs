@@ -97,6 +97,36 @@ pub fn set_visible(hwnd: HWND, visible: bool) {
     }
 }
 
+/// Окна вкладок внутри контейнера — прямые дочерние окна, по одному на
+/// контроллер. Порядок — от верхнего к нижнему.
+pub fn children(hwnd: HWND) -> Vec<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_CHILD, GW_HWNDNEXT};
+    let mut out = Vec::new();
+    let mut next = unsafe { GetWindow(hwnd, GW_CHILD) }.ok();
+    while let Some(child) = next {
+        out.push(child);
+        next = unsafe { GetWindow(child, GW_HWNDNEXT) }.ok();
+    }
+    out
+}
+
+/// Опустить окно вкладки под остальные: показанная вкладка рисует первый
+/// кадр под прежней, а не поверх неё пустым фоном.
+pub fn lower(hwnd: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE};
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }

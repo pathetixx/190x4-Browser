@@ -179,7 +179,10 @@ export function renderOmnibox() {
   } else {
     try {
       const parsed = new URL(url);
-      const secure = parsed.protocol === "https:";
+      // https с неверным сертификатом, который открыли «всё равно», — тоже
+      // не защищено: замок там был бы ложью.
+      const bypassed = state.insecureHosts.has(parsed.host.toLowerCase());
+      const secure = parsed.protocol === "https:" && !bypassed;
       setSite(secure ? "secure" : "insecure", secure ? "lock-16" : "info-16");
       if (!secure) {
         siteLabel.hidden = false;
@@ -333,7 +336,7 @@ async function openSiteInfo() {
     payload: {
       url: tab.url,
       host: hostOf(tab.url),
-      secure: tab.url.startsWith("https:"),
+      secure: tab.url.startsWith("https:") && !state.insecureHosts.has(hostOf(tab.url).toLowerCase()),
       blocked: tab.blocked ?? 0,
       adblock: state.adblockOn,
       site: blocking?.site ?? null,

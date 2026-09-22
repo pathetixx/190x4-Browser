@@ -437,11 +437,20 @@ fn wire_external(
 
 /// Ответ пользователя. `Some(true)` — окно было и клавиатуру можно вернуть
 /// странице, `None` — окна с таким номером уже нет.
+/// Каким было окно, на которое ответили.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Answered {
+    /// После ответа клавиатура возвращается странице.
+    pub focus: bool,
+    /// Это было «Покинуть сайт?».
+    pub leave: bool,
+}
+
 pub(crate) fn answer(
     dialogs: &DialogState,
     token: u64,
     answer: &DialogAnswer,
-) -> windows_core::Result<Option<bool>> {
+) -> windows_core::Result<Option<Answered>> {
     dialogs
         .external
         .borrow_mut()
@@ -452,9 +461,12 @@ pub(crate) fn answer(
     if answer.suppress {
         dialogs.suppressed.set(true);
     }
-    let focus = pending.takes_focus();
+    let answered = Answered {
+        focus: pending.takes_focus(),
+        leave: matches!(pending, Pending::Script { leave: true, .. }),
+    };
     pending.resolve(answer)?;
-    Ok(Some(focus))
+    Ok(Some(answered))
 }
 
 /// Началась навигация: окна прежней страницы больше никто не ждёт. Отвечаем за

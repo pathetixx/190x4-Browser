@@ -91,62 +91,128 @@ fn describe(status: COREWEBVIEW2_WEB_ERROR_STATUS) -> Option<(&'static str, &'st
     Some(text)
 }
 
+/// Оформление страниц ошибок — общее для скрипта и для страницы блокировки.
+const STYLE: &str = r#":root { color-scheme: dark light; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f0f12; color: #f1f1f4;
+  font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+@media (prefers-color-scheme: light) { body { background: #f6f6f8; color: #18181b; } }
+.box190x4 { box-sizing: border-box; width: min(560px, 100% - 48px); padding: 32px 0; }
+.mark190x4 { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+  background: rgba(222, 87, 114, 0.14); color: #de5772; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
+h1 { margin: 20px 0 8px; font-size: 24px; font-weight: 650; }
+p { margin: 0 0 6px; opacity: 0.78; }
+.site190x4 { opacity: 0.95; font-weight: 600; }
+.url190x4 { margin-top: 14px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: 0.5; word-break: break-all; }
+button { margin-top: 22px; padding: 9px 18px; border: 0; border-radius: 8px; background: #de5772; color: #fff;
+  font: inherit; font-weight: 600; cursor: pointer; }
+button:hover { filter: brightness(1.08); }
+.more190x4 { margin-top: 26px; }
+.more190x4 summary { cursor: pointer; opacity: 0.7; user-select: none; }
+.more190x4 p { margin-top: 10px; }
+.quiet190x4 { margin-top: 12px; background: transparent; color: inherit; border: 1px solid rgba(222, 87, 114, 0.55); }"#;
+
+/// Текст под «Подробнее» у ошибки сертификата.
+const PROCEED_HINT: &str = "Если это ваш роутер или сервер в своей сети и вы уверены, что это он, \
+                            сайт можно открыть без проверки сертификата. Всё, что вы на нём \
+                            введёте, могут перехватить.";
+
+/// Скрипт, который собирает страницу из элементов, а не строкой HTML: у
+/// страницы ошибки сертификата движок требует Trusted Types, и `innerHTML`
+/// там запрещён — своя страница на ней просто не вставала. Тексты — данные
+/// (`textContent`), разметкой они не становятся. `guard` — проверка перед
+/// заменой, `proceed` — что делает «Всё равно перейти» (пусто — кнопки нет).
+fn page_script(title: &str, url: &str, hint: &str, guard: &str, proceed: &str) -> String {
+    let data = serde_json::json!({
+        "title": title,
+        "host": short_host(url),
+        "hint": hint,
+        "url": url,
+        "style": STYLE,
+        "more": PROCEED_HINT,
+    })
+    // `<` — escape-последовательностью: адрес со страницы не закроет ничего,
+    // куда бы скрипт ни попал.
+    .to_string()
+    .replace('<', "\\u003c");
+    format!(
+        r#"(() => {{
+{guard}
+const data = {data};
+const make = (tag, className, text) => {{
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}};
+const style = make("style", null, data.style);
+const head = make("head");
+head.append(style);
+const box = make("div", "box190x4");
+box.append(make("div", "mark190x4", "190"), make("h1", null, data.title), make("p", "site190x4", data.host),
+  make("p", null, data.hint), make("div", "url190x4", data.url));
+const retry = make("button", null, "Обновить");
+retry.type = "button";
+retry.id = "retry190x4";
+retry.addEventListener("click", () => location.reload());
+box.append(retry);
+const proceed = {proceed};
+if (proceed) {{
+  const more = make("details", "more190x4");
+  const go = make("button", "quiet190x4", "Всё равно перейти (небезопасно)");
+  go.type = "button";
+  go.id = "proceed190x4";
+  go.addEventListener("click", proceed);
+  more.append(make("summary", null, "Подробнее"), make("p", null, data.more), go);
+  box.append(more);
+}}
+const body = make("body");
+body.append(box);
+document.documentElement.replaceChildren(head, body);
+document.title = data.title;
+}})();
+"#
+    )
+}
+
 /// Скрипт, который рисует страницу ошибки в уже загруженном документе.
 pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<String> {
     let (title, hint) = describe(status)?;
-    let html = json(&body_html(title, url, hint, true));
-    let title = json(title);
-    Some(format!(
-        r#"(() => {{
-document.documentElement.innerHTML = {html};
-document.title = {title};
-const retry = document.getElementById("retry190x4");
-if (retry) retry.addEventListener("click", () => location.reload());
-}})();
-"#
-    ))
+    Some(page_script(title, url, hint, "", "null"))
+}
+
+/// Своя страница вместо страницы движка «Подключение не защищено».
+///
+/// Страницу движка (Edge, на языке системы) движок ставит сам, уже после
+/// конца навигации, — поэтому она заменяется, когда её документ готов, и
+/// только если это действительно она. «Всё равно перейти» под «Подробнее», как
+/// в Chrome: роутер или сервер в своей сети часто работает с самоподписанным
+/// сертификатом. Нажимает его механизм самого движка — решение он помнит до
+/// выхода, как Chrome.
+pub fn certificate_script(url: &str) -> String {
+    page_script(
+        "Подключение не защищено",
+        url,
+        "Сертификат сайта не в порядке: срок истёк, он отозван или выписан на другое имя. \
+         Кто-то может выдавать себя за этот сайт.",
+        r#"if (!location.href.startsWith("chrome-error://") || document.querySelector(".box190x4")) return;
+const edge = document.getElementById("proceed-link");
+const controller = window.certificateErrorPageController;
+if (!edge && !controller) return;"#,
+        r#"() => {
+  if (controller && typeof controller.proceed === "function") controller.proceed();
+  else if (edge) edge.click();
+}"#,
+    )
 }
 
 /// Готовый документ «страница заблокирована» — телом ответа фильтра.
 pub fn blocked_html(url: &str) -> String {
-    let body = body_html(
-        "Страница заблокирована",
-        url,
-        "Её адрес есть в списках блокировки. Выключить фильтр для этого сайта можно значком щита слева от адреса.",
-        false,
-    );
-    format!("<!doctype html><html lang=\"ru\">{body}</html>")
-}
-
-/// Разметка страницы. Одна на оба случая: ошибка сети и блокировка отличаются
-/// только текстом и кнопкой.
-fn body_html(title: &str, url: &str, hint: &str, retry: bool) -> String {
-    let button = if retry {
-        "<button id=\"retry190x4\" type=\"button\">Обновить</button>"
-    } else {
-        ""
-    };
     format!(
-        r#"<head><meta charset="utf-8"><title>{title}</title><style>
-:root {{ color-scheme: dark light; }}
-body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f0f12; color: #f1f1f4;
-  font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }}
-@media (prefers-color-scheme: light) {{ body {{ background: #f6f6f8; color: #18181b; }} }}
-.box190x4 {{ box-sizing: border-box; width: min(560px, 100% - 48px); padding: 32px 0; }}
-.mark190x4 {{ width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
-  background: rgba(222, 87, 114, 0.14); color: #de5772; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }}
-h1 {{ margin: 20px 0 8px; font-size: 24px; font-weight: 650; }}
-p {{ margin: 0 0 6px; opacity: 0.78; }}
-.site190x4 {{ opacity: 0.95; font-weight: 600; }}
-.url190x4 {{ margin-top: 14px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: 0.5; word-break: break-all; }}
-button {{ margin-top: 22px; padding: 9px 18px; border: 0; border-radius: 8px; background: #de5772; color: #fff;
-  font: inherit; font-weight: 600; cursor: pointer; }}
-button:hover {{ filter: brightness(1.08); }}
-</style></head><body><div class="box190x4"><div class="mark190x4">190</div><h1>{title}</h1>
-<p class="site190x4">{host}</p><p>{hint}</p><div class="url190x4">{url}</div>{button}</div></body>"#,
-        title = escape(title),
+        r#"<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>{title}</title><style>{STYLE}</style></head><body><div class="box190x4"><div class="mark190x4">190</div><h1>{title}</h1>
+<p class="site190x4">{host}</p><p>{hint}</p><div class="url190x4">{url}</div></div></body></html>"#,
+        title = "Страница заблокирована",
         host = escape(&short_host(url)),
-        hint = escape(hint),
+        hint = "Её адрес есть в списках блокировки. Выключить фильтр для этого сайта можно значком щита слева от адреса.",
         url = escape(url),
     )
 }
@@ -157,10 +223,6 @@ fn escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn json(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
 }
 
 /// Хост адреса для подписи под заголовком.
@@ -181,6 +243,17 @@ mod tests {
             "https://a"
         )
         .is_none());
+    }
+
+    #[test]
+    fn only_certificate_errors_offer_to_proceed() {
+        let cert = certificate_script("https://192.168.1.1/");
+        assert!(cert.contains("Всё равно перейти"));
+        assert!(cert.contains("chrome-error://"));
+        assert!(!cert.contains('\0'));
+        let timeout = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
+        assert!(timeout.contains("const proceed = null;"));
+        assert!(!timeout.contains("chrome-error://"));
     }
 
     #[test]

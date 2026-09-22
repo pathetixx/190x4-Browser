@@ -71,6 +71,9 @@ pub fn run() {
     let launched = launch::Launch::default();
     launched.push(launch::from_command_line());
 
+    // Цвет, которым движок заливает новый вебвью до первой отрисовки: без него
+    // первый кадр каждой новой вкладки был бы белым или серым.
+    ipc::apply_engine_background(&store);
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
@@ -113,6 +116,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
             ipc::tab_popup_deny,
+            ipc::tab_prewarm,
+            ipc::tab_close_request,
             ipc::tab_close,
             ipc::tab_activate,
             ipc::tab_split,
@@ -324,6 +329,11 @@ pub(crate) fn route_event(
         } => {
             external::on_request(app, label, *id, *token, uri, origin, *user_initiated);
             return;
+        }
+        // Сайт открыли с неверным сертификатом: движок помнит это решение до
+        // выхода для всех окон профиля, значит, и помечать его надо во всех.
+        TabEvent::Insecure { host, .. } => {
+            let _ = app.emit("insecure-host", host);
         }
         TabEvent::Started { id, .. } => {
             passwords::on_navigation(app, *id);

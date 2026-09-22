@@ -23,6 +23,8 @@ export const state = {
   /// Окна, которые сайт открыл сам по себе и которые браузер не пустил:
   /// вкладка → [{ url, site }].
   blockedPopups: new Map(),
+  /// Сайты, открытые с неверным сертификатом (хост в нижнем регистре).
+  insecureHosts: new Set(),
   blockedTotal: 0,
   latencyMicros: 0,
   adblockOn: true,
@@ -67,6 +69,9 @@ function blankTab(id) {
     /// Вкладка из прошлого сеанса, которую ещё не открывали: место в строке
     /// есть, а страницы и памяти под неё — нет, как в Chrome.
     sleeping: false,
+    /// Вкладку закрывают и ждут ответа её страницы («Покинуть сайт?»): в
+    /// строке и на экране её уже нет.
+    closing: false,
     /// Встроенная страница: "settings" | "downloads" | "history" | null.
     internal: null,
     section: "",

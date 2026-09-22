@@ -26,7 +26,7 @@ use webview2_com::{
 use windows::Win32::Foundation::{POINT, RECT};
 use windows_core::{Interface, BOOL, HSTRING, PWSTR};
 
-use crate::dialogs::{self, DialogAnswer, DialogRequest, Dialogs};
+use crate::dialogs::{self, DialogAction, DialogAnswer, DialogRequest, Dialogs};
 use crate::downloads::{self, SharedDownloads};
 use crate::filter::{self, SourceUrl};
 use crate::host::TabId;
@@ -128,6 +128,21 @@ pub enum TabEvent {
         id: u32,
         download: bool,
     },
+    /// Вкладку можно закрывать: страница не держит («Покинуть сайт?» ей не
+    /// нужно или пользователь согласился уйти). Ответ на `Tab::request_close`.
+    CloseConfirmed {
+        id: u32,
+    },
+    /// На «Покинуть сайт?» ответили «Остаться» — вкладка остаётся.
+    CloseCancelled {
+        id: u32,
+    },
+    /// Сайт открыт с неверным сертификатом по просьбе пользователя: адресная
+    /// строка должна показывать, что подключение не защищено, пока сайт открыт.
+    Insecure {
+        id: u32,
+        host: String,
+    },
     /// Страница развернула элемент на весь экран (видео) или свернула обратно.
     Fullscreen {
         id: u32,
@@ -169,7 +184,8 @@ pub enum TabEvent {
     ContextMenu {
         id: u32,
         menu: u64,
-        /// Точка щелчка в физических пикселях от левого верхнего угла вкладки.
+        /// Точка щелчка от левого верхнего угла вкладки в логических пикселях
+        /// (как CSS-пиксели страницы): на 150% физических в полтора раза больше.
         x: i32,
         y: i32,
         target: MenuTarget,
@@ -337,7 +353,69 @@ pub struct Tab {
     /// Элемент страницы развёрнут на весь экран: Escape сворачивает его.
     fullscreen: Rc<Cell<bool>>,
     scripts: Rc<ScriptsReady>,
+    /// Вкладку закрывают: навигация на `about:blank` спрашивает страницу
+    /// «Покинуть сайт?», а её начало значит «можно закрывать».
+    closing: Rc<Cell<bool>>,
+    /// События вкладки уходят в интерфейс. Заранее прогретая новая вкладка
+    /// молчит, пока её не отдали пользователю (`announce`).
+    announced: Rc<Cell<bool>>,
+    sink: EventSink,
+    /// Цвет, которым движок заливает вкладку до первой отрисовки страницы.
+    page_color: PageColor,
+    cert: Rc<CertState>,
 }
+
+/// Цвет страниц браузера (новая вкладка) под тему, `[r, g, b]`. Им же
+/// заливается новая вкладка, пока в ней ничего не нарисовано: белый кадр между
+/// открытием и отрисовкой и был той вспышкой при Ctrl+T.
+pub type PageColor = Rc<Cell<[u8; 3]>>;
+
+/// Ошибка сертификата у страницы вкладки.
+#[derive(Default)]
+struct CertState {
+    /// Адрес, который не открылся из-за сертификата: на нём стоит страница
+    /// ошибки движка, и её заменяет своя.
+    failed: RefCell<Option<String>>,
+    /// Хост с этой ошибкой: если после неё страница этого хоста всё-таки
+    /// открылась, пользователь нажал «Всё равно перейти».
+    host: RefCell<Option<String>>,
+}
+
+/// Страница браузера (новая вкладка, страницы ошибок) — не сайт.
+fn is_pages_url(url: &str) -> bool {
+    url.strip_prefix("http://")
+        .and_then(|rest| rest.strip_prefix(crate::host::PAGES_HOST))
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Хост адреса в нижнем регистре.
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    Some(host.to_ascii_lowercase())
+}
+
+/// Залить вкладку цветом до первой отрисовки. Сайтам без своего фона нужен
+/// белый — иначе чёрный текст оказался бы на тёмном; страницам браузера —
+/// цвет темы.
+fn paint_background(controller: &ICoreWebView2Controller, rgb: [u8; 3]) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Controller2, COREWEBVIEW2_COLOR,
+    };
+    if let Ok(controller2) = controller.cast::<ICoreWebView2Controller2>() {
+        let color = COREWEBVIEW2_COLOR {
+            A: 255,
+            R: rgb[0],
+            G: rgb[1],
+            B: rgb[2],
+        };
+        let _ = unsafe { controller2.SetDefaultBackgroundColor(color) };
+    }
+}
+
+/// Белый — фон сайта, который свой не задал.
+const SITE_BACKGROUND: [u8; 3] = [255, 255, 255];
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
 ///
@@ -851,6 +929,22 @@ fn run_script(core: &ICoreWebView2, script: &str, what: &'static str) {
     }
 }
 
+/// Своя страница ошибки сертификата вместо страницы движка, если вкладка всё
+/// ещё стоит на ней. Скрипт сам проверяет, что перед ним страница движка.
+fn show_certificate_page(core: &ICoreWebView2, cert: &CertState) {
+    let Some(url) = cert.failed.borrow().clone() else {
+        return;
+    };
+    if document_url(Some(core)) != url {
+        return;
+    }
+    run_script(
+        core,
+        &crate::errors::certificate_script(&url),
+        "страница ошибки сертификата",
+    );
+}
+
 /// Свернуть элемент, развёрнутый страницей на весь экран. Движок сам этого не
 /// делает: полноэкранный режим — забота браузера.
 fn exit_fullscreen(core: &ICoreWebView2) {
@@ -1014,6 +1108,8 @@ impl Tab {
         sink: EventSink,
         downloads: SharedDownloads,
         popups: PopupSlots,
+        page_color: PageColor,
+        announced: Rc<Cell<bool>>,
         bounds: RECT,
         visible: bool,
     ) -> anyhow::Result<Self> {
@@ -1021,7 +1117,20 @@ impl Tab {
         let source: SourceUrl = Rc::new(RefCell::new(String::new()));
         let fullscreen = Rc::new(Cell::new(false));
         let scripts = Rc::new(ScriptsReady::default());
+        // Прогретая вкладка молчит: интерфейс о ней не знает, пока её не
+        // отдали. Сообщения страницы (новая вкладка просит плитки и погоду)
+        // нужны Rust и тогда.
+        let sink: EventSink = {
+            let gate = announced.clone();
+            Rc::new(move |event: TabEvent| {
+                if gate.get() || matches!(event, TabEvent::Message { .. }) {
+                    sink(event);
+                }
+            })
+        };
 
+        // До первой отрисовки — цвет темы, а не белый кадр.
+        paint_background(&controller, page_color.get());
         unsafe {
             controller.SetBounds(bounds)?;
             controller.SetIsVisible(visible)?;
@@ -1061,8 +1170,14 @@ impl Tab {
             find_wired: Cell::new(false),
             fullscreen,
             scripts,
+            closing: Rc::new(Cell::new(false)),
+            announced,
+            sink: sink.clone(),
+            page_color,
+            cert: Rc::new(CertState::default()),
         };
         tab.wire_events(sink, popups)?;
+        tab.wire_certificates();
         tracing::debug!(?id, "вкладка готова");
         Ok(tab)
     }
@@ -1122,15 +1237,40 @@ impl Tab {
             let s = sink.clone();
             let source = self.source.clone();
             let page_dialogs = self.dialogs.clone();
+            let closing = self.closing.clone();
+            let controller = self.controller.clone();
+            let page_color = self.page_color.clone();
+            let cert = self.cert.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
+                    // Вкладку закрывают, и страница отпустила её: «Покинуть
+                    // сайт?» не понадобилось или на него ответили «Покинуть».
+                    // Сама навигация не нужна — вкладка сейчас закроется.
+                    if closing.replace(false) {
+                        args.SetCancel(true)?;
+                        s(TabEvent::CloseConfirmed { id });
+                        return Ok(());
+                    }
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
                     // Источник для third-party обновляем ровно здесь: до
                     // первого запроса ресурсов страницы.
                     *source.borrow_mut() = url.clone();
+                    *cert.failed.borrow_mut() = None;
+                    // Ушли на другой сайт — ошибка сертификата прежнего не в счёт.
+                    if cert.host.borrow().as_deref() != host_of(&url).as_deref() {
+                        *cert.host.borrow_mut() = None;
+                    }
+                    paint_background(
+                        &controller,
+                        if is_pages_url(&url) {
+                            page_color.get()
+                        } else {
+                            SITE_BACKGROUND
+                        },
+                    );
                     s(TabEvent::Started { id, url });
                     let closed = dialogs::navigation_started(&page_dialogs);
                     if !closed.is_empty() {
@@ -1143,15 +1283,26 @@ impl Tab {
 
             let s = sink.clone();
             let source = self.source.clone();
+            let cert = self.cert.clone();
             core.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                     let Some(args) = args else { return Ok(()) };
                     let mut ok = windows_core::BOOL::default();
                     args.IsSuccess(&mut ok)?;
+                    let certificate = cert.failed.borrow().is_some();
+                    if !ok.as_bool() && certificate {
+                        // Страницу ошибки сертификата движок ставит сам и позже
+                        // этого события — её заменяет `DOMContentLoaded`, а на
+                        // случай, если его не будет, — отложенная попытка.
+                        if let Some(core) = sender.clone() {
+                            let cert = cert.clone();
+                            crate::later::after(400, move || show_certificate_page(&core, &cert));
+                        }
+                    }
                     // Страница ошибки движка — чужая деталь: она на языке
                     // системы, с оформлением Edge и советами про Edge. Рисуем
                     // свою прямо в документе, не трогая ни адрес, ни историю.
-                    if !ok.as_bool() {
+                    if !ok.as_bool() && !certificate {
                         let mut status =
                             webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                         args.WebErrorStatus(&mut status)?;
@@ -1190,6 +1341,19 @@ impl Tab {
                     // для third-party и автозаполнения — снова адрес документа.
                     if !url.is_empty() {
                         *source.borrow_mut() = url.clone();
+                    }
+                    // Сайт с ошибкой сертификата всё-таки открылся: пользователь
+                    // нажал «Всё равно перейти». Замок в адресной строке был бы
+                    // ложью, до выхода этот сайт — «Не защищено».
+                    if ok.as_bool() && !certificate {
+                        let host = host_of(&url);
+                        if host.is_some() && *cert.host.borrow() == host {
+                            cert.host.borrow_mut().take();
+                            s(TabEvent::Insecure {
+                                id,
+                                host: host.unwrap_or_default(),
+                            });
+                        }
                     }
                     s(TabEvent::Finished { id, ok: ok.as_bool(), http_status: status, url });
                     Ok(())
@@ -1363,6 +1527,112 @@ impl Tab {
                     Ok(())
                 })),
             )
+        }
+    }
+
+    /// Спросить страницу, можно ли её закрыть. Своего вызова у движка нет,
+    /// а `Close` обработчик `beforeunload` не зовёт: переход на `about:blank`
+    /// показывает «Покинуть сайт?», если страница его просит, и начинается,
+    /// только когда уйти можно. Ответ — `CloseConfirmed` или `CloseCancelled`.
+    pub fn request_close(&self) -> windows_core::Result<()> {
+        self.closing.set(true);
+        let result = unsafe { self.core.Navigate(windows_core::h!("about:blank")) };
+        if result.is_err() {
+            self.closing.set(false);
+        }
+        result
+    }
+
+    /// Отдать прогретую вкладку пользователю: интерфейс узнаёт о ней то, что
+    /// пропустил, пока она молчала.
+    pub(crate) fn announce(&self) {
+        self.announced.set(true);
+        let id = self.id.0;
+        let url = self.source_url();
+        (self.sink)(TabEvent::Opened {
+            id,
+            url: url.clone(),
+        });
+        (self.sink)(TabEvent::Finished {
+            id,
+            ok: true,
+            http_status: 200,
+            url: url.clone(),
+        });
+        let title = self.title();
+        if !title.is_empty() {
+            (self.sink)(TabEvent::Title { id, title });
+        }
+        if let Some(icon) = self.favicon_url().filter(|icon| !icon.is_empty()) {
+            (self.sink)(TabEvent::Favicon {
+                id,
+                page: url,
+                url: icon,
+            });
+        }
+    }
+
+    /// Тема сменилась: страницы браузера заливаются новым цветом.
+    pub(crate) fn apply_page_color(&self) {
+        if is_pages_url(&self.source_url()) {
+            paint_background(&self.controller, self.page_color.get());
+        }
+    }
+
+    /// Ошибка сертификата у страницы вкладки. Движок по умолчанию показывает
+    /// свою страницу (Edge, на языке системы); браузер отменяет запрос и
+    /// рисует свою — с «Всё равно перейти», как в Chrome. Запросы картинок и
+    /// скриптов с плохим сертификатом движок отклоняет сам, их не трогаем.
+    fn wire_certificates(&self) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_14, ICoreWebView2_2};
+        use webview2_com::{
+            DOMContentLoadedEventHandler, ServerCertificateErrorDetectedEventHandler,
+        };
+
+        let mut token = 0i64;
+        if let Ok(core14) = self.core.cast::<ICoreWebView2_14>() {
+            let source = self.source.clone();
+            let cert = self.cert.clone();
+            let result = unsafe {
+                core14.add_ServerCertificateErrorDetected(
+                    &ServerCertificateErrorDetectedEventHandler::create(Box::new(
+                        move |_, args| {
+                            let Some(args) = args else { return Ok(()) };
+                            let mut raw = PWSTR::null();
+                            args.RequestUri(&mut raw)?;
+                            let url = take_pwstr(raw);
+                            // Картинки и скрипты с плохим сертификатом движок
+                            // отклоняет сам, страницу ошибки получает только сама
+                            // страница вкладки.
+                            if url == *source.borrow() {
+                                *cert.host.borrow_mut() = host_of(&url);
+                                *cert.failed.borrow_mut() = Some(url);
+                            }
+                            Ok(())
+                        },
+                    )),
+                    &mut token,
+                )
+            };
+            if let Err(err) = result {
+                tracing::warn!(%err, "ошибки сертификата не перехвачены");
+            }
+        }
+
+        // Документ страницы ошибки движка готов — ставим свою.
+        if let Ok(core2) = self.core.cast::<ICoreWebView2_2>() {
+            let cert = self.cert.clone();
+            let _ = unsafe {
+                core2.add_DOMContentLoaded(
+                    &DOMContentLoadedEventHandler::create(Box::new(move |sender, _| {
+                        if let Some(core) = sender {
+                            show_certificate_page(&core, &cert);
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            };
         }
     }
 
@@ -1635,7 +1905,15 @@ impl Tab {
     /// Ответ на окно страницы (`TabEvent::Dialog`). Ответ на окно, которое уже
     /// закрыто, ничего не делает.
     pub fn dialog_done(&self, token: u64, answer: &DialogAnswer) -> windows_core::Result<()> {
-        if dialogs::answer(&self.dialogs, token, answer)? == Some(true) && self.visible {
+        let answered = dialogs::answer(&self.dialogs, token, answer)?;
+        // «Покинуть сайт?» при закрытии вкладки: «Остаться» — вкладка остаётся.
+        if answered.is_some_and(|done| done.leave)
+            && answer.action != DialogAction::Accept
+            && self.closing.replace(false)
+        {
+            (self.sink)(TabEvent::CloseCancelled { id: self.id.0 });
+        }
+        if answered.is_some_and(|done| done.focus) && self.visible {
             // Окно забирало клавиатуру: без возврата текст после «ОК» уходил
             // бы не в страницу.
             let _ = unsafe {

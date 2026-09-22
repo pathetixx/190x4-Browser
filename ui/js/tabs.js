@@ -9,6 +9,7 @@
  */
 
 import { invoke } from "./bridge.js";
+import { hasLeaveDialog } from "./dialogs.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
 import { setPageHidden } from "./layout.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
@@ -123,6 +124,8 @@ export async function open(url, { background = false, index = null, popup = null
   if (internal) return openInternal(internal.name, internal.section, { background, index });
 
   const id = await invoke("tab_open", { url, popup });
+  // Следующую новую вкладку — прогретой: эту движок только что отдал.
+  if (url === "about:newtab") prewarmSoon(400);
   // События движка могли прийти раньше ответа команды — не затираем их.
   const known = state.tabs.has(id);
   const at = index != null ? index : defaultIndex();
@@ -135,6 +138,17 @@ export async function open(url, { background = false, index = null, popup = null
     if (url === "about:newtab") focusOmnibox();
   }
   return id;
+}
+
+/**
+ * Прогреть новую вкладку окна: Ctrl+T и «+» показывают уже нарисованную
+ * страницу, без пустого кадра и отрисовки с нуля. Не сразу — сначала пусть
+ * отрисуется то, что открыли сейчас.
+ */
+let prewarmTimer = 0;
+export function prewarmSoon(delay = 1200) {
+  clearTimeout(prewarmTimer);
+  prewarmTimer = setTimeout(() => invoke("tab_prewarm").catch(() => {}), delay);
 }
 
 /** Новая вкладка встаёт после закреплённых и после текущей — как в Chrome. */
@@ -253,24 +267,92 @@ export async function endSplit() {
   setSplit(null);
 }
 
+/* ── «Покинуть сайт?» перед закрытием ──────────────────────── */
+
+/** Вкладки, которые ждут ответа страницы: номер → { promise, finish }. */
+const leaving = new Map();
+
+/**
+ * Спросить страницу, можно ли её закрыть: если она просит «Покинуть сайт?»
+ * (несохранённый текст, письмо), браузер покажет это окно. `false` —
+ * ответили «Остаться». Страница, которая не отвечает, закрывается через
+ * полторы секунды, если окна «Покинуть сайт?» нет.
+ */
+function confirmClose(id) {
+  const known = leaving.get(id);
+  if (known) return known.promise;
+  let resolve;
+  const entry = { promise: new Promise((r) => (resolve = r)), timer: 0 };
+  entry.finish = (ok) => {
+    clearTimeout(entry.timer);
+    leaving.delete(id);
+    resolve(ok);
+  };
+  const check = () => {
+    if (!leaving.has(id)) return;
+    if (hasLeaveDialog(id)) entry.timer = setTimeout(check, 1000);
+    else entry.finish(true);
+  };
+  leaving.set(id, entry);
+  invoke("tab_close_request", { id }).then(
+    (asked) => {
+      if (!asked) entry.finish(true);
+      else entry.timer = setTimeout(check, 1500);
+    },
+    () => entry.finish(true)
+  );
+  return entry.promise;
+}
+
+/** Ответ страницы на закрытие: `close_confirmed` или `close_cancelled`. */
+export function closeAnswered(id, ok) {
+  leaving.get(id)?.finish(ok);
+}
+
+/** Вкладку сейчас закрывают и ждут ответа её страницы. */
+export function isLeaving(id) {
+  return leaving.has(id);
+}
+
 /**
  * Закрыть вкладку. `toOpener` — вкладка закрылась сама (окно входа через
  * Google закончило работу): фокус возвращается странице, которая её открыла.
+ * `force` — не спрашивать страницу (документа нет или она уже согласилась).
+ *
+ * Вкладка уходит из строки и с экрана сразу, а страница решает в фоне: почти
+ * никакая не держит, и ждать её ответа на каждое Ctrl+W незачем. Если она
+ * просит «Покинуть сайт?», вкладка возвращается на место с этим окном.
  */
-export async function close(id, { toOpener = false } = {}) {
+export async function close(id, { toOpener = false, force = false } = {}) {
   const tab = state.tabs.get(id);
-  if (!tab) return;
+  if (!tab || tab.closing) return;
 
   const ids = visibleIds();
   const index = ids.indexOf(id);
   const wasActive = state.activeId === id;
   // Закрыли активную половину разделённого экрана — вторая занимает окно
-  // целиком (так же решает Rust).
+  // целиком (так же решает Rust). Иначе фокус уходит на соседа справа, как в
+  // любом браузере.
   const partner = wasActive ? state.splitId : null;
+  const opener = toOpener && state.tabs.has(tab.opener) ? tab.opener : null;
+  const next = partner ?? opener ?? ids[index + 1] ?? ids[index - 1] ?? null;
+  const position = tabIndex(id);
+
+  if (!force && !tab.internal && !tab.sleeping) {
+    upsertTab(id, { closing: true });
+    // Половина разделённого экрана уходит с экрана вместе с разделением.
+    if (state.splitId !== null && (state.splitId === id || wasActive)) await endSplit();
+    if (wasActive && next != null) await activate(next);
+    if (!(await confirmClose(id))) {
+      if (state.tabs.has(id)) upsertTab(id, { closing: false });
+      return;
+    }
+    if (!state.tabs.has(id)) return;
+  }
 
   const url = tab.internal ? internalUrl(tab.internal, tab.section) : tab.url;
   if (url && !tab.url?.startsWith("about:")) {
-    closedTabs.push({ url, index: tabIndex(id), pinned: tab.pinned });
+    closedTabs.push({ url, index: position, pinned: tab.pinned });
     if (closedTabs.length > 25) closedTabs.shift();
   }
 
@@ -283,17 +365,22 @@ export async function close(id, { toOpener = false } = {}) {
     await open("about:newtab");
     return;
   }
-  if (wasActive) {
-    // Фокус уходит на соседа справа, как в любом браузере.
-    const opener = toOpener && state.tabs.has(tab.opener) ? tab.opener : null;
-    const next = partner ?? opener ?? ids[index + 1] ?? ids[index - 1] ?? [...state.tabs.keys()][0];
-    if (next != null) await activate(next);
+  if (state.activeId === null) {
+    const target = next != null && state.tabs.has(next) ? next : visibleIds()[0] ?? [...state.tabs.keys()][0];
+    if (target != null) await activate(target);
   }
 }
 
-/** Вкладки, которые видны в строке: без спрятанных в свёрнутых группах. */
+/** Вернуть вкладку, которую закрывают, если её страница спросила «Покинуть сайт?». */
+export function returnLeaving(id) {
+  if (!state.tabs.get(id)?.closing) return;
+  upsertTab(id, { closing: false });
+  activate(id);
+}
+
+/** Вкладки, которые видны в строке: без спрятанных в свёрнутых группах и закрываемых. */
 export function visibleIds() {
-  return [...state.tabs.values()].filter((tab) => !tab.group?.collapsed).map((tab) => tab.id);
+  return [...state.tabs.values()].filter((tab) => !tab.group?.collapsed && !tab.closing).map((tab) => tab.id);
 }
 
 /** Закрепить или открепить: закреплённые всегда слева и без крестика. */
@@ -340,7 +427,8 @@ export function moveActive(delta) {
  */
 async function closeMany(ids, keep = null) {
   if (keep != null && ids.includes(state.activeId) && state.tabs.has(keep)) await activate(keep);
-  for (const id of ids) await close(id);
+  // Разом: каждая страница решает сама, ждать их по очереди незачем.
+  await Promise.all(ids.map((id) => close(id)));
 }
 
 /* ── Контекстное меню вкладки ──────────────────────────────── */
@@ -641,7 +729,7 @@ export function renderTabs() {
   // Ширина полосы — от числа видимых вкладок, а не от их содержимого: иначе
   // узкие вкладки без подписей сжимали полосу под себя и не расширялись, когда
   // место появлялось (окно развернули, вкладки закрыли).
-  const visible = tabs.filter((tab) => !tab.group?.collapsed).length;
+  const visible = tabs.filter((tab) => !tab.group?.collapsed && !tab.closing).length;
   strip.parentElement.style.setProperty("--tab-count", String(visible + pills.size));
   requestAnimationFrame(updateNarrow);
 }
@@ -657,7 +745,8 @@ function tabNode(tab) {
   }
   updateTab(node, tab);
   // Свёрнутая группа прячет свои вкладки: на экране остаётся только ярлык.
-  node.hidden = Boolean(tab.group?.collapsed);
+  // Закрываемая вкладка ждёт ответа страницы уже не в строке.
+  node.hidden = Boolean(tab.group?.collapsed || tab.closing);
   return node;
 }
 

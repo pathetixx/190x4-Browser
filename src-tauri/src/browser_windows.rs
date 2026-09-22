@@ -259,6 +259,7 @@ pub fn create(
         let hwnd_bits = window.hwnd()?.0 as isize;
         let guard = app.state::<App>().guard.clone();
         let policy = crate::ipc::download_policy(&app.state::<App>().store);
+        let page_color = crate::ipc::page_color(&app.state::<App>().store);
         let pages_dir = app.path().resource_dir().map(|dir| dir.join("pages"));
         let private = kind.is_private();
 
@@ -288,6 +289,7 @@ pub fn create(
                         host.set_pages_dir(dir);
                     }
                     host.set_download_policy(policy);
+                    host.set_page_color(page_color);
                     host.set_chrome_controller(controller.clone());
                     state::install_host(&install_label, host);
                 }

@@ -1,4 +1,4 @@
-param([int]$Vk = 27, [int]$Mod = 0, [int]$X = -1, [int]$Y = -1)
+param([int]$Vk = 27, [int]$Mod = 0, [int]$X = -1, [int]$Y = -1, [int]$Right = 0)
 # Real keyboard and mouse input for the probe window (ASCII only).
 Add-Type @"
 using System;
@@ -34,8 +34,13 @@ Start-Sleep -Milliseconds 300
 if ($X -ge 0) {
   [void][K]::SetCursorPos($X, $Y); Start-Sleep -Milliseconds 120
   if ($Mod -gt 0) { [K]::keybd_event([byte]$Mod, [byte][K]::MapVirtualKey($Mod, 0), 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60 }
-  [K]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60
-  [K]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 120
+  if ($Right -gt 0) {
+    [K]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60
+    [K]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 120
+  } else {
+    [K]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60
+    [K]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 120
+  }
   if ($Mod -gt 0) { [K]::keybd_event([byte]$Mod, [byte][K]::MapVirtualKey($Mod, 0), 2, [IntPtr]::Zero) }
   "clicked $X,$Y mod $Mod"
 }
