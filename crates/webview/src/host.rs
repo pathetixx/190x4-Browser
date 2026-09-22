@@ -184,6 +184,10 @@ struct HostState {
     guard: Arc<Guard>,
     sink: EventSink,
     tabs: HashMap<TabId, Tab>,
+    /// Закрытые вкладки, с которых ещё идёт загрузка: в строке их нет, на
+    /// экране тоже, но вебвью живёт — иначе движок перестанет сообщать о ходе
+    /// загрузки. Закрываются, когда загрузка кончится.
+    parked: HashMap<TabId, Tab>,
     order: Vec<TabId>,
     active: Option<TabId>,
     /// Вторая вкладка разделённого экрана. Обычно она справа, а активная
@@ -287,13 +291,14 @@ impl TabHost {
         private: bool,
     ) -> anyhow::Result<Self> {
         let container = container::create(hwnd)?;
-        Ok(Self {
+        let host = Self {
             inner: Rc::new(RefCell::new(HostState {
                 container,
                 env,
                 guard,
                 sink,
                 tabs: HashMap::new(),
+                parked: HashMap::new(),
                 order: Vec::new(),
                 active: None,
                 split: None,
@@ -306,7 +311,24 @@ impl TabHost {
                 chrome: None,
                 private,
             })),
-        })
+        };
+        // Загрузка закрытой вкладки кончилась — теперь закрывается и она.
+        let weak = Rc::downgrade(&host.inner);
+        host.inner
+            .borrow()
+            .downloads
+            .set_on_idle(Rc::new(move |tab| {
+                let Some(inner) = weak.upgrade() else { return };
+                let parked = match inner.try_borrow_mut() {
+                    Ok(mut state) => state.parked.remove(&TabId(tab)),
+                    Err(_) => None,
+                };
+                if let Some(parked) = parked {
+                    tracing::debug!(tab, "загрузка закрытой вкладки кончилась");
+                    let _ = parked.close();
+                }
+            }));
+        Ok(host)
     }
 
     /// Приватное окно: вкладки в профиле InPrivate, ничего не пишется на диск.
@@ -455,8 +477,14 @@ impl TabHost {
             state.order.remove(pos);
         }
 
-        if let Some(tab) = state.tabs.remove(&id) {
-            tab.close()?;
+        if let Some(mut tab) = state.tabs.remove(&id) {
+            if state.downloads.busy(id.0) {
+                tracing::debug!(?id, "вкладка закрыта, её загрузка ещё идёт");
+                tab.set_visible(false)?;
+                state.parked.insert(id, tab);
+            } else {
+                tab.close()?;
+            }
         }
         // Окна, которые открывала эта страница, больше никто не ждёт.
         let orphans: Vec<u64> = state

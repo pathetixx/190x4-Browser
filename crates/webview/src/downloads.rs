@@ -78,9 +78,20 @@ pub struct Downloads {
     ops: RefCell<HashMap<u64, ICoreWebView2DownloadOperation>>,
     pending: RefCell<HashMap<u64, Pending>>,
     policy: RefCell<DownloadPolicy>,
+    /// Вкладка каждой идущей загрузки. События загрузки приходят через вебвью
+    /// вкладки: закрой её — файл докачается, но о конце никто не узнает, и в
+    /// списке загрузка навсегда останется идущей. Поэтому закрытая вкладка с
+    /// загрузкой живёт невидимой, пока загрузка не кончится (`TabHost::close`).
+    owners: RefCell<HashMap<u64, u32>>,
+    /// Вкладке больше нечего качать: хост закрывает её, если она уже закрыта
+    /// в интерфейсе.
+    on_idle: RefCell<Option<OnIdle>>,
 }
 
 pub type SharedDownloads = Rc<Downloads>;
+
+/// Что делать с вкладкой, которой больше нечего качать.
+pub type OnIdle = Rc<dyn Fn(u32)>;
 
 impl Downloads {
     pub fn set_policy(&self, policy: DownloadPolicy) {
@@ -89,6 +100,32 @@ impl Downloads {
 
     fn next_key(&self) -> u64 {
         NEXT_KEY.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Что делать, когда у вкладки кончились загрузки.
+    pub fn set_on_idle(&self, f: OnIdle) {
+        *self.on_idle.borrow_mut() = Some(f);
+    }
+
+    /// Идёт ли с этой вкладки загрузка или ждёт ответа «куда сохранить».
+    pub fn busy(&self, tab: u32) -> bool {
+        self.owners.borrow().values().any(|owner| *owner == tab)
+            || self
+                .pending
+                .borrow()
+                .values()
+                .any(|pending| pending.tab == tab)
+    }
+
+    /// Загрузка вкладки кончилась: если других нет, вкладка свободна.
+    fn released(&self, tab: u32) {
+        if self.busy(tab) {
+            return;
+        }
+        let on_idle = self.on_idle.borrow().clone();
+        if let Some(on_idle) = on_idle {
+            on_idle(tab);
+        }
     }
 
     /// Знает ли это окно такую загрузку: команда приходит без номера окна.
@@ -161,6 +198,7 @@ pub fn answer(registry: &SharedDownloads, key: u64, path: Option<PathBuf>) -> an
             download: true,
         });
     }
+    registry.released(pending.tab);
     result
 }
 
@@ -286,6 +324,7 @@ fn track(
     sink: EventSink,
 ) -> windows_core::Result<()> {
     registry.ops.borrow_mut().insert(key, operation.clone());
+    registry.owners.borrow_mut().insert(key, tab);
     sink(TabEvent::Download {
         id: tab,
         key,
@@ -365,9 +404,15 @@ fn track(
                     }
                     _ => false,
                 };
-                if finished {
-                    if let Some(registry) = registry.upgrade() {
+                let registry = registry.upgrade();
+                if let Some(registry) = &registry {
+                    if finished {
                         registry.ops.borrow_mut().remove(&key);
+                    }
+                    // Загрузка больше не идёт (закончилась, отменена, оборвалась):
+                    // вкладке её держать незачем.
+                    if !matches!(phase, "progress" | "paused") {
+                        registry.owners.borrow_mut().remove(&key);
                     }
                 }
 
@@ -381,6 +426,9 @@ fn track(
                     total: (total > 0).then_some(total),
                     error,
                 });
+                if let Some(registry) = registry {
+                    registry.released(tab);
+                }
                 Ok(())
             })),
             &mut token,
