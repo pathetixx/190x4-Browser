@@ -406,7 +406,9 @@ fn relaunch_after_engine_crash(app: &tauri::AppHandle) {
 #[cfg(windows)]
 fn wait_for_previous() {
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
 
     let pid = std::env::var(WAIT_PID).ok();
     std::env::remove_var(WAIT_PID);

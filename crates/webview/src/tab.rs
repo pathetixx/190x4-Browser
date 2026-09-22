@@ -1912,12 +1912,14 @@ impl Tab {
             .cast()
             .map_err(|_| anyhow::anyhow!("движок не умеет сохранять страницу"))?;
         unsafe {
-            core25.ShowSaveAsUI(&ShowSaveAsUICompletedHandler::create(Box::new(|code, _| {
-                if let Err(err) = code {
-                    tracing::debug!(%err, "страница не сохранена");
-                }
-                Ok(())
-            })))?;
+            core25.ShowSaveAsUI(&ShowSaveAsUICompletedHandler::create(Box::new(
+                |code, _| {
+                    if let Err(err) = code {
+                        tracing::debug!(%err, "страница не сохранена");
+                    }
+                    Ok(())
+                },
+            )))?;
         }
         Ok(())
     }
