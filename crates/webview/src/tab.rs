@@ -23,7 +23,7 @@ use webview2_com::{
     NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
     WindowCloseRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
-use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows_core::{Interface, BOOL, HSTRING, PWSTR};
 
 use crate::dialogs::{self, DialogAction, DialogAnswer, DialogRequest, Dialogs};
@@ -49,6 +49,16 @@ fn engine_script(source: &str) -> String {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Проверять ли адреса вкладок в SmartScreen (настройка `smartscreen`). Общая на
+/// все окна; окна интерфейса SmartScreen не проверяет никогда.
+static REPUTATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Включить или выключить SmartScreen для вкладок: новые берут значение при
+/// создании, открытые — через [`crate::TabHost::apply_reputation`].
+pub fn set_reputation_checking(on: bool) {
+    REPUTATION.store(on, Ordering::Relaxed);
 }
 
 /// Ступени масштаба — как в Chrome: пользователь привык к этим числам.
@@ -324,6 +334,9 @@ impl PendingPopup {
 /// Ждущие окна страниц одного окна браузера.
 pub(crate) type PopupSlots = Rc<RefCell<HashMap<u64, PendingPopup>>>;
 
+/// Ждущие окна того окна браузера, где вкладка живёт сейчас (см. `Tab::rehome`).
+type PopupRoute = Rc<RefCell<PopupSlots>>;
+
 /// Скрипт паролей встроен: окну, которое открыла страница, движок отдаёт
 /// вкладку только после этого, иначе первый документ окна (вход через Google,
 /// VK ID) остался бы без менеджера паролей.
@@ -366,6 +379,15 @@ pub struct Tab {
     /// молчит, пока её не отдали пользователю (`announce`).
     announced: Rc<Cell<bool>>,
     sink: EventSink,
+    /// Куда уходят события, окна страницы и загрузки: хост окна, в котором
+    /// вкладка живёт сейчас. Вкладку можно унести в другое окно живой
+    /// ([`Tab::rehome`]) — обработчики движка читают хост отсюда, а не
+    /// запоминают прежний.
+    route: Rc<RefCell<EventSink>>,
+    popups: PopupRoute,
+    downloads: Rc<RefCell<SharedDownloads>>,
+    /// Вкладку усыпили: движок держит для неё меньше памяти до показа.
+    low_memory: Cell<bool>,
     /// Цвет, которым движок заливает вкладку до первой отрисовки страницы.
     page_color: PageColor,
     cert: Rc<CertState>,
@@ -505,14 +527,33 @@ fn wire_accelerators(
 /// `AcceleratorKeyPressed` клавиша уже не доходит, и строка поиска браузера
 /// не открывается. То же касается Ctrl+P, F12 и прочих его умолчаний —
 /// браузер здесь мы, а не движок.
-pub(crate) fn configure(core: &ICoreWebView2) -> windows_core::Result<()> {
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+///
+/// SmartScreen (`site`) проверяет только сайты во вкладках, и то по настройке:
+/// адреса окон интерфейса проверять незачем.
+pub(crate) fn configure(core: &ICoreWebView2, site: bool) -> windows_core::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Settings3, ICoreWebView2Settings8,
+    };
 
     let settings = unsafe { core.Settings()? };
     if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
         unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false)? };
     }
+    if let Ok(settings8) = settings.cast::<ICoreWebView2Settings8>() {
+        let check = site && REPUTATION.load(Ordering::Relaxed);
+        unsafe { settings8.SetIsReputationCheckingRequired(check)? };
+    }
     Ok(())
+}
+
+/// Окно интерфейса (всплывающее окно браузера): без сочетаний движка и без
+/// SmartScreen — так же, как окно браузера.
+pub fn configure_interface(controller: &ICoreWebView2Controller) {
+    if let Ok(core) = unsafe { controller.CoreWebView2() } {
+        if let Err(err) = configure(&core, false) {
+            tracing::warn!(%err, "настройки окна интерфейса не применены");
+        }
+    }
 }
 
 /// Звук вкладки.
@@ -1133,14 +1174,21 @@ impl Tab {
         // Прогретая вкладка молчит: интерфейс о ней не знает, пока её не
         // отдали. Сообщения страницы (новая вкладка просит плитки и погоду)
         // нужны Rust и тогда.
+        let route = Rc::new(RefCell::new(sink));
         let sink: EventSink = {
             let gate = announced.clone();
+            let route = route.clone();
             Rc::new(move |event: TabEvent| {
                 if gate.get() || matches!(event, TabEvent::Message { .. }) {
-                    sink(event);
+                    // Хост берётся на каждое событие: вкладку могли унести в
+                    // другое окно. Заём не держим — обработчик мог бы её унести.
+                    let target = route.borrow().clone();
+                    target(event);
                 }
             })
         };
+        let popups = Rc::new(RefCell::new(popups));
+        let downloads = Rc::new(RefCell::new(downloads));
 
         // До первой отрисовки — цвет темы, а не белый кадр.
         paint_background(&controller, page_color.get());
@@ -1149,7 +1197,7 @@ impl Tab {
             controller.SetIsVisible(visible)?;
         }
 
-        configure(&core)?;
+        configure(&core, true)?;
         inject_scripts(&core, scripts.clone())?;
         filter::install(
             &core,
@@ -1161,7 +1209,7 @@ impl Tab {
         )?;
         filter::install_cosmetics(&core, guard)?;
         wire_accelerators(id, &controller, &core, fullscreen.clone(), sink.clone())?;
-        downloads::wire(id, &core, downloads, sink.clone())?;
+        downloads::wire(id, &core, downloads.clone(), sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
         wire_audio(id, &core, sink.clone());
         let menu = MenuSlot::default();
@@ -1186,6 +1234,10 @@ impl Tab {
             closing: Rc::new(Cell::new(false)),
             announced,
             sink: sink.clone(),
+            route,
+            popups: popups.clone(),
+            downloads,
+            low_memory: Cell::new(false),
             page_color,
             cert: Rc::new(CertState::default()),
         };
@@ -1195,7 +1247,7 @@ impl Tab {
         Ok(tab)
     }
 
-    fn wire_events(&self, sink: EventSink, popups: PopupSlots) -> anyhow::Result<()> {
+    fn wire_events(&self, sink: EventSink, popups: PopupRoute) -> anyhow::Result<()> {
         let id = self.id.0;
         let core = &self.core;
         let mut token = 0i64;
@@ -1477,7 +1529,8 @@ impl Tab {
                         && (GetAsyncKeyState(i32::from(VK_CONTROL.0)) as u16 & 0x8000) != 0;
                     let deferral = args.GetDeferral()?;
                     let token = NEXT_POPUP.fetch_add(1, Ordering::Relaxed);
-                    popups.borrow_mut().insert(
+                    let slots = popups.borrow().clone();
+                    slots.borrow_mut().insert(
                         token,
                         PendingPopup {
                             opener: id,
@@ -1617,6 +1670,174 @@ impl Tab {
         }
     }
 
+    /// Вкладку принесли из другого окна: интерфейс нового окна узнаёт всё,
+    /// что видно в строке вкладок и на панели, — адрес, заголовок, значок,
+    /// «назад»/«вперёд», масштаб и звук.
+    pub(crate) fn announce_moved(&self) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+
+        let id = self.id.0;
+        let url = self.source_url();
+        (self.sink)(TabEvent::Url {
+            id,
+            url: url.clone(),
+        });
+        let title = self.title();
+        if !title.is_empty() {
+            (self.sink)(TabEvent::Title { id, title });
+        }
+        if let Some(icon) = self.favicon_url().filter(|icon| !icon.is_empty()) {
+            (self.sink)(TabEvent::Favicon {
+                id,
+                page: url,
+                url: icon,
+            });
+        }
+        let mut back = BOOL::default();
+        let mut forward = BOOL::default();
+        unsafe {
+            let _ = self.core.CanGoBack(&mut back);
+            let _ = self.core.CanGoForward(&mut forward);
+        }
+        (self.sink)(TabEvent::History {
+            id,
+            can_back: back.as_bool(),
+            can_forward: forward.as_bool(),
+        });
+        (self.sink)(TabEvent::Zoom {
+            id,
+            factor: self.zoom_factor(),
+        });
+        if let Ok(core8) = self.core.cast::<ICoreWebView2_8>() {
+            let mut audible = BOOL::default();
+            let mut muted = BOOL::default();
+            unsafe {
+                let _ = core8.IsDocumentPlayingAudio(&mut audible);
+                let _ = core8.IsMuted(&mut muted);
+            }
+            (self.sink)(TabEvent::Audio {
+                id,
+                audible: audible.as_bool(),
+                muted: muted.as_bool(),
+            });
+        }
+    }
+
+    /// Вкладку унесли в другое окно: её окно переезжает в контейнер того окна,
+    /// а события, окна страницы и загрузки — к его хосту. Страница при этом
+    /// не перезагружается: история, прокрутка и введённый текст остаются.
+    pub(crate) fn rehome(
+        &self,
+        sink: EventSink,
+        popups: PopupSlots,
+        downloads: SharedDownloads,
+        parent: HWND,
+        bounds: RECT,
+    ) -> windows_core::Result<()> {
+        *self.route.borrow_mut() = sink;
+        *self.popups.borrow_mut() = popups;
+        *self.downloads.borrow_mut() = downloads;
+        unsafe {
+            self.controller.SetParentWindow(parent)?;
+            self.controller.SetBounds(bounds)?;
+        }
+        Ok(())
+    }
+
+    /// SmartScreen для этой вкладки — по настройке (`set_reputation_checking`).
+    pub(crate) fn apply_reputation(&self) {
+        if let Err(err) = configure(&self.core, true) {
+            tracing::debug!(%err, "SmartScreen вкладки не переключён");
+        }
+    }
+
+    /// Усыпить вкладку в фоне, как спящие вкладки Edge: страница замирает
+    /// (таймеры и скрипты стоят), движок отдаёт часть памяти, а история,
+    /// прокрутка и введённый текст остаются. Показ будит её сам. Страницу,
+    /// которая играет звук, движок не усыпляет.
+    pub fn suspend(&self) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
+        use webview2_com::TrySuspendCompletedHandler;
+
+        if self.visible {
+            return;
+        }
+        let Ok(core3) = self.core.cast::<ICoreWebView2_3>() else {
+            return;
+        };
+        self.set_memory_target(false);
+        let id = self.id.0;
+        let handler = TrySuspendCompletedHandler::create(Box::new(move |code, _| {
+            if let Err(err) = code {
+                tracing::debug!(tab = id, %err, "вкладка не усыплена");
+            }
+            Ok(())
+        }));
+        if let Err(err) = unsafe { core3.TrySuspend(&handler) } {
+            tracing::debug!(tab = id, %err, "вкладка не усыплена");
+        }
+    }
+
+    /// Сколько памяти держать движку для вкладки: у спящей — поменьше.
+    fn set_memory_target(&self, normal: bool) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        };
+
+        let Ok(core19) = self.core.cast::<ICoreWebView2_19>() else {
+            return;
+        };
+        let level = if normal {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        };
+        let _ = unsafe { core19.SetMemoryUsageTargetLevel(level) };
+        self.low_memory.set(!normal);
+    }
+
+    /// История переходов вкладки — для меню «Назад» и «Вперёд» по правому
+    /// щелчку. Движок её не отдаёт, протокол отладки — отдаёт
+    /// (`Page.getNavigationHistory`); `done` получает ответ строкой JSON.
+    pub fn navigation_history(
+        &self,
+        done: impl FnOnce(String) + 'static,
+    ) -> windows_core::Result<()> {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler as DevToolsDone;
+
+        let handler = DevToolsDone::create(Box::new(move |code, json| {
+            done(if code.is_ok() { json } else { String::new() });
+            Ok(())
+        }));
+        unsafe {
+            self.core.CallDevToolsProtocolMethod(
+                &HSTRING::from("Page.getNavigationHistory"),
+                &HSTRING::from("{}"),
+                &handler,
+            )
+        }
+    }
+
+    /// Перейти к записи истории по её номеру из [`Tab::navigation_history`].
+    pub fn go_to_history_entry(&self, entry: i64) -> windows_core::Result<()> {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler as DevToolsDone;
+
+        let handler = DevToolsDone::create(Box::new(|code, _| {
+            if let Err(err) = code {
+                tracing::debug!(%err, "переход по истории не удался");
+            }
+            Ok(())
+        }));
+        unsafe {
+            self.core.CallDevToolsProtocolMethod(
+                &HSTRING::from("Page.navigateToHistoryEntry"),
+                &HSTRING::from(format!(r#"{{"entryId":{entry}}}"#)),
+                &handler,
+            )
+        }
+    }
+
     /// Тема сменилась: страницы браузера заливаются новым цветом.
     pub(crate) fn apply_page_color(&self) {
         if is_pages_url(&self.source_url()) {
@@ -1747,6 +1968,10 @@ impl Tab {
         if self.visible != visible {
             unsafe { self.controller.SetIsVisible(visible)? };
             self.visible = visible;
+        }
+        // Спящую вкладку показ будит сам, а память ей возвращаем мы.
+        if visible && self.low_memory.get() {
+            self.set_memory_target(true);
         }
         Ok(())
     }

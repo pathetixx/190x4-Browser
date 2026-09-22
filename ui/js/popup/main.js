@@ -104,8 +104,9 @@ async function fitNow() {
       applied = await invoke("popup_resize", { height });
     } else {
       visible = true;
-      // Подсказки адресной строки не забирают фокус: курсор остаётся в строке.
-      applied = await invoke("popup_show", { height, focus: current?.kind !== "suggest" });
+      // Подсказки адресной строки и подсказка полноэкранного режима не
+      // забирают фокус: курсор остаётся в строке, Escape — у видео.
+      applied = await invoke("popup_show", { height, focus: !["suggest", "hint"].includes(current?.kind) });
       root.querySelector("[autofocus]")?.focus();
     }
     if (Number.isFinite(applied)) root.style.maxHeight = `${applied}px`;
@@ -210,6 +211,28 @@ const VIEWS = {
       list.append(row);
     }
     root.append(list);
+  },
+
+  /** Подтверждение действия браузера: «Закрыть окно?», пока идут загрузки. */
+  confirm({ title = "", text = "", confirm = "OK", cancel = "Отмена" }) {
+    const bubble = el("div", "bubble");
+    const head = el("div", "bubble__head");
+    head.append(el("h2", "bubble__title", title), iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" }));
+    bubble.append(head, el("p", "bubble__text", text));
+    const actions = el("div", "bubble__actions");
+    // По умолчанию — безопасный ответ: Enter не оборвёт загрузки.
+    const no = textButton(cancel, () => act("confirm", "no"), "btn");
+    no.setAttribute("autofocus", "");
+    actions.append(no, textButton(confirm, () => act("confirm", "yes"), "btn btn--danger"));
+    bubble.append(actions);
+    root.append(bubble);
+  },
+
+  /** Подсказка поверх страницы: как выйти из полноэкранного режима. */
+  hint({ key = "Esc" }) {
+    const node = el("div", "hint-bubble", "Чтобы выйти из полноэкранного режима, нажмите ");
+    node.append(el("kbd", "hint-bubble__key", key));
+    root.append(node);
   },
 
   /** Пузырь загрузок под кнопкой на панели инструментов. */

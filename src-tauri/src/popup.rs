@@ -89,11 +89,8 @@ pub fn ensure(app: &AppHandle, owner: &str) -> tauri::Result<WebviewWindow> {
         .get_webview_window(owner)
         .ok_or(tauri::Error::WindowNotFound)?;
 
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("popup.html".into()));
-    if let Some(args) = crate::debug_browser_args() {
-        builder = builder.additional_browser_args(&args);
-    }
-    let window = builder
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("popup.html".into()))
+        .additional_browser_args(crate::browser_args())
         .title("190x4")
         .decorations(false)
         .resizable(false)
@@ -106,6 +103,12 @@ pub fn ensure(app: &AppHandle, owner: &str) -> tauri::Result<WebviewWindow> {
         .background_color(Color(16, 16, 20, 255))
         .parent(&main)?
         .build()?;
+    // Сочетания движка (F5, Ctrl+F) и SmartScreen попапу не нужны — как окну
+    // браузера.
+    #[cfg(windows)]
+    window.with_webview(|platform| {
+        browser190x4_webview::tab::configure_interface(&platform.controller());
+    })?;
 
     let handle = app.clone();
     let closing = window.clone();

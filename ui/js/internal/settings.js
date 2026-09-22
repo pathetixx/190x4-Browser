@@ -36,6 +36,7 @@ const SECTIONS = [
   { id: "bookmarks", title: "Закладки", icon: "favorites" },
   { id: "privacy", title: "Конфиденциальность и безопасность", nav: "Конфиденциальность", icon: "lock-shield" },
   { id: "downloads", title: "Загрузки", icon: "download" },
+  { id: "performance", title: "Производительность", icon: "gauge" },
   { id: "languages", title: "Языки", icon: "language" },
   { id: "extensions", title: "Расширения", icon: "puzzle" },
   { id: "about", title: "О браузере 190x4", icon: "info" },
@@ -839,13 +840,51 @@ const BUILDERS = {
         ];
     const popupsGroup = group(popupRows, { title: "Всплывающие окна" });
 
+    const safetyGroup = group(
+      [
+        switchSetting(
+          "smartscreen",
+          "Защита от опасных сайтов и загрузок",
+          "Microsoft Defender SmartScreen предупреждает о фишинге и вредоносных файлах. Для проверки адреса страниц отправляются в Microsoft"
+        ),
+        switchSetting(
+          "media_autoplay",
+          "Разрешать сайтам включать звук сразу",
+          "Иначе видео со звуком запускается только после щелчка или клавиши на странице. Вступит в силу после перезапуска браузера"
+        ),
+      ],
+      { title: "Безопасность" }
+    );
+
     return [
       group([clear], { title: "Данные браузера" }),
+      safetyGroup,
       permissionsGroup,
       popupsGroup,
       appsGroup,
       adblockGroup,
       exemptGroup,
+    ];
+  },
+
+  performance() {
+    return [
+      group(
+        [
+          setting(
+            "Усыплять неактивные вкладки",
+            "Вкладка, которую давно не открывали, замирает и отдаёт память, но сохраняет историю, прокрутку и введённый текст. Закреплённые вкладки и те, где играет звук, не засыпают",
+            select("tabs_sleep", [
+              ["15", "Через 15 минут"],
+              ["30", "Через 30 минут"],
+              ["60", "Через час"],
+              ["180", "Через 3 часа"],
+              ["0", "Никогда"],
+            ])
+          ),
+        ],
+        { title: "Память" }
+      ),
     ];
   },
 

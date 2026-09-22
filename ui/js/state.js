@@ -76,6 +76,8 @@ function blankTab(id) {
     closing: false,
     /// Процесс страницы упал: при показе вкладка загружается заново.
     crashed: false,
+    /// Вкладку давно не открывали, и она спит: страница замерла до показа.
+    frozen: false,
     /// Встроенная страница: "settings" | "downloads" | "history" | null.
     internal: null,
     section: "",
@@ -95,6 +97,11 @@ export function markClosed(id) {
 
 export function isClosed(id) {
   return closedIds.has(id);
+}
+
+/** Вкладка вернулась в окно (её перенесли обратно) — её события снова нужны. */
+export function reviveTab(id) {
+  closedIds.delete(id);
 }
 
 export function upsertTab(id, patch) {

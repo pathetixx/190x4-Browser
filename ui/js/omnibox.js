@@ -40,6 +40,12 @@ let suggestToken = 0;
 /// Подсказки в приложении живут во всплывающем окне поверх страницы: HTML-слой
 /// ушёл бы под нативную поверхность. В mock-режиме — прежний выпадающий список.
 let suggestShown = false;
+/// Адрес, дописанный прямо в строке: набранное `typed`, всё поле `text`
+/// (дописанный хвост выделен) и `url`, куда он ведёт.
+let inline = null;
+/// Последний ввод — печать вперёд. Дописывать можно только тогда: стирание
+/// снимает дописанное, а вставку Chrome тоже не дописывает.
+let completable = false;
 
 export function initOmnibox() {
   display.addEventListener("click", enterEdit);
@@ -55,7 +61,11 @@ export function initOmnibox() {
       if (document.activeElement !== field) exitEdit();
     }, 120);
   });
-  field.addEventListener("input", () => renderSuggest(field.value));
+  field.addEventListener("input", (event) => {
+    completable = event.inputType === "insertText" && !event.isComposing;
+    inline = null;
+    renderSuggest(field.value);
+  });
   field.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -64,7 +74,9 @@ export function initOmnibox() {
     }
     if (event.key === "Enter") {
       const row = picked ? rows[selected] : null;
-      const value = row ? row.value : field.value;
+      // Дописанный адрес приняли (Enter или сначала End) — туда, куда он ведёт.
+      const accepted = !row && inline && field.value === inline.text ? inline.url : null;
+      const value = row ? row.value : (accepted ?? field.value);
       if (value.trim()) navigate(value, { newTab: event.altKey });
       field.blur();
       return;
@@ -144,6 +156,8 @@ function enterEdit({ suggest: withSuggestions = true } = {}) {
   field.hidden = false;
   display.hidden = true;
   omni.dataset.focused = "true";
+  completable = false;
+  inline = null;
   field.focus();
   field.select();
   // Клавиша могла прийти со страницы: без этого текст уйдёт в неё.
@@ -156,6 +170,8 @@ function enterEdit({ suggest: withSuggestions = true } = {}) {
 }
 
 function exitEdit() {
+  completable = false;
+  inline = null;
   field.hidden = true;
   display.hidden = false;
   omni.dataset.focused = "false";
@@ -368,6 +384,11 @@ async function renderSuggest(query) {
     : await invoke("history_recent", { limit: 6 }).catch(() => []);
   if (token !== suggestToken) return;
 
+  inline = completable ? complete(value, history) : null;
+  if (inline) {
+    field.value = inline.text;
+    field.setSelectionRange(inline.typed.length, inline.text.length);
+  }
   rows = buildRows(value, history, []);
   // Пустое поле: Enter ничего не открывает, пока строку не выбрали стрелкой.
   selected = value ? 0 : -1;
@@ -383,6 +404,44 @@ async function renderSuggest(query) {
   rows = buildRows(value, history, words);
   selected = Math.min(selected, rows.length - 1);
   paint();
+}
+
+/**
+ * Автодополнение адреса прямо в строке, как в Chrome: набрали «hab» — в поле
+ * «habr.com», дописанное выделено. Enter открывает сайт, следующая буква
+ * продолжает ввод, Backspace стирает дописанное. Кандидаты — история (она
+ * уже отсортирована по частоте и свежести) и закладки. Дописывается сайт, а
+ * если в набранном есть «/» — адрес целиком.
+ */
+function complete(typed, history) {
+  if (!typed || /\s/.test(typed) || field.hidden || field.value !== typed) return null;
+  if (field.selectionStart !== typed.length || field.selectionEnd !== typed.length) return null;
+  const scheme = /^https?:\/\//i.exec(typed)?.[0] ?? "";
+  let rest = typed.slice(scheme.length).toLowerCase();
+  if (rest.startsWith("www.")) rest = rest.slice(4);
+  if (!rest) return null;
+  const marks = (state.bookmarks ?? []).filter((node) => node.kind === "url").map((node) => node.url);
+  for (const url of [...history.map((entry) => entry.url), ...marks]) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/.test(parsed.protocol)) continue;
+    // Сравниваем с тем, как адрес выглядит в строке: кириллицей, а не xn--/%D0.
+    const host = (displayHost(parsed.hostname) + (parsed.port ? `:${parsed.port}` : "")).toLowerCase().replace(/^www\./, "");
+    const path = displayPath(parsed.pathname + parsed.search);
+    const whole = rest.includes("/");
+    const target = whole ? host + (path === "/" ? "" : path) : host;
+    if (target.length <= rest.length || !target.toLowerCase().startsWith(rest)) continue;
+    return {
+      typed,
+      text: typed + target.slice(rest.length),
+      url: whole ? url : `${parsed.protocol}//${parsed.host}/`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -404,10 +463,14 @@ function buildRows(value, history, words) {
   const looksLikeUrl =
     /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(value) ||
     (!/\s/.test(value) && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value)));
+  // Адрес дописан в строке — первая строка ведёт на него, как и Enter.
+  const filled = inline?.typed === value ? inline : null;
   out.push(
-    looksLikeUrl
-      ? { text: displayUrl(value), hint: "перейти", value, iconId: "globe-16" }
-      : { text: value, hint: "поиск", value, iconId: "search-16" }
+    filled
+      ? { text: filled.text, hint: "перейти", value: filled.url, iconId: "globe-16" }
+      : looksLikeUrl
+        ? { text: displayUrl(value), hint: "перейти", value, iconId: "globe-16" }
+        : { text: value, hint: "поиск", value, iconId: "search-16" }
   );
 
   const needle = value.toLowerCase();
@@ -419,7 +482,7 @@ function buildRows(value, history, words) {
     out.push({ text: node.title || node.url, hint: "закладка", value: node.url, iconId: "star-16", image: node.icon });
   }
   for (const entry of history) {
-    if (seen.has(entry.url) || entry.url === value) continue;
+    if (seen.has(entry.url) || entry.url === value || entry.url === filled?.url) continue;
     out.push({ text: entry.title || displayUrl(entry.url), hint: displayHost(hostOf(entry.url)), value: entry.url, iconId: "history-16" });
   }
   for (const word of words.slice(0, 6)) {
@@ -427,7 +490,7 @@ function buildRows(value, history, words) {
     out.push({ text: word, hint: "поиск", value: word, iconId: "search-16" });
   }
   // Похоже на адрес, но это может быть и запрос: поиск набранного — последним.
-  if (looksLikeUrl) out.push({ text: value, hint: "поиск", value: `? ${value}`, iconId: "search-16" });
+  if (looksLikeUrl || filled) out.push({ text: value, hint: "поиск", value: `? ${value}`, iconId: "search-16" });
   return out;
 }
 

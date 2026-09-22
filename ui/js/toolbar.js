@@ -4,6 +4,7 @@
  */
 
 import { invoke } from "./bridge.js";
+import { displayUrl } from "./dom.js";
 import { onDownloads, summary } from "./downloads-model.js";
 import { openMenu } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
@@ -14,6 +15,7 @@ import {
   closeBrowser,
   goHome,
   hooks,
+  isNewTabUrl,
   newWindow,
   openDownloadsBubble,
   openHistoryPage,
@@ -33,6 +35,8 @@ const homeButton = document.getElementById("nav-home");
 let sawDownloads = false;
 
 export function initToolbar() {
+  wireHistoryMenu(document.getElementById("nav-back"), -1);
+  wireHistoryMenu(document.getElementById("nav-forward"), 1);
   document.getElementById("nav-back").addEventListener("click", () => tabAction("back"));
   document.getElementById("nav-forward").addEventListener("click", () => tabAction("forward"));
   // Пока страница грузится, «Обновить» становится «Остановить».
@@ -85,6 +89,75 @@ function renderDownloads(event) {
     void downloadsButton.offsetWidth;
     downloadsButton.dataset.done = "true";
   }
+}
+
+/* ── История на «Назад» и «Вперёд» ─────────────────────────── */
+
+/**
+ * Правый щелчок или долгое нажатие на «Назад» и «Вперёд» открывает список
+ * страниц, как в Chrome: вернуться можно сразу на несколько шагов.
+ */
+function wireHistoryMenu(button, direction) {
+  let timer = 0;
+  let held = false;
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    showHistoryMenu(button, direction);
+  });
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    held = false;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      held = true;
+      showHistoryMenu(button, direction);
+    }, 500);
+  });
+  for (const type of ["pointerup", "pointerleave", "pointercancel"]) {
+    button.addEventListener(type, () => clearTimeout(timer));
+  }
+  // Отпустили после долгого нажатия — это выбор из списка, а не «Назад».
+  button.addEventListener(
+    "click",
+    (event) => {
+      if (!held) return;
+      held = false;
+      event.stopImmediatePropagation();
+    },
+    true
+  );
+}
+
+async function showHistoryMenu(button, direction) {
+  const tab = activeTab();
+  if (!tab || tab.internal) return;
+  const history = await invoke("tab_history", { id: tab.id }).catch(() => null);
+  const entries = Array.isArray(history?.entries) ? history.entries : [];
+  const current = Number(history?.currentIndex ?? -1);
+  if (current < 0 || state.activeId !== tab.id) return;
+  const list = (direction < 0 ? entries.slice(0, current).reverse() : entries.slice(current + 1)).slice(0, 15);
+  if (!list.length) return;
+  // Значки — из кэша профиля: список не должен ходить на каждый сайт.
+  const icons = await Promise.all(list.map((entry) => invoke("site_icon", { url: entry.url }).catch(() => null)));
+  const items = list.map((entry, index) => ({
+    id: `entry:${entry.id}`,
+    label: isNewTabUrl(entry.url) ? "Новая вкладка" : entry.title || displayUrl(entry.url),
+    image: icons[index] ?? undefined,
+    icon: icons[index] ? undefined : "globe-16",
+  }));
+  items.push({ separator: true }, { id: "history", label: "Показать всю историю", icon: "history", keys: "Ctrl+H" });
+  openMenu(
+    "nav-history",
+    button,
+    items,
+    (action) => {
+      if (action === "history") return openHistoryPage();
+      if (action?.startsWith("entry:")) {
+        invoke("tab_history_go", { id: tab.id, entry: Number(action.slice(6)) }).catch(() => {});
+      }
+    },
+    { width: 320 }
+  );
 }
 
 /* ── Меню «Настройки и прочее» ─────────────────────────────── */

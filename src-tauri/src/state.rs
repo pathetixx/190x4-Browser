@@ -73,6 +73,48 @@ pub fn remove_host(label: &str) {
     });
 }
 
+/// Сколько загрузок оборвёт закрытие окна. Зовётся из обработчика окна — он
+/// и так на главном потоке, где живут хосты.
+pub fn active_downloads(label: &str) -> usize {
+    HOSTS.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|hosts| hosts.get(label).map(TabHost::active_downloads))
+            .unwrap_or(0)
+    })
+}
+
+/// Перенести живую вкладку в окно `to` (её перетащили туда). Возвращает ярлык
+/// окна, из которого она ушла.
+pub fn move_tab(app: &AppHandle, tab: u32, to: &str) -> Result<String, String> {
+    let to = to.to_string();
+    on_main(app, move || {
+        HOSTS.with(|cell| {
+            let Ok(hosts) = cell.try_borrow() else {
+                return Err("хост вкладок занят".to_string());
+            };
+            let from = hosts
+                .iter()
+                .find(|(_, host)| host.has_tab(TabId(tab)))
+                .map(|(label, _)| label.clone())
+                .ok_or_else(|| "вкладка уже закрыта".to_string())?;
+            if from == to {
+                return Ok(from);
+            }
+            let (Some(source), Some(target)) = (hosts.get(&from), hosts.get(&to)) else {
+                return Err("окно браузера уже закрыто".to_string());
+            };
+            // Приватное окно живёт в своём профиле движка — страница туда не переедет.
+            if source.is_private() != target.is_private() {
+                return Err("обычное и приватное окно не делят вкладки".to_string());
+            }
+            let (moved, hwnd) = source.detach(TabId(tab)).map_err(|err| err.to_string())?;
+            target.attach(moved, hwnd).map_err(|err| err.to_string())?;
+            Ok(from)
+        })
+    })
+}
+
 /// Выполнить действие над хостом окна на главном потоке и дождаться ответа.
 ///
 /// Блокирующий вызов: Tauri-команды исполняются на своём пуле, а не на UI, и

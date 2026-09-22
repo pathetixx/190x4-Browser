@@ -815,12 +815,96 @@ impl TabHost {
     pub fn set_chrome_controller(&self, controller: ICoreWebView2Controller) {
         // Браузерные сочетания движка интерфейсу не нужны: F5 перезагрузил бы
         // сам интерфейс, Ctrl+J открыл бы встроенную полку загрузок WebView2.
-        if let Ok(core) = unsafe { controller.CoreWebView2() } {
-            if let Err(err) = crate::tab::configure(&core) {
-                tracing::warn!(%err, "настройки окна интерфейса не применены");
-            }
-        }
+        crate::tab::configure_interface(&controller);
         self.inner.borrow_mut().chrome = Some(controller);
+    }
+
+    /// Отдать вкладку другому окну — её перетащили туда. Вкладка уходит живой:
+    /// со страницей, историей и введённым текстом; её место занимают соседи,
+    /// как при закрытии. Возвращает вкладку и её окно внутри контейнера.
+    pub fn detach(&self, id: TabId) -> anyhow::Result<(Tab, Option<HWND>)> {
+        let mut state = self.inner.borrow_mut();
+        let tab = state
+            .tabs
+            .remove(&id)
+            .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
+        let position = state.order.iter().position(|t| *t == id);
+        if let Some(pos) = position {
+            state.order.remove(pos);
+        }
+        let hwnd = state.windows.remove(&id);
+        if state.split == Some(id) {
+            state.split = None;
+            state.swapped = false;
+        }
+        if state.active == Some(id) {
+            state.active = match state.split.take() {
+                Some(partner) => Some(partner),
+                None => position
+                    .and_then(|pos| state.order.get(pos).or_else(|| state.order.last()))
+                    .copied(),
+            };
+            state.swapped = false;
+        }
+        state.apply_visibility()?;
+        state.apply_bounds()?;
+        Ok((tab, hwnd))
+    }
+
+    /// Принять вкладку из другого окна: её окно переезжает в контейнер этого,
+    /// события — в его интерфейс, и она становится активной.
+    pub fn attach(&self, tab: Tab, hwnd: Option<HWND>) -> anyhow::Result<()> {
+        let id = tab.id;
+        let mut state = self.inner.borrow_mut();
+        state.order.push(id);
+        state.active = Some(id);
+        let bounds = state.bounds_for(id);
+        let rehomed = tab.rehome(
+            state.sink.clone(),
+            state.popups.clone(),
+            state.downloads.clone(),
+            state.container,
+            bounds,
+        );
+        // Вкладка остаётся у этого окна, даже если движок не переставил её
+        // окно: иначе страница пропала бы вовсе.
+        if let Some(hwnd) = hwnd {
+            state.windows.insert(id, hwnd);
+        }
+        state.tabs.insert(id, tab);
+        rehomed?;
+        state.apply_bounds()?;
+        state.apply_visibility()?;
+        drop(state);
+        self.with_tab(id, Tab::announce_moved);
+        Ok(())
+    }
+
+    /// История переходов вкладки (`Tab::navigation_history`).
+    pub fn navigation_history(
+        &self,
+        id: TabId,
+        done: impl FnOnce(String) + 'static,
+    ) -> anyhow::Result<()> {
+        let state = self.inner.borrow();
+        let tab = state
+            .tabs
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
+        tab.navigation_history(done)?;
+        Ok(())
+    }
+
+    /// Настройка SmartScreen сменилась — применить её к открытым вкладкам.
+    pub fn apply_reputation(&self) {
+        for tab in self.inner.borrow().tabs.values() {
+            tab.apply_reputation();
+        }
+    }
+
+    /// Сколько загрузок оборвёт закрытие этого окна.
+    pub fn active_downloads(&self) -> usize {
+        self.inner.borrow().downloads.active()
     }
 
     /// Отдать клавиатуру интерфейсу браузера.

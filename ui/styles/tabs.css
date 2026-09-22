@@ -266,7 +266,10 @@
    страницы под ней пока нет. */
 .tab[data-sleeping="true"] .tab__title,
 .tab[data-sleeping="true"] .tab__glyph,
-.tab[data-sleeping="true"] .tab__favicon {
+.tab[data-sleeping="true"] .tab__favicon,
+.tab[data-frozen="true"] .tab__title,
+.tab[data-frozen="true"] .tab__glyph,
+.tab[data-frozen="true"] .tab__favicon {
   opacity: 0.55;
 }
 

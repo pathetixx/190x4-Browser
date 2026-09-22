@@ -128,6 +128,12 @@ impl Downloads {
         }
     }
 
+    /// Сколько загрузок идёт (или стоит на паузе) и ждёт ответа «куда
+    /// сохранить»: закрытие окна их оборвёт.
+    pub fn active(&self) -> usize {
+        self.owners.borrow().len() + self.pending.borrow().len()
+    }
+
     /// Знает ли это окно такую загрузку: команда приходит без номера окна.
     pub fn has(&self, key: u64) -> bool {
         self.ops.borrow().contains_key(&key) || self.pending.borrow().contains_key(&key)
@@ -215,11 +221,12 @@ fn has_no_document(core: Option<&ICoreWebView2>) -> bool {
     source.is_empty() || source == "about:blank"
 }
 
-/// Перехват загрузок вкладки.
+/// Перехват загрузок вкладки. Реестр — того окна, где вкладка живёт сейчас:
+/// её можно унести в другое окно (`Tab::rehome`).
 pub fn wire(
     id: TabId,
     core: &ICoreWebView2,
-    registry: SharedDownloads,
+    route: Rc<RefCell<SharedDownloads>>,
     sink: EventSink,
 ) -> windows_core::Result<()> {
     let Ok(core4) = core.cast::<ICoreWebView2_4>() else {
@@ -234,6 +241,7 @@ pub fn wire(
         core4.add_DownloadStarting(
             &DownloadStartingEventHandler::create(Box::new(move |sender, args| {
                 let Some(args) = args else { return Ok(()) };
+                let registry = route.borrow().clone();
                 let empty_tab = has_no_document(sender.as_ref());
                 let operation = args.DownloadOperation()?;
                 // Полку загрузок движка гасим: у браузера она своя.

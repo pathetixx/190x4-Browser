@@ -220,19 +220,33 @@ pub fn create(
     first: bool,
     restore: bool,
 ) -> tauri::Result<String> {
-    create_window(app, kind, first, restore, None)
+    let opening = Opening {
+        first,
+        restore,
+        ..Opening::default()
+    };
+    create_window(app, kind, opening)
 }
 
-/// Окно с вкладками: `tabs` записываются в его сессию до того, как интерфейс
-/// окна её прочтёт, — так возвращается окно, закрытое крестиком.
-fn create_window(
-    app: &AppHandle,
-    kind: WindowKind,
+/// С чем открывается окно.
+#[derive(Default)]
+struct Opening<'a> {
+    /// Первое окно запуска — ярлык `chrome`.
     first: bool,
+    /// Окно прошлого сеанса: восстановит вкладки своей сессии.
     restore: bool,
-    tabs: Option<&[SessionTab]>,
-) -> tauri::Result<String> {
-    let label = if first {
+    /// Вкладки закрытого окна: пишутся в сессию нового окна до того, как его
+    /// интерфейс её прочтёт, — так возвращается окно, закрытое крестиком.
+    tabs: Option<&'a [SessionTab]>,
+    /// Где встать (логические пиксели экрана): вкладку вытащили из строки и
+    /// отпустили здесь.
+    at: Option<(f64, f64)>,
+    /// Вкладка, которая переедет в окно живой, когда интерфейс её попросит.
+    adopt: Option<u32>,
+}
+
+fn create_window(app: &AppHandle, kind: WindowKind, opening: Opening) -> tauri::Result<String> {
+    let label = if opening.first {
         FIRST.to_string()
     } else {
         format!("chrome-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed))
@@ -267,19 +281,26 @@ fn create_window(
             config.y = Some(geometry.y + shift);
         }
     }
-
-    let mut builder = tauri::WebviewWindowBuilder::from_config(app, &config)?;
-    if let Some(args) = crate::debug_browser_args() {
-        builder = builder.additional_browser_args(&args);
+    // Вкладку вытащили из строки: окно встаёт там, где её отпустили.
+    if let Some((x, y)) = opening.at {
+        config.center = false;
+        config.x = Some(x);
+        config.y = Some(y);
     }
-    let window = builder.build()?;
+    if let Some(tab) = opening.adopt {
+        app.state::<crate::launch::Launch>().push_adopt(&label, tab);
+    }
+
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
+        .additional_browser_args(crate::browser_args())
+        .build()?;
 
     let session = if kind.is_private() {
         None
     } else {
         Some(app.state::<App>().windows.free_session())
     };
-    if let (Some(session), Some(tabs)) = (session, tabs) {
+    if let (Some(session), Some(tabs)) = (session, opening.tabs) {
         if let Err(err) = app.state::<App>().store.save_session(session, tabs) {
             tracing::warn!(%err, "вкладки закрытого окна не записаны");
         }
@@ -289,7 +310,7 @@ fn create_window(
         WindowMeta {
             kind,
             session,
-            restore: restore || tabs.is_some(),
+            restore: opening.restore || opening.tabs.is_some(),
         },
     );
 
@@ -342,7 +363,8 @@ fn create_window(
     }
 
     wire_window(app, &window);
-    if geometry.is_some_and(|geometry| geometry.maximized) {
+    // Окно под вытащенную вкладку не разворачивается, как в Chrome.
+    if opening.at.is_none() && geometry.is_some_and(|geometry| geometry.maximized) {
         let _ = window.maximize();
     }
     window.show()?;
@@ -467,7 +489,26 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             );
             remember_geometry(&handle, &label);
         }
-        WindowEvent::CloseRequested { .. } => closing(&handle, &label),
+        WindowEvent::CloseRequested { api, .. } => {
+            // Закрытие окна обрывает его загрузки — как Chrome, сначала спросить.
+            let force = {
+                let mut anyway = CLOSING_ANYWAY.lock();
+                let before = anyway.len();
+                anyway.retain(|other| *other != label);
+                anyway.len() != before
+            };
+            let downloads = state::active_downloads(&label);
+            if !force && downloads > 0 {
+                api.prevent_close();
+                let _ = handle.emit_to(
+                    label.as_str(),
+                    "close-blocked",
+                    serde_json::json!({ "downloads": downloads }),
+                );
+                return;
+            }
+            closing(&handle, &label);
+        }
         WindowEvent::Destroyed => {
             state::remove_host(&label);
             handle.state::<App>().windows.remove(&label);
@@ -510,6 +551,18 @@ fn closing(app: &AppHandle, label: &str) {
     }
 }
 
+/// Окна, которые закрывают, несмотря на идущие загрузки: человек подтвердил.
+static CLOSING_ANYWAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Закрыть окно без вопроса о загрузках — на него уже ответили «Закрыть».
+pub fn close_anyway(app: &AppHandle, label: &str) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(label) else {
+        return Ok(());
+    };
+    CLOSING_ANYWAY.lock().push(label.to_string());
+    window.close()
+}
+
 /// Сколько окон, закрытых крестиком, браузер помнит до выхода.
 const CLOSED_WINDOWS: usize = 10;
 
@@ -548,7 +601,28 @@ pub fn take_closed(app: &AppHandle) -> Option<Vec<SessionTab>> {
 
 /// Вернуть закрытое окно: вкладки встают спящими, как после перезапуска.
 pub fn reopen(app: &AppHandle, tabs: &[SessionTab]) -> tauri::Result<String> {
-    create_window(app, WindowKind::Normal, false, true, Some(tabs))
+    let opening = Opening {
+        restore: true,
+        tabs: Some(tabs),
+        ..Opening::default()
+    };
+    create_window(app, WindowKind::Normal, opening)
+}
+
+/// Окно под вытащенную из строки вкладку: встаёт у точки, где её отпустили, и
+/// забирает вкладку живой, когда его интерфейс будет готов.
+pub fn open_for_tab(
+    app: &AppHandle,
+    kind: WindowKind,
+    tab: u32,
+    at: Option<(f64, f64)>,
+) -> tauri::Result<String> {
+    let opening = Opening {
+        at,
+        adopt: Some(tab),
+        ..Opening::default()
+    };
+    create_window(app, kind, opening)
 }
 
 /// Обычное окно, если оно открыто: то, что впереди, иначе первое попавшееся.

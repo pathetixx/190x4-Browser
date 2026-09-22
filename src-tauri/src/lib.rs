@@ -86,6 +86,9 @@ pub fn run() {
     // Цвет, которым движок заливает новый вебвью до первой отрисовки: без него
     // первый кадр каждой новой вкладки был бы белым или серым.
     ipc::apply_engine_background(&store);
+    init_browser_args(&store);
+    #[cfg(windows)]
+    browser190x4_webview::tab::set_reputation_checking(store.setting_bool("smartscreen", true));
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
@@ -150,6 +153,12 @@ pub fn run() {
             ipc::window_info,
             ipc::window_open,
             ipc::window_reopen_closed,
+            ipc::window_move,
+            ipc::tab_to_window,
+            ipc::tab_adopt,
+            ipc::tab_suspend,
+            ipc::tab_history,
+            ipc::tab_history_go,
             ipc::app_quit,
             ipc::chrome_focus,
             ipc::adblock_stats,
@@ -220,6 +229,7 @@ pub fn run() {
             updates::update_state,
             updates::update_install,
             launch::launch_take,
+            launch::launch_adopt_take,
             default_browser::default_browser_state,
             default_browser::default_browser_set,
         ])
@@ -423,20 +433,42 @@ fn wait_for_previous() {
     }
 }
 
-/// Аргументы движка с портом отладки (CDP) — только при отдельном профиле и
-/// заданном `BROWSER190X4_DEBUG_PORT`. Окна браузера делят одно окружение
-/// WebView2, поэтому попап получает те же аргументы. Первые два — те, что wry
-/// передаёт по умолчанию.
-pub(crate) fn debug_browser_args() -> Option<String> {
+/// Аргументы движка — одни на все вебвью процесса: окна и их попапы делят
+/// окружение WebView2, а вебвью с другими аргументами движок не создаст.
+/// Читаются из настроек один раз при запуске.
+static BROWSER_ARGS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Без своих аргументов wry выключает SmartScreen и разрешает сайтам включать
+/// звук без щелчка. SmartScreen в движке включён, а вкладкам его включает и
+/// выключает настройка `smartscreen`. Звук — как в Chrome: только после
+/// действия человека на странице, если он не разрешил автозапуск сам
+/// (`media_autoplay`, действует после перезапуска).
+fn init_browser_args(store: &Store) {
+    let autoplay = if store.setting_bool("media_autoplay", false) {
+        "no-user-gesture-required"
+    } else {
+        "document-user-activation-required"
+    };
+    let debug = debug_port()
+        .map(|port| format!(" --remote-debugging-port={port}"))
+        .unwrap_or_default();
+    let features = "--disable-features=msWebOOUI,msPdfOOUI";
+    let _ = BROWSER_ARGS.set(format!("{features} --autoplay-policy={autoplay}{debug}"));
+}
+
+/// Аргументы движка для нового окна или попапа (см. [`init_browser_args`]).
+pub(crate) fn browser_args() -> &'static str {
+    BROWSER_ARGS
+        .get()
+        .map_or("--disable-features=msWebOOUI,msPdfOOUI", String::as_str)
+}
+
+/// Порт отладки движка (CDP) — только при отдельном профиле и заданном
+/// `BROWSER190X4_DEBUG_PORT`.
+fn debug_port() -> Option<u16> {
     separate_profile()?;
-    let port: u16 = std::env::var("BROWSER190X4_DEBUG_PORT")
-        .ok()?
-        .parse()
-        .ok()?;
-    Some(format!(
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-         --autoplay-policy=no-user-gesture-required --remote-debugging-port={port}"
-    ))
+    let port = std::env::var("BROWSER190X4_DEBUG_PORT").ok()?;
+    port.parse().ok()
 }
 
 /// Значок окна для панели задач и Alt+Tab — из ресурсов exe, нужного размера.

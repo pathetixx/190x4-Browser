@@ -7,6 +7,7 @@
 
 import { invoke } from "./bridge.js";
 import { syncDuring } from "./layout.js";
+import { closePopup, openPopup, openPopupKey } from "./popups.js";
 import { state, subscribe } from "./state.js";
 import { endSplit, splitWith } from "./tabs.js";
 
@@ -74,7 +75,34 @@ function apply() {
   if (on !== applied) {
     applied = on;
     invoke("window_command", { action: on ? "fullscreen" : "unfullscreen" }).catch(() => {});
+    if (on) showHint();
+    else hideHint();
   }
   // Окно меняет размер не сразу: страница догоняет его по кадрам.
   syncDuring(500);
+}
+
+/**
+ * Подсказка, как выйти, — как в Chrome: несколько секунд сверху по центру.
+ * Интерфейс спрятан, а страница закрыла бы HTML собой, поэтому подсказка —
+ * всплывающее окно, и фокус оно не забирает: Escape остаётся у видео.
+ */
+const HINT_WIDTH = 440;
+let hintTimer = 0;
+
+function showHint() {
+  clearTimeout(hintTimer);
+  // Окно ещё разворачивается, а ресайз закрывает всплывающие окна — ждём.
+  hintTimer = setTimeout(() => {
+    if (!isFullscreen() || openPopupKey() !== null) return;
+    const key = state.fullscreen.page !== null ? "Esc" : "F11";
+    const anchor = { x: Math.max(8, (innerWidth - HINT_WIDTH) / 2), y: 20, width: HINT_WIDTH, height: 0 };
+    openPopup("hint", anchor, { width: HINT_WIDTH, payload: { key } }).catch(() => {});
+    hintTimer = setTimeout(hideHint, 3500);
+  }, 450);
+}
+
+function hideHint() {
+  clearTimeout(hintTimer);
+  if (openPopupKey() === "hint:") closePopup();
 }

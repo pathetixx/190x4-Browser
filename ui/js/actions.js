@@ -8,6 +8,8 @@
  */
 
 import { invoke } from "./bridge.js";
+import { confirmAction, downloadsText } from "./confirm.js";
+import { summary } from "./downloads-model.js";
 import { openPopup } from "./popups.js";
 import { pref, setPref } from "./prefs.js";
 import { activeTab, removeTab, state, tabIndex } from "./state.js";
@@ -71,8 +73,9 @@ export function openInNewTab(url) {
   return open(url, { background: true });
 }
 
+/** Новое окно того же вида: ссылка из приватного окна не уходит в обычное. */
 export function openInNewWindow(url) {
-  return invoke("window_open", { private: false, url }).catch(() => {});
+  return invoke("window_open", { private: Boolean(state.window.private), url }).catch(() => {});
 }
 
 export function openInPrivateWindow(url) {
@@ -104,6 +107,17 @@ export function toggleBookmarksBar() {
  * запуске — в отличие от окна, закрытого крестиком, пока открыты другие.
  */
 export async function closeBrowser() {
+  // Выход обрывает загрузки — как Chrome, сперва спросить.
+  const { active } = summary();
+  if (active > 0) {
+    const ok = await confirmAction({
+      title: "Закрыть браузер?",
+      text: `${downloadsText(active)} Если закрыть браузер, загрузка прервётся.`,
+      confirm: "Закрыть браузер",
+      cancel: "Не закрывать",
+    });
+    if (!ok) return;
+  }
   await hooks.saveSession();
   invoke("app_quit").catch(() => {});
 }

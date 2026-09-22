@@ -28,10 +28,12 @@ import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js"
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isLivePanel, isPanelOpen, openPanel, renderPanel, toggle } from "./panels.js";
 import { initPopups, onPopupAction, openPopup } from "./popups.js";
+import { confirmAction, downloadsText } from "./confirm.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
 import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, upsertTab } from "./state.js";
 import {
   activate,
+  adoptTab,
   close,
   closeAnswered,
   cycle,
@@ -546,6 +548,17 @@ onPopupAction("media", ({ action }) => {
   if (action === "settings") openSettings("extensions");
 });
 
+// Окно закрывают, а в нём идут загрузки: закрытие их оборвёт — сперва спросить.
+listen("close-blocked", async ({ downloads }) => {
+  const ok = await confirmAction({
+    title: "Закрыть окно?",
+    text: `${downloadsText(downloads)} Если закрыть окно, загрузка прервётся.`,
+    confirm: "Закрыть окно",
+    cancel: "Не закрывать",
+  });
+  if (ok) invoke("window_command", { action: "close_force" }).catch(() => {});
+});
+
 listen("media", (event) => {
   state.mediaActive = event.phase === "progress";
   renderToolbar();
@@ -862,7 +875,10 @@ try {
 async function restoreSession() {
   const mode = pref("startup");
   const launched = await invoke("launch_take").catch(() => []);
-  const blank = !launched.length;
+  // Окно открыли под вкладку, которую вытащили из другого окна: она переедет
+  // сюда живой, пустая новая вкладка не нужна.
+  const adopted = await invoke("launch_adopt_take").catch(() => []);
+  const blank = !launched.length && !adopted.length;
 
   if (mode === "pages") {
     const pages = (pref("startup_pages") ?? []).filter(Boolean);
@@ -895,6 +911,9 @@ async function restoreSession() {
     await open("about:newtab");
   }
   for (const url of launched) await open(url);
+  for (const id of adopted) await adoptTab(id).catch(() => {});
+  // Вкладка так и не переехала (её закрыли раньше) — окно не остаётся пустым.
+  if (!state.tabs.size) await open("about:newtab");
   sessionReady = true;
   // Первая Ctrl+T окна — уже прогретой вкладкой.
   prewarmSoon(2500);

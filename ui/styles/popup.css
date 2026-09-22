@@ -617,6 +617,30 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Подсказка полноэкранного режима ───────────────────────── */
+
+.popup--hint {
+  border-radius: 10px;
+}
+
+.hint-bubble {
+  padding: 12px 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-hi);
+}
+
+.hint-bubble__key {
+  display: inline-block;
+  margin-inline-start: 2px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-3);
+  border-radius: 5px;
+  background: var(--overlay-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ── Подсказки адресной строки ─────────────────────────────── */
 
 .popup--suggest {

@@ -8,11 +8,12 @@
  * сессии больше не поднимают двадцать страниц на старте.
  */
 
-import { invoke } from "./bridge.js";
+import { invoke, listen } from "./bridge.js";
 import { hasLeaveDialog } from "./dialogs.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
 import { setPageHidden } from "./layout.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
+import { pref } from "./prefs.js";
 import {
   groupBounds,
   insertTabAt,
@@ -20,6 +21,7 @@ import {
   moveTab,
   removeTab,
   replaceTabId,
+  reviveTab,
   setActive,
   setSplit,
   state,
@@ -90,6 +92,11 @@ export function initTabs() {
   wireDrag();
 
   document.getElementById("new-tab").addEventListener("click", () => open("about:newtab"));
+
+  // Вкладку унесли в другое окно живой: здесь её больше нет, но закрывать
+  // страницу нельзя — она работает там.
+  listen("tab-moved", (id) => onTabMoved(Number(id)));
+  setInterval(sleepIdle, 60_000);
 }
 
 function onClick(event) {
@@ -302,7 +309,12 @@ export async function activate(id) {
     tab = state.tabs.get(id);
   }
 
+  // Когда вкладку видели в последний раз — по нему фоновые засыпают.
+  if (state.activeId !== null) seenAt.set(state.activeId, Date.now());
+  seenAt.set(id, Date.now());
   setActive(id);
+  // Спящую вкладку показ будит сам (Rust), здесь снимается только отметка.
+  if (tab.frozen) upsertTab(id, { frozen: false });
 
   if (tab.internal) {
     setPageHidden("internal", true);
@@ -411,6 +423,15 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   const next = partner ?? opener ?? ids[index + 1] ?? ids[index - 1] ?? null;
   const position = tabIndex(id);
 
+  // Последняя вкладка окна закрывает само окно, как в Chrome. Страницу сперва
+  // спрашивают («Покинуть сайт?»), а в сессии окна вкладка остаётся: последнее
+  // окно вернётся с ней при запуске, другое вернёт Ctrl+Shift+T.
+  if (![...state.tabs.values()].some((other) => other.id !== id && !other.closing)) {
+    if (!force && !tab.internal && !tab.sleeping && !(await confirmClose(id))) return;
+    invoke("window_command", { action: "close" }).catch(() => {});
+    return;
+  }
+
   if (!force && !tab.internal && !tab.sleeping) {
     upsertTab(id, { closing: true });
     // Половина разделённого экрана уходит с экрана вместе с разделением.
@@ -434,8 +455,8 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   if (!tab.internal && !tab.sleeping) await invoke("tab_close", { id }).catch(() => {});
 
   if (state.tabs.size === 0) {
-    // Последнюю вкладку закрыли — окно не пустеет, а открывает новую.
-    await open("about:newtab");
+    // Закрыли все вкладки разом — окно закрывается, как в Chrome.
+    invoke("window_command", { action: "close" }).catch(() => {});
     return;
   }
   if (state.activeId === null) {
@@ -554,7 +575,7 @@ function showTabMenu(id, event) {
       icon: "split-16",
       disabled: !web || (id === state.activeId && !splitting),
     },
-    { id: "to-window", label: "Переместить в новое окно", icon: "window-16", disabled: !web },
+    { id: "to-window", label: "Переместить в новое окно", icon: "window-16", disabled: !web || ids.length < 2 },
     { separator: true },
     ...groupItems(tab),
     { separator: true },
@@ -652,12 +673,53 @@ export function editGroup(groupId, anchor = null) {
   }).catch(() => {});
 }
 
-/** Вкладку — в отдельное окно: адрес переезжает, здесь она закрывается. */
-export async function moveToNewWindow(id) {
+/**
+ * Вкладку — в отдельное окно. Страница переезжает живой: без перезагрузки, с
+ * историей и введённым текстом. `at` — где встать окну (вкладку вытащили из
+ * строки и отпустили там). Окно того же вида: из приватного — приватное.
+ */
+export async function moveToNewWindow(id, at = null) {
   const tab = state.tabs.get(id);
   if (!tab || tab.internal || !tab.url) return;
-  await invoke("window_open", { private: false, url: tab.url }).catch(() => {});
-  await close(id);
+  if (tab.sleeping) {
+    // У спящей вкладки страницы ещё нет — переезжает её адрес.
+    await invoke("window_open", { private: Boolean(state.window.private), url: tab.url }).catch(() => {});
+    await close(id, { force: true });
+    return;
+  }
+  await invoke("tab_to_window", { id, x: at?.x ?? null, y: at?.y ?? null }).catch(() => {});
+}
+
+/**
+ * Забрать вкладку из другого окна живой: её перетащили сюда или окно открыли
+ * под неё. Страница не перезагружается — адрес, заголовок, значок и «назад»
+ * приходят событиями вкладки.
+ */
+export async function adoptTab(id, index = null) {
+  // Вкладка могла уже жить в этом окне и уехать — её события снова наши.
+  reviveTab(id);
+  await invoke("tab_adopt", { id });
+  const at = Math.max(index ?? defaultIndex(), groupBounds(false).from);
+  insertTabAt(id, state.tabs.has(id) ? {} : { loading: false }, at);
+  settleGroup(id);
+  await activate(id);
+}
+
+/** Вкладку забрало другое окно: место в строке занимают соседи. */
+async function onTabMoved(id) {
+  if (!state.tabs.has(id)) return;
+  const ids = visibleIds();
+  const index = ids.indexOf(id);
+  const next = (state.activeId === id ? state.splitId : null) ?? ids[index + 1] ?? ids[index - 1] ?? null;
+  markClosed(id);
+  removeTab(id);
+  if (!state.tabs.size) {
+    // Унесли последнюю вкладку — окно больше не нужно, и возвращать его нечего.
+    await invoke("session_save", { tabs: [] }).catch(() => {});
+    invoke("window_command", { action: "close_force" }).catch(() => {});
+    return;
+  }
+  if (state.activeId === null && next != null && state.tabs.has(next)) await activate(next);
 }
 
 /* ── Группы вкладок ────────────────────────────────────────── */
@@ -737,8 +799,17 @@ export function toggleGroup(groupId) {
 
 /* ── Перетаскивание вкладок ────────────────────────────────── */
 
+/**
+ * Тип данных перетаскиваемой вкладки. Строка вкладок другого окна узнаёт по
+ * нему свою, а страница в него не заглядывает: с text/plain номер вкладки
+ * упал бы в поле ввода, на которое её бросили.
+ */
+const TAB_MIME = "application/x-190x4-tab";
+
 function wireDrag() {
   let dragged = null;
+  /** Куда встанет вкладка, которую тащат из другого окна. */
+  let dropIndex = null;
 
   strip.addEventListener("dragstart", (event) => {
     const tab = event.target.closest(".tab");
@@ -746,11 +817,18 @@ function wireDrag() {
     dragged = Number(tab.dataset.id);
     tab.dataset.dragging = "true";
     event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(dragged));
+    event.dataTransfer.setData(TAB_MIME, JSON.stringify({ id: dragged, private: Boolean(state.window.private) }));
   });
 
   strip.addEventListener("dragover", (event) => {
-    if (dragged == null) return;
+    if (dragged == null) {
+      // Вкладка из другого окна браузера: переедет сюда, когда её отпустят.
+      if (!event.dataTransfer.types.includes(TAB_MIME)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      dropIndex = indexAt(event.clientX);
+      return;
+    }
     event.preventDefault();
     const target = event.target.closest(".tab");
     if (!target || Number(target.dataset.id) === dragged) return;
@@ -772,9 +850,95 @@ function wireDrag() {
   };
   strip.addEventListener("drop", (event) => {
     event.preventDefault();
+    if (dragged == null) adoptDropped(event, dropIndex);
     finish();
   });
-  strip.addEventListener("dragend", finish);
+  strip.addEventListener("dragend", (event) => {
+    const id = dragged;
+    finish();
+    // Отпустили не на строке вкладок, а за окном или ниже строки — вкладка
+    // уезжает в новое окно, как в Chrome.
+    if (id != null && event.dataTransfer.dropEffect === "none" && pulledOut(event)) detach(id, event);
+  });
+}
+
+/** Место в строке под указателем — для вкладки из другого окна. */
+function indexAt(x) {
+  for (const node of strip.querySelectorAll(".tab:not([hidden])")) {
+    const rect = node.getBoundingClientRect();
+    if (x < rect.left + rect.width / 2) return tabIndex(Number(node.dataset.id));
+  }
+  return state.tabs.size;
+}
+
+/** Вкладку из другого окна отпустили на этой строке — она переезжает сюда. */
+function adoptDropped(event, index) {
+  let data = null;
+  try {
+    data = JSON.parse(event.dataTransfer.getData(TAB_MIME));
+  } catch {
+    return;
+  }
+  const id = Number(data?.id);
+  // Спящая вкладка (номер в минус) страницы ещё не имеет — переезжать нечему.
+  if (!Number.isInteger(id) || id <= 0 || state.tabs.has(id)) return;
+  // Приватное окно живёт в своём профиле движка — страница туда не переедет.
+  if (Boolean(data.private) !== Boolean(state.window.private)) return;
+  adoptTab(id, index).catch(() => {});
+}
+
+/** Вкладку утащили из строки: отпустили за окном или заметно ниже строки. */
+function pulledOut(event) {
+  const { screenX: x, screenY: y } = event;
+  // Нулевая точка — движок не сообщил, где отпустили: лучше ничего не делать.
+  if (!x && !y) return false;
+  const outside =
+    x < window.screenX ||
+    x > window.screenX + window.outerWidth ||
+    y < window.screenY ||
+    y > window.screenY + window.outerHeight;
+  return outside || event.clientY > strip.getBoundingClientRect().bottom + 40;
+}
+
+/** Вытащенная вкладка — в новое окно у точки, где её отпустили. */
+function detach(id, event) {
+  const tab = state.tabs.get(id);
+  if (!tab || tab.internal) return;
+  const at = { x: event.screenX - 120, y: event.screenY - 16 };
+  // Единственная вкладка окна: переезжает само окно, как в Chrome.
+  if (state.tabs.size === 1) {
+    invoke("window_move", at).catch(() => {});
+    return;
+  }
+  moveToNewWindow(id, at);
+}
+
+/* ── Усыпление неактивных вкладок ──────────────────────────── */
+
+/** Когда вкладку видели на экране в последний раз. */
+const seenAt = new Map();
+
+/**
+ * Вкладка, которую давно не открывали, засыпает — как спящие вкладки Edge:
+ * страница замирает и отдаёт часть памяти, но история, прокрутка и введённый
+ * текст остаются, а показ будит её сразу. Не засыпают закреплённые вкладки
+ * (почта, мессенджеры), играющие звук и ещё не загрузившиеся.
+ */
+function sleepIdle() {
+  const minutes = Number(pref("tabs_sleep"));
+  const now = Date.now();
+  for (const tab of state.tabs.values()) {
+    const shown = tab.id === state.activeId || tab.id === state.splitId;
+    if (shown || !seenAt.has(tab.id)) seenAt.set(tab.id, now);
+    if (shown || !(minutes > 0) || tab.id < 0 || tab.internal || tab.sleeping || tab.frozen) continue;
+    if (tab.pinned || tab.audible || tab.loading || tab.crashed || tab.closing) continue;
+    if (now - seenAt.get(tab.id) < minutes * 60_000) continue;
+    upsertTab(tab.id, { frozen: true });
+    invoke("tab_suspend", { id: tab.id }).catch(() => {});
+  }
+  for (const id of seenAt.keys()) {
+    if (!state.tabs.has(id)) seenAt.delete(id);
+  }
 }
 
 /* ── Рендер ────────────────────────────────────────────────── */
@@ -923,10 +1087,15 @@ function updateTab(node, tab) {
   setAttr(node, "data-pinned", String(tab.pinned));
   setAttr(node, "data-group", tab.group ? tab.group.color : "");
   setAttr(node, "data-sleeping", String(tab.sleeping));
+  setAttr(node, "data-frozen", String(Boolean(tab.frozen)));
   setAttr(node, "data-split", String(split));
 
   const title = tab.title || hostOf(tab.url) || "Новая вкладка";
-  const hint = tab.crashed ? `${title}\nСтраница перестала работать — щёлкните, чтобы загрузить заново` : title;
+  const hint = tab.crashed
+    ? `${title}\nСтраница перестала работать — щёлкните, чтобы загрузить заново`
+    : tab.frozen
+      ? `${title}\nВкладка спит, чтобы беречь память, — проснётся, когда вы её откроете`
+      : title;
   if (node.title !== hint) node.title = hint;
 
   const iconKind = tab.internal

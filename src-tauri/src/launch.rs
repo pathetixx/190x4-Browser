@@ -28,6 +28,9 @@ const PRIMARY_MUTEX: &str = "Local\\pw.x190x4.browser-primary";
 pub struct Launch {
     common: Mutex<Vec<String>>,
     windows: Mutex<HashMap<String, Vec<String>>>,
+    /// Вкладки, которые переедут в окно живыми, когда его интерфейс будет
+    /// готов: окно открыли, вытащив вкладку из строки другого окна.
+    adopt: Mutex<HashMap<String, Vec<u32>>>,
 }
 
 impl Launch {
@@ -44,6 +47,15 @@ impl Launch {
             .extend(targets);
     }
 
+    /// Вкладка переедет в окно `label`, когда его интерфейс её попросит.
+    pub fn push_adopt(&self, label: &str, tab: u32) {
+        self.adopt
+            .lock()
+            .entry(label.to_string())
+            .or_default()
+            .push(tab);
+    }
+
     fn take(&self, label: &str) -> Vec<String> {
         let mut found = self.windows.lock().remove(label).unwrap_or_default();
         found.extend(std::mem::take(&mut *self.common.lock()));
@@ -54,6 +66,13 @@ impl Launch {
 #[tauri::command]
 pub fn launch_take(window: tauri::Window, launch: State<'_, Launch>) -> Vec<String> {
     launch.take(window.label())
+}
+
+/// Вкладки, которые ждут этого окна (см. [`Launch::push_adopt`]).
+#[tauri::command]
+pub fn launch_adopt_take(window: tauri::Window, launch: State<'_, Launch>) -> Vec<u32> {
+    let mut adopt = launch.adopt.lock();
+    adopt.remove(window.label()).unwrap_or_default()
 }
 
 /// Браузер уже запущен? Второй процесс живёт до настройки плагинов, и профиль

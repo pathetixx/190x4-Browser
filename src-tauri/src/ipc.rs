@@ -362,6 +362,8 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
             }
         }
         "close" => window.close().map_err(text),
+        // Закрыть, хотя идут загрузки: человек ответил «Закрыть окно».
+        "close_force" => windows::close_anyway(&app, window.label()).map_err(text),
         // Видео на весь экран и F11: окно занимает экран целиком, интерфейс
         // прячет сам chrome.
         "fullscreen" => window.set_fullscreen(true).map_err(text),
@@ -426,6 +428,93 @@ pub fn window_open(
         WindowKind::Normal
     };
     windows::open(&app, kind, url).map(|_| ()).map_err(text)
+}
+
+/// Окно с единственной вкладкой, которую вытащили из строки, переезжает туда,
+/// где её отпустили, — как в Chrome.
+#[tauri::command(async)]
+pub fn window_move(app: AppHandle, window: tauri::Window, x: f64, y: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window(&owner(&window))
+        .ok_or("нет окна браузера")?;
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    }
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(text)
+}
+
+/// Вкладку вытащили из строки: новое окно встаёт там, где её отпустили, а
+/// сама вкладка переезжает в него живой, когда интерфейс окна её попросит
+/// (`tab_adopt`). Окно того же вида: из приватного — приватное.
+#[tauri::command(async)]
+pub fn tab_to_window(
+    app: AppHandle,
+    window: tauri::Window,
+    id: u32,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    let kind = if is_private(&app, &window) {
+        WindowKind::Private
+    } else {
+        WindowKind::Normal
+    };
+    windows::open_for_tab(&app, kind, id, x.zip(y))
+        .map(|_| ())
+        .map_err(text)
+}
+
+/// Забрать вкладку в это окно живой: её вытащили сюда из строки другого окна
+/// или окно открыли под неё. Прежнее окно узнаёт об этом событием `tab-moved`.
+#[tauri::command]
+pub fn tab_adopt(app: AppHandle, window: tauri::Window, id: u32) -> Result<(), String> {
+    let to = owner(&window);
+    let from = crate::state::move_tab(&app, id, &to)?;
+    if from != to {
+        let _ = app.emit_to(from.as_str(), "tab-moved", id);
+    }
+    Ok(())
+}
+
+/// Усыпить фоновую вкладку (`Tab::suspend`): её давно не открывали.
+#[tauri::command]
+pub fn tab_suspend(app: AppHandle, id: u32) -> Result<(), String> {
+    with_tab(&app, id, move |host| {
+        host.with_tab(TabId(id), |tab| tab.suspend());
+    })
+}
+
+/// История переходов вкладки для меню «Назад» и «Вперёд»: `currentIndex` и
+/// `entries` (`id`, `url`, `title`) из протокола отладки движка.
+#[tauri::command]
+pub async fn tab_history(app: AppHandle, id: u32) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_tab(&app, id, move |host| {
+            host.navigation_history(TabId(id), move |json| {
+                let _ = tx.send(json);
+            })
+        })?
+        .map_err(text)?;
+        let json = rx
+            .recv_timeout(ENGINE_TIMEOUT)
+            .map_err(|_| "движок не ответил".to_string())?;
+        serde_json::from_str(&json).map_err(text)
+    })
+    .await
+    .map_err(text)?
+}
+
+/// Перейти к записи истории вкладки из меню «Назад» или «Вперёд».
+#[tauri::command]
+pub fn tab_history_go(app: AppHandle, id: u32, entry: i64) -> Result<(), String> {
+    with_tab(&app, id, move |host| {
+        host.with_tab(TabId(id), |tab| tab.go_to_history_entry(entry))
+            .ok_or_else(|| "вкладка ещё не готова".to_string())?
+            .map_err(text)
+    })?
 }
 
 /// Вернуть последнее окно, закрытое крестиком, со всеми вкладками: Ctrl+Shift+T,
@@ -893,6 +982,14 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
         "adblock_exempt_sites" => state.guard.set_exempt_sites(exempt_sites(&state.store)),
         "adblock_lists" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
+        }
+        "smartscreen" => {
+            browser190x4_webview::tab::set_reputation_checking(
+                state.store.setting_bool("smartscreen", true),
+            );
+            for label in state.windows.labels() {
+                let _ = with_host(app, &label, |host| host.apply_reputation());
+            }
         }
         "search_engine" => {
             *state.engine.write() = state

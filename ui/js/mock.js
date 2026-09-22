@@ -95,6 +95,13 @@ export async function invoke(command, args = {}) {
       });
       return id;
     }
+    case "tab_navigate":
+      // Переход в макете: вкладка получает адрес, как от движка.
+      queueMicrotask(() => {
+        emit("tab", { kind: "started", id: args.id, url: args.url });
+        emit("tab", { kind: "finished", id: args.id, ok: true, http_status: 200, url: args.url });
+      });
+      return null;
     case "tab_close":
       return null;
     case "adblock_stats":
@@ -180,7 +187,18 @@ export async function invoke(command, args = {}) {
     case "services_state":
       return { translate: true, media: true };
     case "launch_take":
+    case "launch_adopt_take":
       return [];
+    case "tab_history":
+      // Меню «Назад»/«Вперёд» в макете: три страницы, текущая — средняя.
+      return {
+        currentIndex: 1,
+        entries: [
+          { id: 1, url: "https://habr.com/ru/feed/", title: "Хабр" },
+          { id: 2, url: "https://github.com/pathetixx/190x4-Browser", title: "190x4 Browser" },
+          { id: 3, url: "https://www.kinopoisk.ru/", title: "Кинопоиск" },
+        ],
+      };
     case "default_browser_state":
       return { is_default: defaultBrowser };
     case "default_browser_set":

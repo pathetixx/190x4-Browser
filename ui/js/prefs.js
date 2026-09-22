@@ -35,6 +35,9 @@ export const DEFAULTS = {
   ext_media_pinned: true,
   updates_auto: true,
   zoom_sites: {},
+  smartscreen: true,
+  media_autoplay: false,
+  tabs_sleep: "60",
 };
 
 const values = { ...DEFAULTS };
