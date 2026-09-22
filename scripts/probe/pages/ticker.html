@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>tick 0</title>
+<body>ticker
+<script>
+let n = 0;
+const timer = setInterval(() => { n += 1; document.title = "tick " + n; if (n >= 8) clearInterval(timer); }, 400);
+</script></body>

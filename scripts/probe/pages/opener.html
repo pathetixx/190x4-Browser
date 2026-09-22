@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>opener</title>
+<body><button id="b">open</button><a id="lnk" href="popup.html?ctrl" target="_blank" style="position:fixed;left:20px;top:60px;font-size:40px;padding:10px;background:#eee">link</a><a id="dl" href="blob.bin" target="_blank">download</a>
+<script>
+window.got = [];
+addEventListener("message", (e) => { window.got.push(String(e.data)); document.title = "got:" + window.got.join(","); });
+</script></body>

@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>popup</title>
+<body>popup
+<script>
+const hasOpener = Boolean(window.opener);
+if (window.opener) window.opener.postMessage("hi:" + location.search.slice(1), "*");
+document.title = "popup opener=" + hasOpener;
+if (location.search.includes("close")) setTimeout(() => window.close(), 800);
+</script></body>
