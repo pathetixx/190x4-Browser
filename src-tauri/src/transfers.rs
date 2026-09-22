@@ -257,9 +257,11 @@ pub fn emit_media(
     );
 }
 
-/// «Всегда спрашивать, куда сохранить»: системный диалог, ответ — в движок.
-pub fn ask_target(app: &AppHandle, key: u64, suggested: String) {
+/// «Всегда спрашивать, куда сохранить»: системный диалог над окном, где
+/// началась загрузка, ответ — в движок.
+pub fn ask_target(app: &AppHandle, window: &str, key: u64, suggested: String) {
     let app = app.clone();
+    let window = window.to_string();
     tauri::async_runtime::spawn_blocking(move || {
         let suggested = PathBuf::from(suggested);
         let mut dialog = app.dialog().file().set_title("Сохранить как");
@@ -269,7 +271,7 @@ pub fn ask_target(app: &AppHandle, key: u64, suggested: String) {
         if let Some(dir) = suggested.parent() {
             dialog = dialog.set_directory(dir);
         }
-        if let Some(main) = app.get_webview_window("chrome") {
+        if let Some(main) = app.get_webview_window(&window) {
             dialog = dialog.set_parent(&main);
         }
         let target = dialog
@@ -347,19 +349,16 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
                 download.kind == DownloadKind::Web,
                 "видео скачайте заново через загрузчик"
             );
-            // Ссылка на файл отдаётся с Content-Disposition: attachment, и
-            // навигация на неё не меняет страницу, а просто начинает загрузку.
+            // Повтор открывает ссылку фоновой вкладкой в окне, которое сейчас
+            // впереди. Ссылка на файл уходит в загрузку, и пустая вкладка
+            // закрывается сама (`TabEvent::CloseRequested`); если файла по
+            // ссылке больше нет, вкладка останется со страницей сайта — а не
+            // уведёт со своего места страницу, открытую у пользователя.
             let url = download.url.clone();
             state.store.remove_download(id)?;
-            // Повтор идёт в то окно, которое сейчас впереди: список загрузок
-            // мог остаться открытым и во втором окне.
             let label = crate::browser_windows::foreground_label(app);
-            crate::state::with_host(app, &label, move |host| {
-                let active = host.active_id();
-                active.and_then(|tab| host.with_tab(tab, |view| view.navigate(&url).ok()))
-            })
-            .map_err(anyhow::Error::msg)?
-            .ok_or_else(|| anyhow::anyhow!("откройте любую вкладку и повторите"))?;
+            crate::state::with_host(app, &label, move |host| host.open(&url).map(|_| ()))
+                .map_err(anyhow::Error::msg)??;
         }
         "remove" => {
             anyhow::ensure!(!download.state.is_active(), "сначала отмените загрузку");

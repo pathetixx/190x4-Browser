@@ -42,22 +42,33 @@ fn is_private(app: &AppHandle, window: &tauri::Window) -> bool {
 
 /* ── Вкладки ────────────────────────────────────────────────────────────── */
 
+/// Открыть вкладку. `popup` — номер окна, которое открыла страница
+/// (`TabEvent::Popup`): вкладка достаётся этому окну, и страница может с ним
+/// разговаривать.
 #[tauri::command]
 pub fn tab_open(
     app: AppHandle,
     window: tauri::Window,
     state: State<'_, App>,
     url: String,
+    popup: Option<u64>,
 ) -> Result<u32, String> {
     let url = normalize_url(&url, &search_engine(&state));
-    tracing::info!(%url, "открываем вкладку");
+    tracing::info!(%url, popup = popup.is_some(), "открываем вкладку");
     let result = with_host(&app, &owner(&window), move |host| {
-        host.open(&url).map(|id| id.0).map_err(text)
+        host.open_with(&url, popup).map(|id| id.0).map_err(text)
     })?;
     if let Err(err) = &result {
         tracing::error!(%err, "вкладка не открылась");
     }
     result
+}
+
+/// Не открывать окно, которое страница открыла сама по себе: `window.open`
+/// на ней получит `null`.
+#[tauri::command]
+pub fn tab_popup_deny(app: AppHandle, opener: u32, token: u64) -> Result<(), String> {
+    with_tab(&app, opener, move |host| host.popup_deny(token))
 }
 
 #[tauri::command]
@@ -113,6 +124,11 @@ pub fn tab_action(app: AppHandle, id: u32, action: String) -> Result<(), String>
             "forward" => tab.go_forward().map_err(text),
             "reload" => tab.reload().map_err(text),
             "reload_hard" => tab.reload_ignoring_cache().map_err(text),
+            "stop" => tab.stop().map_err(text),
+            "exit_fullscreen" => {
+                tab.exit_fullscreen();
+                Ok(())
+            }
             "print" => tab.print().map_err(text),
             "devtools" => tab.open_devtools().map_err(text),
             "zoom_in" => tab.zoom(1).map(|_| ()).map_err(text),
@@ -279,8 +295,21 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
             }
         }
         "close" => window.close().map_err(text),
+        // Видео на весь экран и F11: окно занимает экран целиком, интерфейс
+        // прячет сам chrome.
+        "fullscreen" => window.set_fullscreen(true).map_err(text),
+        "unfullscreen" => window.set_fullscreen(false).map_err(text),
         other => Err(format!("неизвестное действие окна {other}")),
     }
+}
+
+/// «Закрыть браузер» из меню: все окна разом. Сессии открытых окон остаются
+/// в базе и вернутся при следующем запуске — в отличие от окна, закрытого
+/// крестиком, пока открыты другие.
+#[tauri::command(async)]
+pub fn app_quit(app: AppHandle) {
+    windows::save_geometry(&app);
+    app.exit(0);
 }
 
 /// Вернуть клавиатуру интерфейсу (см. `TabHost::focus_chrome`).
@@ -363,6 +392,12 @@ fn normalize_url(input: &str, engine: &str) -> String {
     if trimmed == "about:newtab" {
         return format!("http://{}/newtab.html", browser190x4_webview::PAGES_HOST);
     }
+    // «? запрос» — всегда поиск, как в Chrome: так ищут то, что похоже на адрес.
+    if let Some(query) = trimmed.strip_prefix('?').map(str::trim) {
+        if !query.is_empty() {
+            return format!("{}{}", search_prefix(engine), urlencode(query));
+        }
+    }
     // Схемы, которые исполняют код в той странице, где их открыли: вставленные
     // в адресную строку, они бывают только просьбой мошенника «вставьте это
     // сюда». Ищем их как текст, как это делает Chrome.
@@ -379,7 +414,8 @@ fn normalize_url(input: &str, engine: &str) -> String {
     let looks_like_host = !trimmed.contains(' ')
         && trimmed.contains('.')
         && !trimmed.starts_with('.')
-        && !trimmed.ends_with('.');
+        && !trimmed.ends_with('.')
+        && (names_a_site(trimmed) || is_local_address(trimmed));
     if looks_like_host || trimmed == "localhost" || trimmed.starts_with("localhost:") {
         // Домашний роутер и сосед по локальной сети по https не отвечают:
         // туда идём по http, во внешний интернет — по https.
@@ -392,6 +428,31 @@ fn normalize_url(input: &str, engine: &str) -> String {
     } else {
         format!("{}{}", search_prefix(engine), urlencode(trimmed))
     }
+}
+
+/// Слово с точкой — сайт, только если это похоже на сайт: известный домен
+/// верхнего уровня, IP-адрес, порт или путь. «node.js», «отчёт.pdf» и «v1.2»
+/// уходят в поиск, как в Chrome, а не в «сайт не найден».
+fn names_a_site(input: &str) -> bool {
+    let (address, rest) = match input.find(['/', '?', '#']) {
+        Some(at) => input.split_at(at),
+        None => (input, ""),
+    };
+    let (host, port) = match address.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            (host, true)
+        }
+        _ => (address, false),
+    };
+    if port || rest.len() > 1 || host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    let host = host.trim_end_matches('.').to_lowercase();
+    // Кириллическая зона (пример.рф, сайт.москва) — сайт, её разберёт движок.
+    if !host.rsplit('.').next().unwrap_or("").is_ascii() {
+        return true;
+    }
+    psl::suffix(host.as_bytes()).is_some_and(|suffix| suffix.is_known())
 }
 
 /// Адрес внутри локальной сети: его открываем по http.
@@ -485,6 +546,28 @@ mod tests {
         assert_eq!(normalize_url("nas.local", "google"), "http://nas.local");
         assert_eq!(normalize_url("habr.com", "google"), "https://habr.com");
         assert_eq!(normalize_url("8.8.8.8", "google"), "https://8.8.8.8");
+    }
+
+    #[test]
+    fn words_with_a_dot_are_searched_unless_they_name_a_site() {
+        for input in ["node.js", "отчёт.pdf", "v1.2", "3.14", "index.html"] {
+            assert!(
+                normalize_url(input, "duckduckgo").starts_with("https://duckduckgo.com/?q="),
+                "{input}"
+            );
+        }
+        assert_eq!(normalize_url("habr.com", "google"), "https://habr.com");
+        assert_eq!(normalize_url("ya.ru/maps", "google"), "https://ya.ru/maps");
+        assert_eq!(normalize_url("пример.рф", "google"), "https://пример.рф");
+        assert_eq!(
+            normalize_url("server.corp:8080", "google"),
+            "https://server.corp:8080"
+        );
+        assert_eq!(normalize_url("nas.lan", "google"), "http://nas.lan");
+        assert_eq!(
+            normalize_url("? habr.com", "duckduckgo"),
+            "https://duckduckgo.com/?q=habr.com"
+        );
     }
 
     #[test]
@@ -700,6 +783,21 @@ pub fn history_record(
     state.store.record_visit(&url, &title).map_err(text)
 }
 
+/// Заголовок уже записанной страницы сменился — посещение то же самое.
+#[tauri::command(async)]
+pub fn history_title(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, App>,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    if is_private(&app, &window) {
+        return Ok(());
+    }
+    state.store.update_visit_title(&url, &title).map_err(text)
+}
+
 /// Страница истории: посещения по времени с поиском и подгрузкой по мере
 /// прокрутки.
 #[tauri::command(async)]
@@ -824,13 +922,15 @@ pub fn session_save(
     state.store.save_session(session, &tabs).map_err(text)
 }
 
+/// Вкладки прошлого сеанса для этого окна. Новому окну (Ctrl+N) восстанавливать
+/// нечего, даже если под его номером в базе что-то осталось.
 #[tauri::command(async)]
 pub fn session_restore(
     window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Vec<SessionTab>, String> {
     let label = owner(&window);
-    let Some(session) = state.windows.session(&label) else {
+    let Some(session) = state.windows.restored_session(&label) else {
         return Ok(Vec::new());
     };
     state.store.restore_session(session).map_err(text)
@@ -969,9 +1069,17 @@ pub fn bookmark_remove_url(
 #[tauri::command]
 pub async fn bookmarks_import(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Option<ImportReport>, String> {
-    let Some(path) = pick_file(&app, "Импорт закладок", "Файл закладок", &["html", "htm"]).await
+    let Some(path) = pick_file(
+        &app,
+        owner(&window),
+        "Импорт закладок",
+        "Файл закладок",
+        &["html", "htm"],
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -988,10 +1096,19 @@ pub async fn bookmarks_import(
 #[tauri::command]
 pub async fn bookmarks_export(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Option<String>, String> {
     let name = format!("bookmarks_190x4_{}.html", today());
-    let Some(path) = save_file(&app, "Экспорт закладок", "Файл закладок", &["html"], name).await
+    let Some(path) = save_file(
+        &app,
+        owner(&window),
+        "Экспорт закладок",
+        "Файл закладок",
+        &["html"],
+        name,
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -1103,9 +1220,11 @@ pub struct PasswordImport {
 #[tauri::command]
 pub async fn passwords_import(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Option<PasswordImport>, String> {
-    let Some(path) = pick_file(&app, "Импорт паролей", "CSV", &["csv"]).await else {
+    let Some(path) = pick_file(&app, owner(&window), "Импорт паролей", "CSV", &["csv"]).await
+    else {
         return Ok(None);
     };
     let bytes = std::fs::read(&path).map_err(text)?;
@@ -1148,7 +1267,15 @@ pub async fn passwords_export(
     }
 
     let name = format!("passwords_190x4_{}.csv", today());
-    let Some(path) = save_file(&app, "Экспорт паролей", "CSV", &["csv"], name).await
+    let Some(path) = save_file(
+        &app,
+        owner(&window),
+        "Экспорт паролей",
+        "CSV",
+        &["csv"],
+        name,
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -1305,17 +1432,19 @@ pub fn downloads_folder_open(app: AppHandle, state: State<'_, App>) -> Result<()
 #[tauri::command]
 pub async fn download_folder_pick(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
 ) -> Result<Option<String>, String> {
     let current = download_dir(&app, &state.store);
     let handle = app.clone();
+    let label = owner(&window);
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = handle
             .dialog()
             .file()
             .set_title("Папка для загрузок")
             .set_directory(current);
-        if let Some(main) = handle.get_webview_window("chrome") {
+        if let Some(main) = handle.get_webview_window(&label) {
             dialog = dialog.set_parent(&main);
         }
         dialog
@@ -1484,8 +1613,12 @@ pub async fn popup_hide(app: AppHandle, window: tauri::Window) -> Result<(), Str
 
 /* ── Диалоги файлов ─────────────────────────────────────────────────────── */
 
+// Диалог принадлежит окну, из которого его открыли: над первым окном он
+// оказался бы за вторым, в котором пользователь нажал кнопку.
+
 async fn pick_file(
     app: &AppHandle,
+    owner: String,
     title: &'static str,
     filter: &'static str,
     extensions: &'static [&'static str],
@@ -1497,7 +1630,7 @@ async fn pick_file(
             .file()
             .set_title(title)
             .add_filter(filter, extensions);
-        if let Some(main) = app.get_webview_window("chrome") {
+        if let Some(main) = app.get_webview_window(&owner) {
             dialog = dialog.set_parent(&main);
         }
         dialog.blocking_pick_file().and_then(|p| p.into_path().ok())
@@ -1509,6 +1642,7 @@ async fn pick_file(
 
 async fn save_file(
     app: &AppHandle,
+    owner: String,
     title: &'static str,
     filter: &'static str,
     extensions: &'static [&'static str],
@@ -1525,7 +1659,7 @@ async fn save_file(
         if let Ok(dir) = app.path().document_dir() {
             dialog = dialog.set_directory(dir);
         }
-        if let Some(main) = app.get_webview_window("chrome") {
+        if let Some(main) = app.get_webview_window(&owner) {
             dialog = dialog.set_parent(&main);
         }
         dialog.blocking_save_file().and_then(|p| p.into_path().ok())
@@ -1629,16 +1763,31 @@ pub async fn media_download(
             app.state::<App>().transfers.finish_media(id);
         };
 
+        // Один оборванный запрос прогресса — ещё не оборванная загрузка: связь
+        // мигнула, а сервер продолжает работать. Сдаёмся после нескольких
+        // неудач подряд.
+        const PROGRESS_RETRIES: u32 = 8;
+        let mut misses = 0;
+        let mut downloaded = 0;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
 
             let progress = match services.media_progress(&job).await {
-                Ok(progress) => progress,
+                Ok(progress) => {
+                    misses = 0;
+                    progress
+                }
                 Err(err) => {
-                    fail(&app, "failed", 0, &name, &text(err));
-                    return;
+                    misses += 1;
+                    tracing::debug!(job = %job, misses, %err, "прогресс загрузки не получен");
+                    if misses >= PROGRESS_RETRIES {
+                        fail(&app, "failed", downloaded, &name, &text(err));
+                        return;
+                    }
+                    continue;
                 }
             };
+            downloaded = progress.downloaded;
 
             let total = (progress.total > 0).then_some(progress.total);
             if !progress.file_name.is_empty() && progress.file_name != name {

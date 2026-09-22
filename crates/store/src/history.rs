@@ -90,6 +90,29 @@ impl Store {
         Ok(())
     }
 
+    /// Заголовок открытой страницы сменился (счётчик писем, таймер, название
+    /// трека): это то же посещение, новое название получает только его запись.
+    pub fn update_visit_title(&self, url: &str, title: &str) -> anyhow::Result<()> {
+        if !is_recordable(url) || title.is_empty() {
+            return Ok(());
+        }
+        let search = searchable(title, url);
+        self.with(|db| {
+            let tx = db.unchecked_transaction()?;
+            tx.execute(
+                "UPDATE history SET title = ?2, search = ?3 WHERE url = ?1",
+                rusqlite::params![url, title, search],
+            )?;
+            tx.execute(
+                "UPDATE visits SET title = ?2, search = ?3
+                 WHERE id = (SELECT MAX(id) FROM visits WHERE url = ?1)",
+                rusqlite::params![url, title, search],
+            )?;
+            tx.commit()
+        })?;
+        Ok(())
+    }
+
     pub fn recent_history(&self, limit: u32) -> anyhow::Result<Vec<HistoryEntry>> {
         self.with(|db| {
             let mut stmt = db.prepare(
@@ -398,6 +421,29 @@ mod tests {
 
         store.forget_visit(visits[0].id).unwrap();
         assert_eq!(store.history_visits("", None, 10).unwrap().len(), 1);
+        assert_eq!(store.recent_history(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn title_change_is_not_a_new_visit() {
+        let store = Store::memory().unwrap();
+        store
+            .record_visit("https://mail.example/", "Почта")
+            .unwrap();
+        store
+            .update_visit_title("https://mail.example/", "(3) Почта")
+            .unwrap();
+
+        let recent = store.recent_history(10).unwrap();
+        assert_eq!(recent[0].visits, 1);
+        assert_eq!(recent[0].title, "(3) Почта");
+        let visits = store.history_visits("", None, 10).unwrap();
+        assert_eq!(visits.len(), 1);
+        assert_eq!(visits[0].title, "(3) Почта");
+        // Незаписанный адрес заголовком не заводится.
+        store
+            .update_visit_title("https://other.example/", "Другое")
+            .unwrap();
         assert_eq!(store.recent_history(10).unwrap().len(), 1);
     }
 

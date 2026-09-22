@@ -35,7 +35,10 @@ let sawDownloads = false;
 export function initToolbar() {
   document.getElementById("nav-back").addEventListener("click", () => tabAction("back"));
   document.getElementById("nav-forward").addEventListener("click", () => tabAction("forward"));
-  document.getElementById("nav-reload").addEventListener("click", () => tabAction("reload"));
+  // Пока страница грузится, «Обновить» становится «Остановить».
+  document.getElementById("nav-reload").addEventListener("click", (event) =>
+    tabAction(event.currentTarget.dataset.loading === "true" ? "stop" : "reload")
+  );
   homeButton.addEventListener("click", goHome);
 
   downloadsButton.addEventListener("click", () => openDownloadsBubble());

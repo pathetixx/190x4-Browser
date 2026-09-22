@@ -102,8 +102,28 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     let found = targets(args.get(1..).unwrap_or_default(), Path::new(&cwd), "|");
     tracing::info!(count = found.len(), "повторный запуск браузера");
     // Адреса забирает то окно, которое сейчас впереди: в него же выходит и
-    // фокус. Приватному окну чужие ссылки не отдаём.
-    let target = crate::browser_windows::foreground_label(app);
+    // фокус. Приватному окну чужие ссылки не отдаём: если открыты только
+    // приватные окна, ссылка получает новое обычное окно.
+    let Some(target) = crate::browser_windows::normal_label(app) else {
+        let app = app.clone();
+        // Окно создаётся не здесь: сюда попадают из обработчика сообщения
+        // окна на главном потоке, а создание окна ждёт главный поток.
+        tauri::async_runtime::spawn(async move {
+            use crate::browser_windows::{open, WindowKind};
+            let mut urls = found.into_iter();
+            let first = urls.next();
+            match open(&app, WindowKind::Normal, first) {
+                Ok(label) => {
+                    let rest: Vec<String> = urls.collect();
+                    if !rest.is_empty() {
+                        app.state::<Launch>().push_for(&label, rest);
+                    }
+                }
+                Err(err) => tracing::warn!(%err, "окно для ссылки не открылось"),
+            }
+        });
+        return;
+    };
     if !found.is_empty() {
         app.state::<Launch>().push_for(&target, found);
         let _ = app.emit_to(target.as_str(), "launch", ());

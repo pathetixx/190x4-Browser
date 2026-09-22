@@ -8,10 +8,11 @@
  */
 
 import { emit, invoke, isNative, listen } from "./bridge.js";
-import { anchorOf, el, favicon, hostOf, icon } from "./dom.js";
+import { anchorOf, displayHost, displayPath, displayUrl, el, favicon, hostOf, icon } from "./dom.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
-import { onPref, pref } from "./prefs.js";
-import { activeTab, state } from "./state.js";
+import { onPref, pref, setPref } from "./prefs.js";
+import { activeTab, emit as emitState, state, tabIndex } from "./state.js";
+import { open } from "./tabs.js";
 import { bookmarkCurrent, hooks, isNewTabUrl, navigate, openSettings, tabAction } from "./actions.js";
 
 const omni = document.getElementById("omni");
@@ -26,10 +27,15 @@ const key = document.getElementById("omni-key");
 const zoomChip = document.getElementById("omni-zoom");
 const zoomValue = document.getElementById("omni-zoom-value");
 const translateButton = document.getElementById("omni-translate");
+const popupsChip = document.getElementById("omni-popups");
+const popupsCount = document.getElementById("omni-popups-count");
 const suggest = document.getElementById("suggest");
 
 let selected = 0;
 let rows = [];
+/// Строку выбрали стрелкой. Пока нет — Enter открывает набранный текст как
+/// есть: подсказки приходят с опозданием и могли остаться от прошлой буквы.
+let picked = false;
 let suggestToken = 0;
 /// Подсказки в приложении живут во всплывающем окне поверх страницы: HTML-слой
 /// ушёл бы под нативную поверхность. В mock-режиме — прежний выпадающий список.
@@ -57,7 +63,7 @@ export function initOmnibox() {
       return;
     }
     if (event.key === "Enter") {
-      const row = rows[selected];
+      const row = picked ? rows[selected] : null;
       const value = row ? row.value : field.value;
       if (value.trim()) navigate(value, { newTab: event.altKey });
       field.blur();
@@ -95,6 +101,7 @@ export function initOmnibox() {
   translateButton.addEventListener("click", () => hooks.togglePanel("translate"));
   key.addEventListener("click", openAccounts);
   site.addEventListener("click", openSiteInfo);
+  popupsChip.addEventListener("click", openBlockedPopups);
   zoomChip.addEventListener("click", () => {
     const tab = activeTab();
     openMenu(
@@ -178,16 +185,23 @@ export function renderOmnibox() {
         siteLabel.hidden = false;
         siteLabel.textContent = "Не защищено";
       }
-      display.append(el("b", null, parsed.host), document.createTextNode(parsed.pathname + parsed.search + parsed.hash));
+      // Кириллица в адресе — буквами, а не `%D0%9C…` и `xn--…`.
+      const host = displayHost(parsed.hostname) + (parsed.port ? `:${parsed.port}` : "");
+      display.append(el("b", null, host), document.createTextNode(displayPath(parsed.pathname + parsed.search + parsed.hash)));
     } catch {
       setSite("insecure", "info-16");
-      display.textContent = url;
+      display.textContent = displayUrl(url);
     }
   }
+  display.title = tab && !tab.internal && !isNewTabUrl(url) ? displayUrl(url) : "";
 
   const blocked = tab?.blocked ?? 0;
   shield.hidden = blocked === 0 || Boolean(tab?.internal);
   shieldCount.textContent = blocked > 999 ? "999+" : blocked;
+
+  const popups = tab ? state.blockedPopups.get(tab.id)?.length ?? 0 : 0;
+  popupsChip.hidden = popups === 0;
+  popupsCount.textContent = popups > 9 ? "9+" : String(popups);
 
   const zoom = tab?.zoom ?? 1;
   zoomChip.hidden = Math.abs(zoom - 1) < 0.001 || Boolean(tab?.internal);
@@ -250,6 +264,62 @@ function openAccounts() {
   openPopup("accounts", key, { width: 320, align: "end", payload: { tab: tab.id, ...saved } });
 }
 
+/** Сайт как ключ настроек: хост без `www.`. */
+export function siteKey(url) {
+  return hostOf(url).replace(/^www\./, "").toLowerCase();
+}
+
+/**
+ * Окна, которые сайт хотел открыть сам по себе. Chrome их тоже не пускает и
+ * держит значок в адресной строке: открыть окно всё-таки или разрешить сайту
+ * открывать окна всегда.
+ */
+function openBlockedPopups() {
+  const tab = activeTab();
+  const blocked = tab ? state.blockedPopups.get(tab.id) ?? [] : [];
+  if (!tab || !blocked.length) return;
+  const site = siteKey(tab.url);
+  const recent = blocked.slice(-5).reverse();
+  const items = [
+    { type: "header", label: blocked.length > 1 ? "Сайт хотел открыть новые окна" : "Сайт хотел открыть новое окно" },
+    ...recent.map((entry, index) => ({
+      id: `open:${index}`,
+      label: entry.url === "about:blank" ? "Пустое окно" : displayUrl(entry.url),
+      icon: "open",
+    })),
+    { separator: true },
+    { id: "allow", label: `Всегда разрешать на ${displayHost(site)}`, icon: "checkmark-16", disabled: !site },
+    { id: "clear", label: "Не открывать", icon: "dismiss-16" },
+  ];
+  openMenu(
+    "popups",
+    popupsChip,
+    items,
+    (action) => {
+      const current = state.blockedPopups.get(tab.id) ?? [];
+      if (action?.startsWith("open:")) {
+        const entry = recent[Number(action.slice(5))];
+        if (entry) {
+          open(entry.url, { index: tabIndex(tab.id) + 1 }).catch(() => {});
+          state.blockedPopups.set(
+            tab.id,
+            current.filter((other) => other !== entry)
+          );
+        }
+      } else if (action === "allow" && site) {
+        const allowed = pref("popups_allowed_sites") ?? [];
+        if (!allowed.includes(site)) setPref("popups_allowed_sites", [...allowed, site].sort()).catch(() => {});
+        state.blockedPopups.delete(tab.id);
+        hooks.toast(`Сайт ${displayHost(site)} может открывать новые окна`);
+      } else if (action === "clear") {
+        state.blockedPopups.delete(tab.id);
+      }
+      emitState();
+    },
+    { width: 340, align: "end" }
+  );
+}
+
 /** Пузырь о сайте: соединение, блокировки, быстрые ссылки в настройки. */
 async function openSiteInfo() {
   const tab = activeTab();
@@ -287,7 +357,9 @@ async function renderSuggest(query) {
   if (token !== suggestToken) return;
 
   rows = buildRows(value, history, []);
-  selected = 0;
+  // Пустое поле: Enter ничего не открывает, пока строку не выбрали стрелкой.
+  selected = value ? 0 : -1;
+  picked = false;
   if (field.hidden) return;
   paint();
 
@@ -303,20 +375,25 @@ async function renderSuggest(query) {
 
 /**
  * Порядок строк фиксированный — пользователь не должен угадывать, что
- * окажется первым: переход по адресу, закладки, история, подсказки
- * поисковика, поиск набранного.
+ * окажется первым. Первая строка — то, что набрано: переход по адресу или
+ * поиск, её и выполняет Enter, как в Chrome. Дальше закладки, история и
+ * подсказки поисковика — до них доходят стрелками.
  */
 function buildRows(value, history, words) {
   const out = [];
   if (!value) {
     for (const entry of history) {
-      out.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
+      out.push({ text: entry.title || displayUrl(entry.url), hint: displayHost(hostOf(entry.url)), value: entry.url, iconId: "history-16" });
     }
     return out;
   }
 
   const looksLikeUrl = value.includes("://") || (/\./.test(value) && !/\s/.test(value));
-  if (looksLikeUrl) out.push({ text: value, hint: "перейти", value, iconId: "globe-16" });
+  out.push(
+    looksLikeUrl
+      ? { text: displayUrl(value), hint: "перейти", value, iconId: "globe-16" }
+      : { text: value, hint: "поиск", value, iconId: "search-16" }
+  );
 
   const needle = value.toLowerCase();
   const seen = new Set();
@@ -327,14 +404,15 @@ function buildRows(value, history, words) {
     out.push({ text: node.title || node.url, hint: "закладка", value: node.url, iconId: "star-16", image: node.icon });
   }
   for (const entry of history) {
-    if (seen.has(entry.url)) continue;
-    out.push({ text: entry.title || entry.url, hint: hostOf(entry.url), value: entry.url, iconId: "history-16" });
+    if (seen.has(entry.url) || entry.url === value) continue;
+    out.push({ text: entry.title || displayUrl(entry.url), hint: displayHost(hostOf(entry.url)), value: entry.url, iconId: "history-16" });
   }
   for (const word of words.slice(0, 6)) {
     if (word.toLowerCase() === needle) continue;
     out.push({ text: word, hint: "поиск", value: word, iconId: "search-16" });
   }
-  out.push({ text: value, hint: "поиск", value, iconId: "search-16" });
+  // Похоже на адрес, но это может быть и запрос: поиск набранного — последним.
+  if (looksLikeUrl) out.push({ text: value, hint: "поиск", value: `? ${value}`, iconId: "search-16" });
   return out;
 }
 
@@ -375,7 +453,8 @@ function paint() {
 
 function move(delta) {
   if (!rows.length) return;
-  selected = (selected + delta + rows.length) % rows.length;
+  picked = true;
+  selected = selected < 0 ? (delta > 0 ? 0 : rows.length - 1) : (selected + delta + rows.length) % rows.length;
   if (isNative) {
     emit("suggest-select", { selected });
     return;

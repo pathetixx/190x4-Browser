@@ -15,7 +15,7 @@ import { invoke, listen } from "./bridge.js";
 import { hooks, openInNewWindow, openInPrivateWindow, openInSplit, openMediaExtension } from "./actions.js";
 import { onPopupAction, openPopup } from "./popups.js";
 import { pref } from "./prefs.js";
-import { state, tabIndex } from "./state.js";
+import { rightPaneId, state, tabIndex } from "./state.js";
 import { open } from "./tabs.js";
 
 /** Сочетания в нашей записи: у движка они длиннее («Alt+Стрелка влево»). */
@@ -77,7 +77,9 @@ export async function openContextMenu({ id, menu, x, y, target, items }) {
   current = { tab: id, menu, target, site: null, answered: false };
   const menuState = current;
 
-  if (id !== state.activeId) {
+  // Меню бывает только у страницы на экране: активной или второй половины
+  // разделённого экрана.
+  if (id !== state.activeId && id !== state.splitId) {
     answer(null);
     return;
   }
@@ -95,7 +97,10 @@ export async function openContextMenu({ id, menu, x, y, target, items }) {
 
   const stage = document.getElementById("stage").getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
-  const point = { x: stage.left + x / scale, y: stage.top + y / scale, width: 0, height: 0 };
+  // Точка щелчка — от левого края своей вкладки; правая половина разделённого
+  // экрана начинается там же, где её ставит Rust (`TabHost::bounds_for`).
+  const offset = id === rightPaneId() ? paneOffset(stage.width * scale) / scale : 0;
+  const point = { x: stage.left + offset + x / scale, y: stage.top + y / scale, width: 0, height: 0 };
   const opened = await openPopup("context", point, {
     width: 292,
     align: "point",
@@ -104,6 +109,12 @@ export async function openContextMenu({ id, menu, x, y, target, items }) {
     payload: { menu: `page:${menu}`, tab: id, token: menu, rows },
   }).catch(() => false);
   if (!opened && current === menuState) answer(null);
+}
+
+/** Где начинается правая половина разделённого экрана, в физических пикселях. */
+export function paneOffset(physicalWidth) {
+  const GAP = 2;
+  return Math.floor((Math.round(physicalWidth) - GAP) / 2) + GAP;
 }
 
 function answer(command) {

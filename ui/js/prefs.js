@@ -25,6 +25,7 @@ export const DEFAULTS = {
   passwords_autofill: true,
   adblock_enabled: true,
   adblock_exempt_sites: [],
+  popups_allowed_sites: [],
   download_dir: "",
   download_ask: false,
   download_bubble: true,

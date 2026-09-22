@@ -13,8 +13,16 @@ const listeners = new Set();
 export const state = {
   tabs: new Map(),
   activeId: null,
-  /// Вторая вкладка разделённого экрана: она справа от активной.
+  /// Вторая вкладка разделённого экрана. Обычно она справа от активной;
+  /// `swapped` — активной стала правая половина (по ней щёлкнули), и вкладки
+  /// остались на своих местах. Так же считает Rust (`TabHost`).
   splitId: null,
+  swapped: false,
+  /// Вкладка во весь экран: видео, развёрнутое страницей, или F11.
+  fullscreen: { page: null, window: false },
+  /// Окна, которые сайт открыл сам по себе и которые браузер не пустил:
+  /// вкладка → [{ url, site }].
+  blockedPopups: new Map(),
   blockedTotal: 0,
   latencyMicros: 0,
   adblockOn: true,
@@ -63,6 +71,21 @@ function blankTab(id) {
     internal: null,
     section: "",
   };
+}
+
+/**
+ * Закрытые вкладки. События движка, отправленные до закрытия, приходят и
+ * после него — и `upsertTab` вернул бы вкладку-призрак в строку. Номера
+ * вкладок не повторяются, так что список только растёт.
+ */
+const closedIds = new Set();
+
+export function markClosed(id) {
+  closedIds.add(id);
+}
+
+export function isClosed(id) {
+  return closedIds.has(id);
 }
 
 export function upsertTab(id, patch) {
@@ -120,8 +143,12 @@ export function tabIndex(id) {
 export function removeTab(id) {
   state.tabs.delete(id);
   state.passwordSites.delete(id);
+  state.blockedPopups.delete(id);
   if (state.activeId === id) state.activeId = null;
-  if (state.splitId === id) state.splitId = null;
+  if (state.splitId === id) {
+    state.splitId = null;
+    state.swapped = false;
+  }
   emit();
 }
 
@@ -133,13 +160,27 @@ export function splitTab() {
   return state.splitId === null ? null : state.tabs.get(state.splitId) ?? null;
 }
 
+/**
+ * Сделать вкладку активной. Вторая половина разделённого экрана становится
+ * активной на своём месте, вкладка не из пары — на месте активной половины.
+ */
 export function setActive(id) {
+  if (state.splitId !== null && state.splitId === id) {
+    state.splitId = state.activeId;
+    state.swapped = state.splitId !== null && !state.swapped;
+  }
   state.activeId = id;
-  if (state.splitId === id) state.splitId = null;
   emit();
 }
 
 export function setSplit(id) {
   state.splitId = id;
+  state.swapped = false;
   emit();
+}
+
+/** Какая вкладка в правой половине разделённого экрана. */
+export function rightPaneId() {
+  if (state.splitId === null) return null;
+  return state.swapped ? state.activeId : state.splitId;
 }

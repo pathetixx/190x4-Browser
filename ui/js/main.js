@@ -18,29 +18,32 @@ import {
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
 import { initContextMenu, openContextMenu, wantsBackgroundTab } from "./context-menu.js";
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
-import { el, hostOf } from "./dom.js";
+import { displayHost, el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
+import { initFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
 import { initLayout, syncDuring } from "./layout.js";
-import { focusOmnibox, initOmnibox, renderOmnibox } from "./omnibox.js";
+import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isLivePanel, isPanelOpen, openPanel, renderPanel, toggle } from "./panels.js";
 import { initPopups, onPopupAction, openPopup } from "./popups.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
-import { activeTab, removeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
+import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, tabIndex, upsertTab } from "./state.js";
 import {
   activate,
   close,
   cycle,
   endSplit,
   initTabs,
+  moveActive,
   open,
   openSleeping,
   parseInternal,
   renderTabs,
   reopenClosed,
   togglePin,
+  visibleIds,
 } from "./tabs.js";
 import { initToolbar, loadWindowState, renderToolbar, syncWindowState } from "./toolbar.js";
 import { initUpdates } from "./updates.js";
@@ -96,6 +99,7 @@ initDownloads();
 initUpdates();
 initContextMenu({ translate: translateText });
 initDialogs();
+initFullscreen();
 
 const web = () => {
   const tab = activeTab();
@@ -184,14 +188,20 @@ function applyStatusbar() {
 
 /* ── События вкладок из Rust ───────────────────────────────── */
 
+/** Адрес, посещение которого уже записано в историю, — по вкладке. */
+const recorded = new Map();
+
 listen("tab", (event) => {
+  // Событие закрытой вкладки (движок отправил его до закрытия) не должно
+  // вернуть её в строку призраком.
+  if (event.id != null && isClosed(event.id)) return;
   switch (event.kind) {
     case "opened":
       upsertTab(event.id, { loading: true, url: event.url });
       if (state.activeId === null) activate(event.id);
       // Готовая поверхность вкладки забирает клавиатуру себе — на новой
       // вкладке возвращаем курсор в адресную строку.
-      if (state.activeId === event.id && isNewTabUrl(event.url)) {
+      if (state.activeId === event.id && String(event.url).includes("190x4-pages.invalid/newtab")) {
         document.dispatchEvent(new CustomEvent("browser:focus-omnibox"));
       }
       break;
@@ -204,22 +214,24 @@ listen("tab", (event) => {
       upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
       onNavigation(event.id);
       state.passwordSites.delete(event.id);
+      state.blockedPopups.delete(event.id);
+      recorded.delete(event.id);
       break;
-    case "finished":
+    case "finished": {
       // Навигация, ушедшая в загрузку, документ не меняет: в адресной строке —
       // адрес, который остался у вкладки, а не набранный.
       upsertTab(event.id, event.url ? { loading: false, url: event.url } : { loading: false });
       applySiteZoom(event.id);
-      break;
-    case "title": {
-      upsertTab(event.id, { title: event.title });
+      // Заголовок у страницы тот же, что у прошлой, — события о нём не будет,
+      // а посещение всё равно записать нужно.
       const tab = state.tabs.get(event.id);
-      // Визит записываем здесь: только в этот момент известны и адрес, и заголовок.
-      if (tab?.url && !isNewTabUrl(tab.url)) {
-        invoke("history_record", { url: tab.url, title: event.title }).catch(() => {});
-      }
+      if (event.ok && tab) recordVisit(event.id, tab.url, tab.title);
       break;
     }
+    case "title":
+      upsertTab(event.id, { title: event.title });
+      recordVisit(event.id, state.tabs.get(event.id)?.url, event.title);
+      break;
     case "url":
       upsertTab(event.id, { url: event.url });
       break;
@@ -244,9 +256,22 @@ listen("tab", (event) => {
       rememberSiteZoom(event.id, event.factor);
       break;
     case "popup":
-      // Вкладка по ссылке: щелчок по target=_blank переключает на неё, а
-      // «Открыть ссылку в новой вкладке» из меню — оставляет в фоне.
-      open(event.url, { index: tabIndex(event.opener) + 1, background: wantsBackgroundTab() });
+      onPagePopup(event);
+      break;
+    case "close_requested": {
+      // Окно входа закончило работу (`window.close()`) или вкладка, открытая
+      // ссылкой на файл, ушла в загрузку. Вкладку, по которой уже ходили,
+      // загрузка не закрывает.
+      const tab = state.tabs.get(event.id);
+      if (tab && !(event.download && tab.canBack)) close(event.id, { toOpener: true });
+      break;
+    }
+    case "fullscreen":
+      onPageFullscreen(event.id, event.on);
+      break;
+    case "focused":
+      // Щёлкнули во вторую половину разделённого экрана — активной становится она.
+      if (event.id === state.splitId) activate(event.id);
       break;
     case "message":
       handlePageMessage(event);
@@ -272,6 +297,51 @@ listen("tab", (event) => {
       break;
   }
 });
+
+/**
+ * Посещение — одно на загрузку страницы. Заголовок меняется и потом (счётчик
+ * писем, таймер, название трека) — тогда обновляется только он, иначе сайт с
+ * часами в заголовке писал бы в историю по строке в секунду.
+ */
+function recordVisit(id, url, title) {
+  if (!url || isNewTabUrl(url) || url.startsWith("about:")) return;
+  if (recorded.get(id) === url) {
+    if (title) invoke("history_title", { url, title }).catch(() => {});
+    return;
+  }
+  recorded.set(id, url);
+  invoke("history_record", { url, title: title ?? "" }).catch(() => {});
+}
+
+/**
+ * Страница открывает окно. Щелчок по ссылке и «Открыть в новой вкладке»
+ * открывают вкладку, а окна, которые сайт открывает сам по себе (реклама
+ * поверх страницы), браузер не пускает — как Chrome. Такие окна копятся
+ * у значка в адресной строке: оттуда их можно открыть или разрешить сайту.
+ */
+function onPagePopup({ opener, url, token, user_initiated: userInitiated, background }) {
+  if (isClosed(opener)) return;
+  const fromMenu = wantsBackgroundTab();
+  const page = state.tabs.get(opener);
+  const site = siteKey(page?.url ?? "");
+  const allowed = (pref("popups_allowed_sites") ?? []).includes(site);
+  if (!userInitiated && !fromMenu && !allowed) {
+    invoke("tab_popup_deny", { opener, token }).catch(() => {});
+    const list = state.blockedPopups.get(opener) ?? [];
+    list.push({ url });
+    state.blockedPopups.set(opener, list.slice(-20));
+    emitState();
+    return;
+  }
+  // Щелчок по target=_blank переключает на вкладку, а Ctrl+щелчок и «Открыть
+  // ссылку в новой вкладке» из меню оставляют её в фоне.
+  open(url, {
+    index: tabIndex(opener) + 1,
+    background: background || fromMenu,
+    popup: token,
+    opener,
+  }).catch(() => invoke("tab_popup_deny", { opener, token }).catch(() => {}));
+}
 
 /** Один ли это документ: сравниваем адрес без якоря. */
 function sameDocument(a, b) {
@@ -436,14 +506,26 @@ function runShortcut(combo) {
       reopenClosed();
       return true;
     case "ctrl+tab":
+    case "ctrl+pagedown":
       cycle(1);
       return true;
     case "ctrl+shift+tab":
+    case "ctrl+pageup":
       cycle(-1);
+      return true;
+    case "ctrl+shift+pagedown":
+      moveActive(1);
+      return true;
+    case "ctrl+shift+pageup":
+      moveActive(-1);
       return true;
     case "ctrl+l":
     case "alt+d":
+    case "f6":
       focusOmnibox();
+      return true;
+    case "f11":
+      toggleWindowFullscreen();
       return true;
     case "ctrl+f":
       hooks.openFind();
@@ -501,6 +583,7 @@ function runShortcut(combo) {
       return true;
     case "f12":
     case "ctrl+shift+j":
+    case "ctrl+shift+i":
       tabAction("devtools");
       return true;
     case "alt+f":
@@ -512,7 +595,8 @@ function runShortcut(combo) {
 
   const byNumber = /^ctrl\+([1-9])$/.exec(combo);
   if (byNumber) {
-    const ids = [...state.tabs.keys()];
+    // По видимым вкладкам: спрятанные в свёрнутой группе не считаются.
+    const ids = visibleIds();
     const index = byNumber[1] === "9" ? ids.length - 1 : Number(byNumber[1]) - 1;
     if (ids[index] != null) activate(ids[index]);
     return true;
@@ -523,7 +607,12 @@ function runShortcut(combo) {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && isPaletteOpen()) return closePalette();
   if (event.key === "Escape" && isFindOpen()) return closeFind();
-  if (event.key === "Escape" && state.splitId !== null) return endSplit();
+  if (event.key === "Escape" && !event.defaultPrevented && !isTyping(event.target)) {
+    // Escape останавливает загрузку страницы, как в любом браузере; без
+    // загрузки — выводит из разделённого экрана.
+    if (activeTab()?.loading && !activeTab()?.internal) return tabAction("stop");
+    if (state.splitId !== null) return endSplit();
+  }
   if (event.defaultPrevented) return;
 
   const parts = [];
@@ -550,6 +639,11 @@ window.addEventListener("keydown", (event) => {
   if (runShortcut([...parts, key].join("+"))) event.preventDefault();
 });
 
+/** Фокус в поле ввода: Escape там принадлежит полю. */
+function isTyping(target) {
+  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+}
+
 /* ── Представления ─────────────────────────────────────────── */
 
 subscribe(() => {
@@ -569,9 +663,16 @@ function renderNav() {
   const isWeb = Boolean(tab && !tab.internal);
   document.getElementById("nav-back").disabled = !(isWeb && tab.canBack);
   document.getElementById("nav-forward").disabled = !(isWeb && tab.canForward);
-  document.getElementById("nav-reload").disabled = !isWeb;
+  const reload = document.getElementById("nav-reload");
+  reload.disabled = !isWeb;
 
   const loading = Boolean(isWeb && tab.loading);
+  if (reload.dataset.loading !== String(loading)) {
+    reload.dataset.loading = String(loading);
+    reload.title = loading ? "Остановить загрузку (Esc)" : "Обновить (Ctrl+R)";
+    reload.setAttribute("aria-label", loading ? "Остановить" : "Обновить");
+    reload.querySelector("use").setAttribute("href", `./assets/icons.svg#i-${loading ? "stop" : "reload"}`);
+  }
   progress.dataset.active = String(loading);
   progress.style.width = loading ? "70%" : "100%";
   if (!loading) setTimeout(() => (progress.style.width = "0"), 220);
@@ -583,7 +684,7 @@ function renderStatus() {
     statusDot.dataset.state = tab?.loading ? "busy" : "idle";
     statusState.textContent = tab?.loading ? "загрузка" : "готов";
   }
-  statusTarget.textContent = tab?.internal ? tab.url : tab?.url && !isNewTabUrl(tab.url) ? hostOf(tab.url) : "";
+  statusTarget.textContent = tab?.internal ? tab.url : tab?.url && !isNewTabUrl(tab.url) ? displayHost(hostOf(tab.url)) : "";
   statusBlocked.textContent = state.blockedTotal;
   statusTabs.textContent = state.tabs.size;
 

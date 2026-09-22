@@ -99,8 +99,13 @@ export function toggleBookmarksBar() {
   return setPref("bookmarks_bar", pref("bookmarks_bar") === "always" ? "never" : "always");
 }
 
-export function closeBrowser() {
-  invoke("window_command", { action: "close" }).catch(() => {});
+/**
+ * «Закрыть браузер»: все окна разом. Их вкладки вернутся при следующем
+ * запуске — в отличие от окна, закрытого крестиком, пока открыты другие.
+ */
+export async function closeBrowser() {
+  await hooks.saveSession();
+  invoke("app_quit").catch(() => {});
 }
 
 /** Папки закладок строкой пути — для выпадающего списка «Папка». */

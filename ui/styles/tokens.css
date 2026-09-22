@@ -178,3 +178,14 @@
     animation-duration: 1.2s !important;
   }
 }
+
+/* Во весь экран — видео, развёрнутое страницей, или F11: от интерфейса не
+   остаётся ничего, страница занимает окно целиком. */
+:root[data-fullscreen="true"] {
+  --h-titlebar: 0px;
+  --h-toolbar: 0px;
+  --h-bookmarks: 0px;
+  --h-find: 0px;
+  --h-status: 0px;
+  --w-rail: 0px;
+}

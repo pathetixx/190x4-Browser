@@ -641,3 +641,14 @@ svg {
 :root[data-private="true"] .private-badge {
   display: inline-flex;
 }
+
+/* ── Во весь экран ─────────────────────────────────────────── */
+
+:root[data-fullscreen="true"] .app {
+  --panel-w: 0px;
+  transition: none;
+}
+
+:root[data-fullscreen="true"] :is(.titlebar, .toolbar, .bookmarks, .findbar, .rail, .panel, .statusbar) {
+  display: none !important;
+}

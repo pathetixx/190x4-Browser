@@ -69,6 +69,8 @@ struct Pending {
     url: String,
     total: Option<i64>,
     sink: EventSink,
+    /// Вкладка так и не открыла документ — после ответа её можно закрыть.
+    empty_tab: bool,
 }
 
 #[derive(Default)]
@@ -153,7 +155,26 @@ pub fn answer(registry: &SharedDownloads, key: u64, path: Option<PathBuf>) -> an
     // Отложенное решение обязано завершиться при любом исходе: иначе движок
     // держит загрузку в подвешенном состоянии до закрытия вкладки.
     unsafe { pending.deferral.Complete()? };
+    if pending.empty_tab {
+        (pending.sink)(TabEvent::CloseRequested {
+            id: pending.tab,
+            download: true,
+        });
+    }
     result
+}
+
+/// У вкладки нет своего документа: её открыли ссылкой на файл (`target=_blank`,
+/// повтор загрузки), и первая же навигация ушла в загрузку. Такую пустую
+/// вкладку браузер закрывает, как Chrome.
+fn has_no_document(core: Option<&ICoreWebView2>) -> bool {
+    let Some(core) = core else { return false };
+    let mut raw = PWSTR::null();
+    if unsafe { core.Source(&mut raw) }.is_err() {
+        return false;
+    }
+    let source = take_pwstr(raw);
+    source.is_empty() || source == "about:blank"
 }
 
 /// Перехват загрузок вкладки.
@@ -173,8 +194,9 @@ pub fn wire(
 
     unsafe {
         core4.add_DownloadStarting(
-            &DownloadStartingEventHandler::create(Box::new(move |_, args| {
+            &DownloadStartingEventHandler::create(Box::new(move |sender, args| {
                 let Some(args) = args else { return Ok(()) };
+                let empty_tab = has_no_document(sender.as_ref());
                 let operation = args.DownloadOperation()?;
                 // Полку загрузок движка гасим: у браузера она своя.
                 args.SetHandled(true)?;
@@ -213,6 +235,7 @@ pub fn wire(
                             url,
                             total,
                             sink: sink.clone(),
+                            empty_tab,
                         },
                     );
                     sink(TabEvent::DownloadAsk {
@@ -235,7 +258,14 @@ pub fn wire(
                     target.to_string_lossy().into_owned(),
                     total,
                     sink.clone(),
-                )
+                )?;
+                if empty_tab {
+                    sink(TabEvent::CloseRequested {
+                        id: tab,
+                        download: true,
+                    });
+                }
+                Ok(())
             })),
             &mut token,
         )?;

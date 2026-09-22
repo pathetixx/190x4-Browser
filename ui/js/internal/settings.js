@@ -7,7 +7,20 @@
  */
 
 import { invoke, listen } from "../bridge.js";
-import { clock, dayLabel, el, favicon, formatDay, hostOf, icon, iconButton, plural, siteIcon, textButton } from "../dom.js";
+import {
+  clock,
+  dayLabel,
+  displayHost,
+  el,
+  favicon,
+  formatDay,
+  hostOf,
+  icon,
+  iconButton,
+  plural,
+  siteIcon,
+  textButton,
+} from "../dom.js";
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
@@ -800,7 +813,40 @@ const BUILDERS = {
         ];
     const appsGroup = group(appRows, { title: "Открытие приложений" });
 
-    return [group([clear], { title: "Данные браузера" }), permissionsGroup, appsGroup, adblockGroup, exemptGroup];
+    // Окна, которые сайт открывает сам по себе, браузер не пускает; сайты из
+    // этого списка открывают их без спроса.
+    const popupSites = pref("popups_allowed_sites") ?? [];
+    const popupRows = popupSites.length
+      ? popupSites.map((site) =>
+          setting(
+            displayHost(site),
+            "Открывает новые окна без щелчка по ссылке",
+            iconButton("delete-16", "Снова не пускать окна", () =>
+              setPref(
+                "popups_allowed_sites",
+                popupSites.filter((entry) => entry !== site)
+              )
+            ),
+            { iconId: "window-multiple" }
+          )
+        )
+      : [
+          setting(
+            "Окна без щелчка не открываются",
+            "Сайт открывает новое окно, только когда вы щёлкнули по ссылке или кнопке. Разрешить сайту больше можно значком в адресной строке",
+            el("span")
+          ),
+        ];
+    const popupsGroup = group(popupRows, { title: "Всплывающие окна" });
+
+    return [
+      group([clear], { title: "Данные браузера" }),
+      permissionsGroup,
+      popupsGroup,
+      appsGroup,
+      adblockGroup,
+      exemptGroup,
+    ];
   },
 
   downloads() {

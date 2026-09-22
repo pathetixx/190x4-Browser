@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use browser190x4_adblock::Guard;
@@ -11,16 +12,16 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2ContextMenuTarget,
     ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2Find,
     ICoreWebView2Frame, ICoreWebView2Frame2, ICoreWebView2Frame5, ICoreWebView2Frame7,
-    ICoreWebView2_15, ICoreWebView2_4,
+    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2_15, ICoreWebView2_4,
 };
 use webview2_com::{
     take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
-    DocumentTitleChangedEventHandler, FaviconChangedEventHandler,
-    FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler,
-    FrameWebMessageReceivedEventHandler, HistoryChangedEventHandler,
-    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    ContainsFullScreenElementChangedEventHandler, DocumentTitleChangedEventHandler,
+    FaviconChangedEventHandler, FocusChangedEventHandler, FrameChildFrameCreatedEventHandler,
+    FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler,
+    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
-    ZoomFactorChangedEventHandler,
+    WindowCloseRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
 use windows::Win32::Foundation::{POINT, RECT};
 use windows_core::{Interface, BOOL, HSTRING, PWSTR};
@@ -103,10 +104,39 @@ pub enum TabEvent {
         can_back: bool,
         can_forward: bool,
     },
-    /// Страница попросила открыть новое окно — мы вместо этого открываем вкладку.
+    /// Страница попросила открыть новое окно (`window.open`, ссылка с
+    /// `target`, «Открыть ссылку в новой вкладке») — окно становится вкладкой.
+    ///
+    /// Движок ждёт её под отсрочкой: `TabHost::open` с этим `token` отдаёт
+    /// странице настоящее окно, и `window.opener`, `postMessage` и
+    /// `window.close()` работают — на этом держится вход через Google, VK ID,
+    /// Telegram. Отказ — `TabHost::popup_deny`.
     Popup {
         opener: u32,
         url: String,
+        token: u64,
+        /// Окно открыто щелчком или клавишей, а не скриптом сам по себе:
+        /// остальные браузер блокирует, как Chrome.
+        user_initiated: bool,
+        /// Ctrl+щелчок по ссылке — вкладка открывается в фоне.
+        background: bool,
+    },
+    /// Вкладке пора закрыться: страница вызвала `window.close()` или её первая
+    /// навигация ушла в загрузку файла, и документа у вкладки так и не
+    /// появилось (`download`).
+    CloseRequested {
+        id: u32,
+        download: bool,
+    },
+    /// Страница развернула элемент на весь экран (видео) или свернула обратно.
+    Fullscreen {
+        id: u32,
+        on: bool,
+    },
+    /// Страница вкладки получила фокус — по ней щёлкнули. В разделённом экране
+    /// так становится активной правая половина.
+    Focused {
+        id: u32,
     },
     /// `postMessage` со страницы: перевод, найденное видео и т.п.
     ///
@@ -247,6 +277,50 @@ type FrameMap = Rc<RefCell<HashMap<u32, ICoreWebView2Frame2>>>;
 
 pub type EventSink = Rc<dyn Fn(TabEvent)>;
 
+/// Номера окон, которые просили страницы: общие на все окна браузера, как и
+/// номера вкладок.
+static NEXT_POPUP: AtomicU64 = AtomicU64::new(1);
+
+/// Окно, которое открыла страница: движок ждёт под отсрочкой вкладку для него.
+pub(crate) struct PendingPopup {
+    /// Вкладка, чья страница открыла окно.
+    pub opener: u32,
+    pub args: ICoreWebView2NewWindowRequestedEventArgs,
+    pub deferral: ICoreWebView2Deferral,
+}
+
+impl PendingPopup {
+    /// Окна не будет: `window.open` на странице получит `null`.
+    pub fn deny(self) {
+        unsafe {
+            let _ = self.args.SetHandled(true);
+            let _ = self.deferral.Complete();
+        }
+    }
+}
+
+/// Ждущие окна страниц одного окна браузера.
+pub(crate) type PopupSlots = Rc<RefCell<HashMap<u64, PendingPopup>>>;
+
+/// Скрипт паролей встроен: окну, которое открыла страница, движок отдаёт
+/// вкладку только после этого, иначе первый документ окна (вход через Google,
+/// VK ID) остался бы без менеджера паролей.
+#[derive(Default)]
+struct ScriptsReady {
+    ready: Cell<bool>,
+    waiting: RefCell<Vec<Box<dyn FnOnce()>>>,
+}
+
+impl ScriptsReady {
+    fn finish(&self) {
+        self.ready.set(true);
+        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
+        for f in waiting {
+            f();
+        }
+    }
+}
+
 pub struct Tab {
     pub id: TabId,
     controller: ICoreWebView2Controller,
@@ -260,6 +334,9 @@ pub struct Tab {
     /// вкладки один, и повторная подписка на каждый набранный символ
     /// размножала бы события счётчика.
     find_wired: Cell<bool>,
+    /// Элемент страницы развёрнут на весь экран: Escape сворачивает его.
+    fullscreen: Rc<Cell<bool>>,
+    scripts: Rc<ScriptsReady>,
 }
 
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
@@ -270,17 +347,20 @@ pub struct Tab {
 fn wire_accelerators(
     id: TabId,
     controller: &ICoreWebView2Controller,
+    core: &ICoreWebView2,
+    fullscreen: Rc<Cell<bool>>,
     sink: EventSink,
 ) -> windows_core::Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
+        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
     };
 
     let mut token = 0i64;
     let id = id.0;
+    let core = core.clone();
 
     unsafe {
         controller.add_AcceleratorKeyPressed(
@@ -309,6 +389,14 @@ fn wire_accelerators(
                 let ctrl = down(VK_CONTROL);
                 let shift = down(VK_SHIFT);
                 let alt = down(VK_MENU);
+
+                // Видео на весь экран сворачивается по Escape, как в любом
+                // браузере; остальное время Escape принадлежит странице.
+                if key == u32::from(VK_ESCAPE.0) && !ctrl && !shift && !alt && fullscreen.get() {
+                    args.SetHandled(true)?;
+                    exit_fullscreen(&core);
+                    return Ok(());
+                }
 
                 let Some(combo) = classify(key, ctrl, shift, alt) else {
                     return Ok(());
@@ -745,6 +833,34 @@ pub(crate) fn clear_browsing_data(
     Ok(())
 }
 
+/// Выполнить служебный скрипт в документе вкладки; результат не нужен.
+fn run_script(core: &ICoreWebView2, script: &str, what: &'static str) {
+    let result = unsafe {
+        core.ExecuteScript(
+            &HSTRING::from(script),
+            &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(move |code, _| {
+                if let Err(err) = code {
+                    tracing::debug!(%err, what, "служебный скрипт не выполнен");
+                }
+                Ok(())
+            })),
+        )
+    };
+    if let Err(err) = result {
+        tracing::debug!(%err, what, "служебный скрипт не запущен");
+    }
+}
+
+/// Свернуть элемент, развёрнутый страницей на весь экран. Движок сам этого не
+/// делает: полноэкранный режим — забота браузера.
+fn exit_fullscreen(core: &ICoreWebView2) {
+    run_script(
+        core,
+        "document.fullscreenElement && document.exitFullscreen().catch(() => {})",
+        "выход из полноэкранного режима",
+    );
+}
+
 /// Адрес документа по данным движка — для страницы ошибки.
 fn document_url(core: Option<&ICoreWebView2>) -> String {
     let Some(core) = core else {
@@ -775,10 +891,14 @@ fn report_find(id: u32, find: &ICoreWebView2Find, sink: &EventSink) -> windows_c
 /// (Ctrl+C, Ctrl+A, Ctrl+Z и прочее).
 fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
     const VK_TAB: u32 = 0x09;
+    const VK_PRIOR: u32 = 0x21;
+    const VK_NEXT: u32 = 0x22;
     const VK_LEFT: u32 = 0x25;
     const VK_RIGHT: u32 = 0x27;
     const VK_DELETE: u32 = 0x2E;
     const VK_F5: u32 = 0x74;
+    const VK_F6: u32 = 0x75;
+    const VK_F11: u32 = 0x7A;
     const VK_F12: u32 = 0x7B;
     const VK_ADD: u32 = 0x6B;
     const VK_SUBTRACT: u32 = 0x6D;
@@ -810,11 +930,20 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
         (true, false, false, VK_OEM_MINUS) | (true, false, false, VK_SUBTRACT) => "ctrl+-",
         (true, false, false, VK_TAB) => "ctrl+tab",
         (true, true, false, VK_TAB) => "ctrl+shift+tab",
-        (true, true, false, 0x54) => "ctrl+shift+t", // вернуть закрытую вкладку
-        (true, true, false, 0x52) => "ctrl+shift+r", // обновить без кэша
-        (true, true, false, 0x44) => "ctrl+shift+d", // загрузчик видео
-        (true, true, false, 0x42) => "ctrl+shift+b", // панель закладок
-        (true, true, false, 0x4F) => "ctrl+shift+o", // диспетчер закладок
+        (true, false, false, VK_NEXT) => "ctrl+pagedown",
+        (true, false, false, VK_PRIOR) => "ctrl+pageup",
+        (true, true, false, VK_NEXT) => "ctrl+shift+pagedown", // вкладку вправо
+        (true, true, false, VK_PRIOR) => "ctrl+shift+pageup",  // вкладку влево
+        (true, true, false, 0x49) => "ctrl+shift+i",           // инструменты разработчика
+        (false, false, true, 0x44) => "alt+d",                 // адресная строка
+        (false, false, true, 0x46) => "alt+f",                 // меню браузера
+        (false, false, false, VK_F6) => "f6",                  // адресная строка
+        (false, false, false, VK_F11) => "f11",                // во весь экран
+        (true, true, false, 0x54) => "ctrl+shift+t",           // вернуть закрытую вкладку
+        (true, true, false, 0x52) => "ctrl+shift+r",           // обновить без кэша
+        (true, true, false, 0x44) => "ctrl+shift+d",           // загрузчик видео
+        (true, true, false, 0x42) => "ctrl+shift+b",           // панель закладок
+        (true, true, false, 0x4F) => "ctrl+shift+o",           // диспетчер закладок
         (true, true, false, VK_DELETE) => "ctrl+shift+delete",
         (true, false, false, 0x31..=0x39) => return Some(format!("ctrl+{}", key - 0x30)),
         (false, false, true, VK_LEFT) => "alt+left",
@@ -827,16 +956,19 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
 }
 
 /// Скрипты, которые движок вставляет в каждый документ до его собственных.
-fn inject_scripts(core: &ICoreWebView2) -> windows_core::Result<()> {
+fn inject_scripts(core: &ICoreWebView2, ready: Rc<ScriptsReady>) -> windows_core::Result<()> {
     unsafe {
         core.AddScriptToExecuteOnDocumentCreated(
             &HSTRING::from(PASSWORDS_ENGINE.as_str()),
-            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|code, _id| {
-                if let Err(err) = code {
-                    tracing::warn!(%err, "скрипт паролей не встроен");
-                }
-                Ok(())
-            })),
+            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                move |code, _id| {
+                    if let Err(err) = code {
+                        tracing::warn!(%err, "скрипт паролей не встроен");
+                    }
+                    ready.finish();
+                    Ok(())
+                },
+            )),
         )
     }
 }
@@ -874,18 +1006,21 @@ impl Tab {
     /// первом живом запуске. Поэтому ожидание живёт в [`crate::host`], в
     /// completion-коллбеке, а сюда контроллер приходит готовым.
     #[allow(clippy::too_many_arguments)]
-    pub fn from_controller(
+    pub(crate) fn from_controller(
         id: TabId,
         controller: ICoreWebView2Controller,
         env: &ICoreWebView2Environment,
         guard: Arc<Guard>,
         sink: EventSink,
         downloads: SharedDownloads,
+        popups: PopupSlots,
         bounds: RECT,
         visible: bool,
     ) -> anyhow::Result<Self> {
         let core = unsafe { controller.CoreWebView2()? };
         let source: SourceUrl = Rc::new(RefCell::new(String::new()));
+        let fullscreen = Rc::new(Cell::new(false));
+        let scripts = Rc::new(ScriptsReady::default());
 
         unsafe {
             controller.SetBounds(bounds)?;
@@ -893,7 +1028,7 @@ impl Tab {
         }
 
         configure(&core)?;
-        inject_scripts(&core)?;
+        inject_scripts(&core, scripts.clone())?;
         filter::install(
             &core,
             env,
@@ -903,7 +1038,7 @@ impl Tab {
             sink.clone(),
         )?;
         filter::install_cosmetics(&core, guard)?;
-        wire_accelerators(id, &controller, sink.clone())?;
+        wire_accelerators(id, &controller, &core, fullscreen.clone(), sink.clone())?;
         downloads::wire(id, &core, downloads, sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
         wire_audio(id, &core, sink.clone());
@@ -924,18 +1059,66 @@ impl Tab {
             frames,
             dialogs,
             find_wired: Cell::new(false),
+            fullscreen,
+            scripts,
         };
-        tab.wire_events(sink)?;
+        tab.wire_events(sink, popups)?;
         tracing::debug!(?id, "вкладка готова");
         Ok(tab)
     }
 
-    fn wire_events(&self, sink: EventSink) -> anyhow::Result<()> {
+    fn wire_events(&self, sink: EventSink, popups: PopupSlots) -> anyhow::Result<()> {
         let id = self.id.0;
         let core = &self.core;
         let mut token = 0i64;
 
         unsafe {
+            // Щелчок по странице: в разделённом экране активной становится та
+            // половина, в которую щёлкнули.
+            let s = sink.clone();
+            self.controller.add_GotFocus(
+                &FocusChangedEventHandler::create(Box::new(move |_, _| {
+                    s(TabEvent::Focused { id });
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+
+            // Видео на весь экран: окно браузера разворачивается, интерфейс
+            // прячется — это делает chrome по событию.
+            let s = sink.clone();
+            let fullscreen = self.fullscreen.clone();
+            core.add_ContainsFullScreenElementChanged(
+                &ContainsFullScreenElementChangedEventHandler::create(Box::new(
+                    move |sender, _| {
+                        let Some(sender) = sender else { return Ok(()) };
+                        let mut on = BOOL::default();
+                        sender.ContainsFullScreenElement(&mut on)?;
+                        fullscreen.set(on.as_bool());
+                        s(TabEvent::Fullscreen {
+                            id,
+                            on: on.as_bool(),
+                        });
+                        Ok(())
+                    },
+                )),
+                &mut token,
+            )?;
+
+            // `window.close()` из окна, которое открыл скрипт: окно входа через
+            // Google или Telegram закрывает себя само, когда вход закончен.
+            let s = sink.clone();
+            core.add_WindowCloseRequested(
+                &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                    s(TabEvent::CloseRequested {
+                        id,
+                        download: false,
+                    });
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+
             let s = sink.clone();
             let source = self.source.clone();
             let page_dialogs = self.dialogs.clone();
@@ -1062,18 +1245,43 @@ impl Tab {
                 &mut token,
             )?;
 
-            // window.open / target=_blank: собственное окно WebView2 нам не
-            // нужно — гасим Handled и открываем вкладку у себя.
+            // window.open / target=_blank: окно движка нам не нужно, окно
+            // становится вкладкой. Движок ждёт её под отсрочкой, чтобы отдать
+            // странице именно её: без этого `window.open` возвращал `null`, и
+            // вход через Google, VK ID или Telegram, который ждёт ответа от
+            // своего окна, не заканчивался.
             let s = sink.clone();
             core.add_NewWindowRequested(
                 &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{
+                        GetAsyncKeyState, VK_CONTROL,
+                    };
+
                     let Some(args) = args else { return Ok(()) };
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
-                    args.SetHandled(true)?;
+                    let url = take_pwstr(raw);
+                    let mut user = BOOL::default();
+                    args.IsUserInitiated(&mut user)?;
+                    // Ctrl+щелчок по ссылке: Ctrl всё ещё зажат.
+                    let background = user.as_bool()
+                        && (GetAsyncKeyState(i32::from(VK_CONTROL.0)) as u16 & 0x8000) != 0;
+                    let deferral = args.GetDeferral()?;
+                    let token = NEXT_POPUP.fetch_add(1, Ordering::Relaxed);
+                    popups.borrow_mut().insert(
+                        token,
+                        PendingPopup {
+                            opener: id,
+                            args: args.clone(),
+                            deferral,
+                        },
+                    );
                     s(TabEvent::Popup {
                         opener: id,
-                        url: take_pwstr(raw),
+                        url,
+                        token,
+                        user_initiated: user.as_bool(),
+                        background,
                     });
                     Ok(())
                 })),
@@ -1155,6 +1363,37 @@ impl Tab {
                     Ok(())
                 })),
             )
+        }
+    }
+
+    /// Остановить загрузку страницы.
+    pub fn stop(&self) -> windows_core::Result<()> {
+        unsafe { self.core.Stop() }
+    }
+
+    /// Свернуть видео, развёрнутое на весь экран: вкладку переключили или
+    /// окно вышло из полноэкранного режима.
+    pub fn exit_fullscreen(&self) {
+        if self.fullscreen.get() {
+            exit_fullscreen(&self.core);
+        }
+    }
+
+    /// Отдать эту вкладку окну, которое открыла страница: движок сам поведёт
+    /// её на адрес окна. Ждёт, пока встроится скрипт паролей.
+    pub(crate) fn attach_popup(&self, popup: PendingPopup) {
+        let core = self.core.clone();
+        let attach = move || unsafe {
+            if let Err(err) = popup.args.SetNewWindow(&core) {
+                tracing::warn!(%err, "окно страницы не получило вкладку");
+                let _ = popup.args.SetHandled(true);
+            }
+            let _ = popup.deferral.Complete();
+        };
+        if self.scripts.ready.get() {
+            attach();
+        } else {
+            self.scripts.waiting.borrow_mut().push(Box::new(attach));
         }
     }
 

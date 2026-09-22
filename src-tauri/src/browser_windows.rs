@@ -43,6 +43,10 @@ pub struct WindowMeta {
     pub kind: WindowKind,
     /// Номер окна в сохранённой сессии; у приватных окон сессии нет.
     pub session: Option<i64>,
+    /// Окно прошлого сеанса: его вкладки восстанавливаются. Новое окно
+    /// (Ctrl+N, вкладка в новое окно) начинается с чистого листа, даже если
+    /// под его номером в базе что-то осталось.
+    pub restore: bool,
 }
 
 #[derive(Default)]
@@ -68,6 +72,21 @@ impl WindowRegistry {
     /// Номер окна в сессии — под ним его вкладки лежат в базе.
     pub fn session(&self, label: &str) -> Option<i64> {
         self.get(label).and_then(|meta| meta.session)
+    }
+
+    /// Номер сессии, которую окно восстанавливает при открытии.
+    pub fn restored_session(&self, label: &str) -> Option<i64> {
+        self.get(label)
+            .filter(|meta| meta.restore)
+            .and_then(|meta| meta.session)
+    }
+
+    /// Открыты ли обычные окна, кроме этого.
+    fn others_normal(&self, label: &str) -> bool {
+        self.0
+            .lock()
+            .iter()
+            .any(|(other, meta)| other != label && !meta.kind.is_private())
     }
 
     /// Сколько окон браузера открыто (без всплывающих).
@@ -171,8 +190,14 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
     *LAST_GEOMETRY.lock() = Some(geometry);
 }
 
-/// Создать окно браузера. Возвращает его ярлык.
-pub fn create(app: &AppHandle, kind: WindowKind, first: bool) -> tauri::Result<String> {
+/// Создать окно браузера. Возвращает его ярлык. `restore` — окно прошлого
+/// сеанса: оно восстановит вкладки, сохранённые под его номером.
+pub fn create(
+    app: &AppHandle,
+    kind: WindowKind,
+    first: bool,
+    restore: bool,
+) -> tauri::Result<String> {
     let label = if first {
         FIRST.to_string()
     } else {
@@ -216,9 +241,14 @@ pub fn create(app: &AppHandle, kind: WindowKind, first: bool) -> tauri::Result<S
     } else {
         Some(app.state::<App>().windows.free_session())
     };
-    app.state::<App>()
-        .windows
-        .add(&label, WindowMeta { kind, session });
+    app.state::<App>().windows.add(
+        &label,
+        WindowMeta {
+            kind,
+            session,
+            restore,
+        },
+    );
 
     #[cfg(windows)]
     {
@@ -407,30 +437,33 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
     });
 }
 
-/// Окно закрывается: запомнить геометрию и записать его сессию, пока вкладки
-/// ещё живы. Отложенная запись из интерфейса сюда уже не успеет.
+/// Окно закрывается: запомнить геометрию и решить, что будет с его вкладками.
+///
+/// Как в Chrome: окно, закрытое крестиком, пока открыты другие, при следующем
+/// запуске не возвращается — его сессия забывается. Последнее обычное окно
+/// записывает свою сессию, пока вкладки ещё живы: отложенная запись из
+/// интерфейса сюда уже не успеет. «Закрыть браузер» из меню закрывает все окна
+/// разом, мимо этого обработчика, и они все вернутся.
 fn closing(app: &AppHandle, label: &str) {
     remember_geometry(app, label);
     save_geometry(app);
     let state = app.state::<App>();
+    let tabs = state.sessions.lock().remove(label).unwrap_or_default();
     let Some(session) = state.windows.session(label) else {
         return;
     };
-    let tabs = state
-        .sessions
-        .lock()
-        .get(label)
-        .cloned()
-        .unwrap_or_default();
-    if let Err(err) = state.store.save_session(session, &tabs) {
-        tracing::warn!(%err, "сессия окна не сохранена");
+    let result = if state.windows.others_normal(label) {
+        state.store.forget_session(session)
+    } else {
+        state.store.save_session(session, &tabs)
+    };
+    if let Err(err) = result {
+        tracing::warn!(%err, "сессия окна не записана");
     }
 }
 
-/// Окно, которому отдать ссылку из другой программы: то, что сейчас впереди,
-/// иначе первое обычное. В приватное окно чужие ссылки не уходят — его
-/// содержимое не должно смешиваться с обычной работой.
-pub fn foreground_label(app: &AppHandle) -> String {
+/// Обычное окно, если оно открыто: то, что впереди, иначе первое попавшееся.
+pub fn normal_label(app: &AppHandle) -> Option<String> {
     let registry = &app.state::<App>().windows;
     let normal: Vec<String> = registry
         .labels()
@@ -442,15 +475,19 @@ pub fn foreground_label(app: &AppHandle) -> String {
             .and_then(|window| window.is_focused().ok())
             .unwrap_or(false)
     });
-    focused
-        .cloned()
-        .or_else(|| normal.first().cloned())
-        .unwrap_or_else(|| FIRST.to_string())
+    focused.cloned().or_else(|| normal.first().cloned())
+}
+
+/// Окно, которому отдать ссылку из другой программы: то, что сейчас впереди,
+/// иначе первое обычное. В приватное окно чужие ссылки не уходят — его
+/// содержимое не должно смешиваться с обычной работой.
+pub fn foreground_label(app: &AppHandle) -> String {
+    normal_label(app).unwrap_or_else(|| FIRST.to_string())
 }
 
 /// Открыть новое окно браузера по требованию интерфейса.
 pub fn open(app: &AppHandle, kind: WindowKind, url: Option<String>) -> tauri::Result<String> {
-    let label = create(app, kind, false)?;
+    let label = create(app, kind, false, false)?;
     if let Some(url) = url {
         // Интерфейс нового окна ещё грузится: адрес ждёт в очереди запуска,
         // её окно заберёт после восстановления сессии.

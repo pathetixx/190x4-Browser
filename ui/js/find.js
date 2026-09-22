@@ -7,7 +7,7 @@
  */
 
 import { invoke } from "./bridge.js";
-import { activeTab } from "./state.js";
+import { activeTab, state, subscribe } from "./state.js";
 import { syncDuring } from "./layout.js";
 
 const bar = document.getElementById("findbar");
@@ -15,8 +15,15 @@ const field = document.getElementById("find-field");
 const counter = document.getElementById("find-count");
 
 let debounce = 0;
+/** Вкладка, на которой идёт поиск: у каждой вкладки он свой, как в Chrome. */
+let searched = null;
 
 export function initFind() {
+  // Переключили вкладку — строка поиска прежней закрывается вместе с подсветкой.
+  subscribe(() => {
+    if (!bar.hidden && searched !== null && searched !== state.activeId) closeFind();
+  });
+
   field.addEventListener("input", () => {
     // Поиск на каждое нажатие перезапускает подсветку всей страницы —
     // на длинных документах это заметно, поэтому ждём паузу в наборе.
@@ -41,6 +48,7 @@ export function initFind() {
 }
 
 export function openFind() {
+  searched = state.activeId;
   bar.hidden = false;
   document.documentElement.dataset.find = "open";
   field.focus();
@@ -61,8 +69,9 @@ export function closeFind() {
   counter.textContent = "0/0";
   counter.dataset.empty = "false";
 
-  const tab = activeTab();
-  if (tab) invoke("tab_find_step", { id: tab.id, action: "stop" }).catch(() => {});
+  const id = searched ?? activeTab()?.id;
+  if (id != null) invoke("tab_find_step", { id, action: "stop" }).catch(() => {});
+  searched = null;
   syncDuring(120);
 }
 
@@ -71,7 +80,8 @@ export function isFindOpen() {
 }
 
 /** Событие от движка: сколько нашли и на каком совпадении стоим. */
-export function renderFindResult({ total, current }) {
+export function renderFindResult({ id, total, current }) {
+  if (id !== searched) return;
   counter.textContent = `${total > 0 ? current + 1 : 0}/${total}`;
   counter.dataset.empty = String(total === 0 && field.value.length > 0);
 }

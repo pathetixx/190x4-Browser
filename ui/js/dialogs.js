@@ -13,7 +13,7 @@
 import { listen } from "./bridge.js";
 import { isPageHidden, onPageHidden } from "./layout.js";
 import { closePopup, onPopupAction, openPopup, openPopupKey } from "./popups.js";
-import { state, subscribe } from "./state.js";
+import { rightPaneId, state, subscribe } from "./state.js";
 
 /** Окно, закрытое без ответа, возвращается с задержкой: меню, ради которого оно
  *  закрылось, должно успеть открыться, а окно браузера — встать на место. */
@@ -28,7 +28,8 @@ let shown = null;
 let timer = 0;
 let seq = 0;
 let minimized = false;
-let activeId = null;
+/** Какие вкладки были на экране при прошлой проверке: активная и вторая половина. */
+let onScreen = "";
 
 export function initDialogs() {
   listen("dialog-done", ({ id, tokens }) => forget(id, tokens));
@@ -49,8 +50,9 @@ export function initDialogs() {
     for (let i = queue.length - 1; i >= 0; i--) {
       if (!state.tabs.has(queue[i].tab)) queue.splice(i, 1);
     }
-    if (state.activeId === activeId) return;
-    activeId = state.activeId;
+    const now = `${state.activeId}|${state.splitId}`;
+    if (now === onScreen) return;
+    onScreen = now;
     hide();
     later();
   });
@@ -102,10 +104,12 @@ function show() {
   // Поверх другого попапа (меню, подсказки адресной строки) окно не встаёт:
   // оно дождётся, пока тот закроется.
   if (minimized || isPageHidden() || openPopupKey() !== null) return;
-  const tab = state.tabs.get(state.activeId);
-  if (!tab || tab.internal) return;
-  const first = queue.find((item) => item.tab === tab.id);
+  // Окно страницы встаёт над своей вкладкой, если она на экране: активной или
+  // второй половиной разделённого экрана.
+  const visible = [state.activeId, state.splitId].filter((id) => id !== null && !state.tabs.get(id)?.internal);
+  const first = queue.find((item) => visible.includes(item.tab));
   if (!first) return;
+  const tab = state.tabs.get(first.tab);
 
   // Камера и микрофон приходят двумя запросами подряд — спрашиваем одним окном.
   const group =
@@ -130,13 +134,14 @@ function show() {
     permissions: [...new Set(group.map((item) => item.request.permission))],
   };
 
-  // Разрешение — пузырём у сведений о сайте, как в Chrome; остальное — над
-  // страницей по центру.
+  // Разрешение — пузырём у сведений о сайте, как в Chrome (если сайт —
+  // активная вкладка); остальное — над страницей своей вкладки по центру.
   const site = document.getElementById("omni-site");
+  const pane = paneRect(tab.id);
   const opening =
-    first.request.type === "permission" && site?.offsetParent
+    first.request.type === "permission" && tab.id === state.activeId && site?.offsetParent
       ? openPopup("dialog", site, { width: 360, payload })
-      : openPopup("dialog", stageAnchor(), { width: stageWidth(), payload });
+      : openPopup("dialog", stageAnchor(pane), { width: stageWidth(pane), payload });
   opening
     .then((opened) => {
       if (!opened && shown === mine) shown = null;
@@ -146,15 +151,21 @@ function show() {
     });
 }
 
-function stageWidth() {
+/** Где на экране страница вкладки: всё место или своя половина разделённого экрана. */
+function paneRect(id) {
   const rect = document.getElementById("stage").getBoundingClientRect();
-  return Math.round(Math.max(280, Math.min(WIDTH, rect.width - 32)));
+  if (state.splitId === null) return { left: rect.left, top: rect.top, width: rect.width };
+  const half = rect.width / 2;
+  return { left: id === rightPaneId() ? rect.left + half : rect.left, top: rect.top, width: half };
 }
 
-function stageAnchor() {
-  const rect = document.getElementById("stage").getBoundingClientRect();
-  const width = stageWidth();
-  return { x: rect.left + (rect.width - width) / 2, y: rect.top + 8, width, height: 0 };
+function stageWidth(pane) {
+  return Math.round(Math.max(280, Math.min(WIDTH, pane.width - 32)));
+}
+
+function stageAnchor(pane) {
+  const width = stageWidth(pane);
+  return { x: pane.left + (pane.width - width) / 2, y: pane.top + 8, width, height: 0 };
 }
 
 function originOf(url) {

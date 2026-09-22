@@ -103,6 +103,28 @@ impl Store {
         })
     }
 
+    /// Пронумеровать сохранённые окна подряд с нуля. Окна получают номера
+    /// сессий по порядку (0, 1, 2…), а в базе могли остаться 0 и 2, если окно
+    /// посередине закрыли: без этого окно под номером 2 не открылось бы вовсе.
+    pub fn compact_sessions(&self) -> anyhow::Result<()> {
+        let windows = self.session_windows()?;
+        self.with(|db| {
+            let tx = db.unchecked_transaction()?;
+            // По возрастанию: новый номер не больше старого и к этому моменту
+            // уже свободен, первичный ключ (window, position) не сталкивается.
+            for (index, window) in windows.iter().enumerate() {
+                let index = index as i64;
+                if *window != index {
+                    tx.execute(
+                        "UPDATE session_windows SET window = ?1 WHERE window = ?2",
+                        [index, *window],
+                    )?;
+                }
+            }
+            tx.commit()
+        })
+    }
+
     /// Забыть сессию окна — например, когда окно закрыли, а браузер остался.
     pub fn forget_session(&self, window: i64) -> anyhow::Result<()> {
         self.with(|db| db.execute("DELETE FROM session_windows WHERE window = ?1", [window]))?;
@@ -218,6 +240,34 @@ mod tests {
 
         let restored = store.restore_session(0).unwrap();
         assert_eq!(restored[0].group, grouped.group);
+    }
+
+    #[test]
+    fn saved_windows_are_numbered_in_a_row() {
+        let store = Store::memory().unwrap();
+        store
+            .save_session(0, &[tab("https://a.example/", true)])
+            .unwrap();
+        store
+            .save_session(
+                2,
+                &[
+                    tab("https://c.example/", true),
+                    tab("https://d.example/", false),
+                ],
+            )
+            .unwrap();
+        store
+            .save_session(5, &[tab("https://f.example/", true)])
+            .unwrap();
+
+        store.compact_sessions().unwrap();
+        assert_eq!(store.session_windows().unwrap(), vec![0, 1, 2]);
+        assert_eq!(store.restore_session(1).unwrap().len(), 2);
+        assert_eq!(
+            store.restore_session(2).unwrap()[0].url,
+            "https://f.example/"
+        );
     }
 
     #[test]

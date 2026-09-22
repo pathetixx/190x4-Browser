@@ -93,6 +93,124 @@ export function hostOf(url) {
   }
 }
 
+/* ── Адрес для глаз ────────────────────────────────────────── */
+
+/**
+ * Имя сайта так, как его пишут люди: `xn--e1afmkfd.xn--p1ai` → `пример.рф`.
+ * Часть имени показывается буквами, только если она целиком на одном алфавите:
+ * «аpple» с кириллической «а» остаётся в виде xn--, иначе поддельный адрес
+ * не отличить от настоящего.
+ */
+export function displayHost(host) {
+  const labels = String(host ?? "").split(".");
+  const tld = labels[labels.length - 1]?.toLowerCase() ?? "";
+  // Кириллица, неотличимая от латиницы («аррӏе.com»), честна только в
+  // кириллических зонах — как у Chrome.
+  const cyrillicZone = /^xn--/.test(tld) || CYRILLIC_ZONES.has(tld);
+  return labels
+    .map((label) => {
+      if (!/^xn--/i.test(label)) return label;
+      const decoded = punycodeDecode(label.slice(4).toLowerCase());
+      if (!decoded) return label;
+      if (/^[\p{Script=Latin}\d-]+$/u.test(decoded)) return decoded;
+      if (!/^[\p{Script=Cyrillic}\d-]+$/u.test(decoded)) return label;
+      const lookalike = [...decoded].every((ch) => LATIN_LOOKALIKES.includes(ch) || /[\d-]/.test(ch));
+      return lookalike && !cyrillicZone ? label : decoded;
+    })
+    .join(".");
+}
+
+/** Кириллические буквы, которые выглядят как латинские. */
+const LATIN_LOOKALIKES = "асԁеһіјӏорԛѕԝхуүьпгѵѡ";
+/** Зоны стран с кириллицей: там кириллическое имя сайта ожидаемо. */
+const CYRILLIC_ZONES = new Set(["ru", "su", "by", "ua", "kz", "bg", "rs", "mk", "mn", "kg", "tj", "uz", "me", "ba"]);
+
+/** Знаки, которые в адресе остаются закодированными: служебные, пробелы и невидимые. */
+const KEEP_ENCODED =
+  /[\u0000-\u00a0\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb]/gu;
+
+/**
+ * Путь адреса буквами: `/wiki/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0` →
+ * `/wiki/Москва`, как в Chrome. Служебные знаки (`%2F`, `%20`) и невидимые
+ * символы остаются закодированными: они меняют смысл адреса.
+ */
+export function displayPath(text) {
+  return String(text ?? "").replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+    return decoded.replace(KEEP_ENCODED, (ch) => encodeURIComponent(ch));
+  });
+}
+
+/** Адрес целиком для показа: имя сайта и путь буквами. */
+export function displayUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return displayPath(url);
+    const host = displayHost(parsed.hostname) + (parsed.port ? `:${parsed.port}` : "");
+    return `${parsed.protocol}//${host}${displayPath(parsed.pathname + parsed.search + parsed.hash)}`;
+  } catch {
+    return String(url ?? "");
+  }
+}
+
+/** Punycode (RFC 3492): метка без `xn--` → строка. `null` — метка испорчена. */
+function punycodeDecode(input) {
+  const base = 36;
+  const tMin = 1;
+  const tMax = 26;
+  const adapt = (delta, points, first) => {
+    let d = first ? Math.floor(delta / 700) : delta >> 1;
+    d += Math.floor(d / points);
+    let k = 0;
+    while (d > ((base - tMin) * tMax) >> 1) {
+      d = Math.floor(d / (base - tMin));
+      k += base;
+    }
+    return k + Math.floor(((base - tMin + 1) * d) / (d + 38));
+  };
+
+  const output = [];
+  const delimiter = input.lastIndexOf("-");
+  for (let j = 0; j < Math.max(0, delimiter); j++) {
+    const code = input.charCodeAt(j);
+    if (code >= 0x80) return null;
+    output.push(code);
+  }
+  let n = 128;
+  let i = 0;
+  let bias = 72;
+  for (let index = delimiter > 0 ? delimiter + 1 : 0; index < input.length; ) {
+    const old = i;
+    for (let w = 1, k = base; ; k += base) {
+      if (index >= input.length) return null;
+      const code = input.charCodeAt(index++);
+      const digit =
+        code >= 48 && code <= 57 ? code - 22 : code >= 97 && code <= 122 ? code - 97 : code >= 65 && code <= 90 ? code - 65 : base;
+      if (digit >= base) return null;
+      i += digit * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (digit < t) break;
+      w *= base - t;
+    }
+    bias = adapt(i - old, output.length + 1, old === 0);
+    n += Math.floor(i / (output.length + 1));
+    i %= output.length + 1;
+    if (n > 0x10ffff) return null;
+    output.splice(i, 0, n);
+    i += 1;
+  }
+  try {
+    return String.fromCodePoint(...output);
+  } catch {
+    return null;
+  }
+}
+
 export function fileName(path) {
   return String(path ?? "").split(/[\\/]/).pop() || String(path ?? "");
 }

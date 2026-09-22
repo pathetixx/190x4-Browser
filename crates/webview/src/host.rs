@@ -45,7 +45,7 @@ use windows_core::{Interface, HSTRING};
 use crate::container;
 use crate::dialogs::{self, PermissionSetting};
 use crate::downloads::{self, DownloadPolicy, SharedDownloads};
-use crate::tab::{EventSink, Tab, TabEvent};
+use crate::tab::{EventSink, PopupSlots, Tab, TabEvent};
 
 /// Хост встроенных страниц. `.invalid` — зарезервированный TLD (RFC 2606):
 /// такое имя гарантированно не уедет в реальный DNS, если маппинг не встал.
@@ -186,13 +186,18 @@ struct HostState {
     tabs: HashMap<TabId, Tab>,
     order: Vec<TabId>,
     active: Option<TabId>,
-    /// Вторая вкладка разделённого экрана: она справа, активная — слева.
+    /// Вторая вкладка разделённого экрана. Обычно она справа, а активная
+    /// слева; `swapped` — активной стала правая половина (по ней щёлкнули),
+    /// и вкладки при этом остаются на своих местах.
     split: Option<TabId>,
+    swapped: bool,
     layout: Layout,
     overlay: bool,
     pages_dir: Option<PathBuf>,
     /// Загрузки живут дольше вкладок, из которых начались.
     downloads: SharedDownloads,
+    /// Окна, которые открыли страницы и которые ждут своей вкладки.
+    popups: PopupSlots,
     /// Вебвью интерфейса: ему возвращается клавиатура, когда горячая клавиша
     /// со страницы открывает поле ввода браузера.
     chrome: Option<ICoreWebView2Controller>,
@@ -227,11 +232,17 @@ impl HostState {
         if Some(id) != self.active && id != split {
             return full;
         }
+        // Правая половина — вторая вкладка, пока активной не стала она сама.
+        let right = if self.swapped {
+            self.active
+        } else {
+            Some(split)
+        };
         // Полоса-разделитель между половинами: её рисует контейнер (он тёмный),
         // потому что HTML под нативной поверхностью не виден.
         const GAP: i32 = 2;
         let half = (self.layout.width - GAP) / 2;
-        if id == split {
+        if Some(id) == right {
             RECT {
                 left: half + GAP,
                 top: 0,
@@ -286,10 +297,12 @@ impl TabHost {
                 order: Vec::new(),
                 active: None,
                 split: None,
+                swapped: false,
                 layout: Layout::default(),
                 overlay: false,
                 pages_dir: None,
                 downloads: SharedDownloads::default(),
+                popups: PopupSlots::default(),
                 chrome: None,
                 private,
             })),
@@ -315,6 +328,13 @@ impl TabHost {
     /// Завести вкладку. Возвращает id сразу; сама вкладка появится, когда
     /// WebView2 отдаст контроллер, и сообщит о себе событием навигации.
     pub fn open(&self, url: &str) -> anyhow::Result<TabId> {
+        self.open_with(url, None)
+    }
+
+    /// Вкладка для окна, которое открыла страница (`TabEvent::Popup`): движок
+    /// сам поведёт её на адрес окна, а странице достанется ссылка на неё.
+    /// Если окна уже никто не ждёт, вкладка просто откроет `url`.
+    pub fn open_with(&self, url: &str, popup: Option<u64>) -> anyhow::Result<TabId> {
         let (id, container, env, private) = {
             let mut state = self.inner.borrow_mut();
             let id = next_tab_id();
@@ -341,12 +361,28 @@ impl TabHost {
                     Ok(controller) => controller,
                     Err(err) => {
                         tracing::error!(?id, %err, "контроллер вкладки не создан");
+                        let waiting = popup
+                            .and_then(|token| failed.borrow().popups.borrow_mut().remove(&token));
+                        if let Some(popup) = waiting {
+                            popup.deny();
+                        }
                         drop_failed(&failed, id);
                         return Ok(());
                     }
                 };
 
                 let mut state = inner.borrow_mut();
+                let popup = popup.and_then(|token| state.popups.borrow_mut().remove(&token));
+                // Вкладку закрыли раньше, чем движок её достроил: закрываем и
+                // контроллер, иначе живая страница осталась бы без места в строке.
+                if !state.order.contains(&id) {
+                    tracing::debug!(?id, "вкладку закрыли до готовности");
+                    let _ = unsafe { controller.Close() };
+                    if let Some(popup) = popup {
+                        popup.deny();
+                    }
+                    return Ok(());
+                }
                 let bounds = state.bounds_for(id);
                 let visible = state.active == Some(id) || state.split == Some(id);
 
@@ -357,12 +393,16 @@ impl TabHost {
                     state.guard.clone(),
                     state.sink.clone(),
                     state.downloads.clone(),
+                    state.popups.clone(),
                     bounds,
                     visible,
                 ) {
                     Ok(tab) => tab,
                     Err(err) => {
                         tracing::error!(?id, %err, "вкладка не настроена");
+                        if let Some(popup) = popup {
+                            popup.deny();
+                        }
                         drop(state);
                         drop_failed(&inner, id);
                         return Ok(());
@@ -375,8 +415,13 @@ impl TabHost {
                     }
                 }
 
-                if let Err(err) = tab.navigate(&url) {
-                    tracing::error!(?id, %err, "навигация не началась");
+                match popup {
+                    Some(popup) => tab.attach_popup(popup),
+                    None => {
+                        if let Err(err) = tab.navigate(&url) {
+                            tracing::error!(?id, %err, "навигация не началась");
+                        }
+                    }
                 }
 
                 state.tabs.insert(id, tab);
@@ -413,19 +458,35 @@ impl TabHost {
         if let Some(tab) = state.tabs.remove(&id) {
             tab.close()?;
         }
+        // Окна, которые открывала эта страница, больше никто не ждёт.
+        let orphans: Vec<u64> = state
+            .popups
+            .borrow()
+            .iter()
+            .filter(|(_, popup)| popup.opener == id.0)
+            .map(|(token, _)| *token)
+            .collect();
+        for token in orphans {
+            if let Some(popup) = state.popups.borrow_mut().remove(&token) {
+                popup.deny();
+            }
+        }
 
         if state.split == Some(id) {
             state.split = None;
+            state.swapped = false;
         }
         if state.active == Some(id) {
-            // Фокус уходит на соседа справа, как в любом браузере; если
-            // соседа нет — на последнюю оставшуюся.
-            state.active = position
-                .and_then(|pos| state.order.get(pos).or_else(|| state.order.last()))
-                .copied();
-            if state.active == state.split {
-                state.split = None;
-            }
+            // Закрыли половину разделённого экрана — вторая занимает окно
+            // целиком (так же решает интерфейс). Иначе фокус уходит на соседа
+            // справа, как в любом браузере; если соседа нет — на последнюю.
+            state.active = match state.split.take() {
+                Some(partner) => Some(partner),
+                None => position
+                    .and_then(|pos| state.order.get(pos).or_else(|| state.order.last()))
+                    .copied(),
+            };
+            state.swapped = false;
         }
         state.apply_visibility()?;
         state.apply_bounds()?;
@@ -437,15 +498,22 @@ impl TabHost {
     ///
     /// Вкладка может быть ещё в процессе создания — это не ошибка: намерение
     /// запоминается, а видимость применится, когда контроллер будет готов.
+    ///
+    /// В разделённом экране вторая половина становится активной на своём
+    /// месте, а вкладка не из пары встаёт на место активной половины.
     pub fn activate(&self, id: TabId) -> anyhow::Result<()> {
         let mut state = self.inner.borrow_mut();
         if !state.order.contains(&id) {
             anyhow::bail!("нет вкладки {id:?}");
         }
-        state.active = Some(id);
         if state.split == Some(id) {
-            state.split = None;
+            state.split = state.active;
+            state.swapped = !state.swapped;
+            if state.split.is_none() {
+                state.swapped = false;
+            }
         }
+        state.active = Some(id);
         state.apply_bounds()?;
         state.apply_visibility()
     }
@@ -462,8 +530,12 @@ impl TabHost {
                     anyhow::bail!("эта вкладка уже открыта слева");
                 }
                 state.split = Some(id);
+                state.swapped = false;
             }
-            None => state.split = None,
+            None => {
+                state.split = None;
+                state.swapped = false;
+            }
         }
         state.apply_bounds()?;
         state.apply_visibility()
@@ -512,6 +584,15 @@ impl TabHost {
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
         tab.find(&state.env, query, state.sink.clone())
+    }
+
+    /// Окно, которое открыла страница, не открывается: `window.open` получит
+    /// `null`. Браузер так блокирует окна, которые сайт открывает сам по себе.
+    pub fn popup_deny(&self, token: u64) {
+        let popup = self.inner.borrow().popups.borrow_mut().remove(&token);
+        if let Some(popup) = popup {
+            popup.deny();
+        }
     }
 
     /// Действие над вкладкой, если она уже создана.
@@ -732,8 +813,9 @@ fn drop_failed(inner: &Rc<RefCell<HostState>>, id: TabId) {
         if state.active == Some(id) {
             state.active = state.order.last().copied();
         }
-        if state.split == Some(id) {
+        if state.split == Some(id) || state.split == state.active {
             state.split = None;
+            state.swapped = false;
         }
         let _ = state.apply_visibility();
         state.sink.clone()

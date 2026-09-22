@@ -15,6 +15,7 @@ import { onPopupAction, openMenu, openPopup } from "./popups.js";
 import {
   groupBounds,
   insertTabAt,
+  markClosed,
   moveTab,
   removeTab,
   replaceTabId,
@@ -113,15 +114,22 @@ export function parseInternal(url) {
 
 /* ── Открыть, переключить, закрыть ─────────────────────────── */
 
-export async function open(url, { background = false, index = null } = {}) {
+/**
+ * Открыть вкладку. `popup` — номер окна, которое открыла страница `opener`:
+ * вкладка достаётся этому окну, и страница может с ним разговаривать.
+ */
+export async function open(url, { background = false, index = null, popup = null, opener = null } = {}) {
   const internal = parseInternal(url);
   if (internal) return openInternal(internal.name, internal.section, { background, index });
 
-  const id = await invoke("tab_open", { url });
+  const id = await invoke("tab_open", { url, popup });
   // События движка могли прийти раньше ответа команды — не затираем их.
   const known = state.tabs.has(id);
   const at = index != null ? index : defaultIndex();
-  if (index != null || !known) insertTabAt(id, known ? {} : { loading: true }, at);
+  const patch = known ? {} : { loading: true };
+  if (opener != null) patch.opener = opener;
+  if (index != null || !known) insertTabAt(id, patch, at);
+  else if (opener != null) upsertTab(id, { opener });
   if (!background) {
     await activate(id);
     if (url === "about:newtab") focusOmnibox();
@@ -203,6 +211,9 @@ export async function activate(id) {
   let tab = state.tabs.get(id);
   if (!tab) return;
 
+  // Вкладка свёрнутой группы на экран не выйдет — группа разворачивается.
+  if (tab.group?.collapsed) updateGroup(tab.group.id, { collapsed: false });
+
   if (tab.sleeping) {
     const realId = await wake(tab);
     if (realId == null) return;
@@ -242,20 +253,28 @@ export async function endSplit() {
   setSplit(null);
 }
 
-export async function close(id) {
+/**
+ * Закрыть вкладку. `toOpener` — вкладка закрылась сама (окно входа через
+ * Google закончило работу): фокус возвращается странице, которая её открыла.
+ */
+export async function close(id, { toOpener = false } = {}) {
   const tab = state.tabs.get(id);
   if (!tab) return;
 
-  const ids = [...state.tabs.keys()];
+  const ids = visibleIds();
   const index = ids.indexOf(id);
   const wasActive = state.activeId === id;
+  // Закрыли активную половину разделённого экрана — вторая занимает окно
+  // целиком (так же решает Rust).
+  const partner = wasActive ? state.splitId : null;
 
   const url = tab.internal ? internalUrl(tab.internal, tab.section) : tab.url;
-  if (url) {
-    closedTabs.push({ url, index, pinned: tab.pinned });
+  if (url && !tab.url?.startsWith("about:")) {
+    closedTabs.push({ url, index: tabIndex(id), pinned: tab.pinned });
     if (closedTabs.length > 25) closedTabs.shift();
   }
 
+  markClosed(id);
   removeTab(id);
   if (!tab.internal && !tab.sleeping) await invoke("tab_close", { id }).catch(() => {});
 
@@ -266,9 +285,15 @@ export async function close(id) {
   }
   if (wasActive) {
     // Фокус уходит на соседа справа, как в любом браузере.
-    const next = ids[index + 1] ?? ids[index - 1];
+    const opener = toOpener && state.tabs.has(tab.opener) ? tab.opener : null;
+    const next = partner ?? opener ?? ids[index + 1] ?? ids[index - 1] ?? [...state.tabs.keys()][0];
     if (next != null) await activate(next);
   }
+}
+
+/** Вкладки, которые видны в строке: без спрятанных в свёрнутых группах. */
+export function visibleIds() {
+  return [...state.tabs.values()].filter((tab) => !tab.group?.collapsed).map((tab) => tab.id);
 }
 
 /** Закрепить или открепить: закреплённые всегда слева и без крестика. */
@@ -293,15 +318,28 @@ export function hasClosedTabs() {
   return closedTabs.length > 0;
 }
 
-/** Ctrl+Tab / Ctrl+Shift+Tab. */
+/** Ctrl+Tab / Ctrl+Shift+Tab: по видимым вкладкам, свёрнутые группы пропускаются. */
 export function cycle(delta) {
-  const ids = [...state.tabs.keys()];
+  const ids = visibleIds();
   if (ids.length < 2) return;
   const index = ids.indexOf(state.activeId);
   activate(ids[(index + delta + ids.length) % ids.length]);
 }
 
-async function closeMany(ids) {
+/** Ctrl+Shift+PageUp/PageDown: подвинуть активную вкладку на место соседа. */
+export function moveActive(delta) {
+  const id = state.activeId;
+  if (id === null || !state.tabs.has(id)) return;
+  moveTab(id, tabIndex(id) + delta);
+}
+
+/**
+ * Закрыть несколько вкладок. Если среди них активная, сначала переключаемся на
+ * `keep` — иначе каждое закрытие будило бы и показывало соседнюю вкладку,
+ * которую следом тоже закрывают.
+ */
+async function closeMany(ids, keep = null) {
+  if (keep != null && ids.includes(state.activeId) && state.tabs.has(keep)) await activate(keep);
   for (const id of ids) await close(id);
 }
 
@@ -389,16 +427,16 @@ function showTabMenu(id, event) {
         close(id);
         break;
       case "close-others":
-        closeMany([...state.tabs.keys()].filter((other) => other !== id));
+        closeMany([...state.tabs.keys()].filter((other) => other !== id), id);
         break;
       case "close-left": {
         const all = [...state.tabs.keys()];
-        closeMany(all.slice(0, all.indexOf(id)));
+        closeMany(all.slice(0, all.indexOf(id)), id);
         break;
       }
       case "close-right": {
         const all = [...state.tabs.keys()];
-        closeMany(all.slice(all.indexOf(id) + 1));
+        closeMany(all.slice(all.indexOf(id) + 1), id);
         break;
       }
       case "reopen":
@@ -497,7 +535,12 @@ export function ungroupAll(groupId) {
 }
 
 export async function closeGroup(groupId) {
-  await closeMany(groupTabs(groupId).map((tab) => tab.id));
+  const members = groupTabs(groupId).map((tab) => tab.id);
+  const outside = visibleIds().filter((id) => !members.includes(id));
+  // Фокус — на ближайшую вкладку справа от группы, иначе слева.
+  const last = tabIndex(members[members.length - 1]);
+  const keep = outside.find((id) => tabIndex(id) > last) ?? outside[outside.length - 1] ?? null;
+  await closeMany(members, keep);
 }
 
 /** Свернуть или развернуть группу. Свёрнутая группа прячет свои вкладки. */

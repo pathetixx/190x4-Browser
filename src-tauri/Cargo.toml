@@ -25,6 +25,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # Значки сайтов на плитках новой вкладки — data:-адресами.
 base64 = "0.22"
+# Адресная строка: «habr.com» — сайт, «node.js» — поиск (домен верхнего уровня
+# по списку публичных суффиксов).
+psl = "2"
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

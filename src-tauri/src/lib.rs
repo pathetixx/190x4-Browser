@@ -112,6 +112,7 @@ pub fn run() {
         .manage(launched)
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
+            ipc::tab_popup_deny,
             ipc::tab_close,
             ipc::tab_activate,
             ipc::tab_split,
@@ -130,6 +131,7 @@ pub fn run() {
             ipc::window_state,
             ipc::window_info,
             ipc::window_open,
+            ipc::app_quit,
             ipc::chrome_focus,
             ipc::adblock_stats,
             ipc::adblock_set_enabled,
@@ -139,6 +141,7 @@ pub fn run() {
             ipc::settings_get,
             ipc::settings_set,
             ipc::history_record,
+            ipc::history_title,
             ipc::history_recent,
             ipc::history_search,
             ipc::history_page,
@@ -211,7 +214,14 @@ pub fn run() {
 
             // Первое окно — всегда; остальные поднимаются, если в прошлый раз
             // их было больше и пользователь просил восстанавливать сессию.
-            browser_windows::create(&handle, WindowKind::Normal, true)?;
+            // Окна получают номера сессий подряд, а в базе после закрытых окон
+            // бывают дыры — номера выравниваются до того, как окна спросят.
+            if restores_session(&store) {
+                if let Err(err) = store.compact_sessions() {
+                    tracing::warn!(%err, "сессии окон не пронумерованы");
+                }
+            }
+            browser_windows::create(&handle, WindowKind::Normal, true, true)?;
             restore_windows(&handle, &store);
             Ok(())
         })
@@ -235,15 +245,20 @@ pub fn run() {
         });
 }
 
+/// Восстанавливать ли вкладки прошлого сеанса (настройка «При запуске»).
+fn restores_session(store: &Store) -> bool {
+    store.setting_str("startup").as_deref().unwrap_or("restore") == "restore"
+}
+
 /// Второе и следующие окна прошлого сеанса. Первое уже создано, его вкладки
 /// восстановит интерфейс сам.
 fn restore_windows(app: &tauri::AppHandle, store: &Store) {
-    if store.setting_str("startup").as_deref().unwrap_or("restore") != "restore" {
+    if !restores_session(store) {
         return;
     }
     let saved = store.session_windows().unwrap_or_default();
     for _ in saved.iter().skip(1) {
-        if let Err(err) = browser_windows::create(app, WindowKind::Normal, false) {
+        if let Err(err) = browser_windows::create(app, WindowKind::Normal, false, true) {
             tracing::warn!(%err, "окно прошлого сеанса не открылось");
             break;
         }
@@ -278,7 +293,7 @@ pub(crate) fn route_event(
             return;
         }
         TabEvent::DownloadAsk { key, path, .. } => {
-            transfers::ask_target(app, *key, path.clone());
+            transfers::ask_target(app, label, *key, path.clone());
             return;
         }
         TabEvent::Message {
