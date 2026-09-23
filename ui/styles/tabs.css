@@ -2,9 +2,13 @@
    Строка вкладок.
 
    Устроена как в Chrome и Edge: активная вкладка одного цвета с панелью
-   инструментов и «перетекает» в неё скруглёнными ушками снизу; «+» стоит
-   сразу за последней вкладкой, а всё пустое место правее остаётся ручкой
-   окна. Когда вкладкам тесно, они сжимаются, а «+» прижимается к краю.
+   инструментов и перетекает в неё; «+» стоит сразу за последней вкладкой, а
+   всё пустое место правее остаётся ручкой окна. Когда вкладкам тесно, они
+   сжимаются, а «+» прижимается к краю.
+
+   Язык — HUD новой вкладки: у вкладки срезан правый верхний угол, перед
+   значком — порядковый номер, у активной — светящаяся кромка по верху и по
+   срезу, между соседями — косые риски.
    ───────────────────────────────────────────────────────────── */
 
 .tabs {
@@ -31,30 +35,64 @@
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  /* Ушки активной вкладки выходят за её края на 8px — не обрезаем их. */
   padding-inline: 8px;
   margin-inline: -8px;
+  counter-reset: tab;
 }
 
 .tab {
+  /* Цвет кромки: акцент, у вкладки в группе — цвет группы. */
+  --edge: var(--accent-bright);
   position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 1 var(--tab-max);
   min-width: var(--tab-min);
   height: var(--tab-h);
-  padding: 0 6px 0 10px;
-  border-radius: 8px 8px 0 0;
+  padding: 0 calc(var(--cut) - 2px) 0 10px;
   color: var(--text-lo);
   text-align: start;
-  /* Разделитель между соседними неактивными вкладками. */
-  background-image: linear-gradient(var(--line-3), var(--line-3));
-  background-size: 1px 16px;
+  counter-increment: tab;
+  /* Разделитель между соседними неактивными вкладками — косая риска. */
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 0.6px),
+    var(--line-3) 50%,
+    transparent calc(50% + 0.6px)
+  );
+  background-size: 6px 16px;
   background-position: right center;
   background-repeat: no-repeat;
-  transition: background-color 0.14s var(--ease-out), color 0.14s var(--ease-out);
+  transition: color 0.14s var(--ease-out);
   animation: tab-in 0.2s var(--ease-emph);
+}
+
+/* Тело вкладки — отдельным слоем со срезанным углом: срез на самой вкладке
+   обрезал бы рамку фокуса и крестик. */
+.tab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  clip-path: var(--clip-tab);
+  background: var(--overlay-2);
+  opacity: 0;
+  transition: opacity 0.14s var(--ease-out);
+}
+
+/* Номер вкладки — как у меток HUD. Первые восемь совпадают с Ctrl+1…8. */
+.tab::after {
+  content: counter(tab, decimal-leading-zero);
+  order: -1;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
 }
 
 @keyframes tab-in {
@@ -73,38 +111,43 @@
 }
 
 .tab:hover {
-  background-color: var(--overlay-2);
   color: var(--text-mid);
 }
 
-.tab[data-active="true"] {
-  z-index: 1;
-  background-color: var(--ink-2);
-  color: var(--text-hi);
-  /* Тонкая акцентная риска по верхнему краю — единственный цветной штрих
-     строки вкладок. inset-тень повторяет скругление вкладки. */
-  box-shadow: inset 0 2px 0 -0.5px var(--accent);
+.tab:hover::before {
+  opacity: 1;
 }
 
-/* Ушки: вогнутые скругления, которыми вкладка переходит в тулбар. */
-.tab[data-active="true"]::before,
-.tab[data-active="true"]::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  width: 8px;
-  height: 8px;
-  pointer-events: none;
+.tab:hover::after {
+  color: var(--text-lo);
+}
+
+/* Активная — цвета панели инструментов, с кромкой по верху и по срезу и
+   отсветом внутрь. Кромка — фоном того же слоя, поэтому точно ложится на
+   срез. */
+.tab[data-active="true"] {
+  z-index: 1;
+  color: var(--text-hi);
 }
 
 .tab[data-active="true"]::before {
-  left: -8px;
-  background: radial-gradient(circle at 0 0, transparent 7.5px, var(--ink-2) 8px);
+  opacity: 1;
+  background:
+    linear-gradient(var(--edge), var(--edge)) 0 0 / calc(100% - var(--cut)) 2px no-repeat,
+    linear-gradient(
+        45deg,
+        transparent calc(50% - 1.5px),
+        var(--edge) calc(50% - 1.5px),
+        var(--edge) 50%,
+        transparent 50%
+      )
+      100% 0 / var(--cut) var(--cut) no-repeat,
+    linear-gradient(180deg, color-mix(in srgb, var(--edge) 22%, transparent), transparent 14px),
+    var(--ink-2);
 }
 
 .tab[data-active="true"]::after {
-  right: -8px;
-  background: radial-gradient(circle at 100% 0, transparent 7.5px, var(--ink-2) 8px);
+  color: var(--edge);
 }
 
 .tab__favicon,
@@ -115,7 +158,7 @@
 }
 
 .tab__favicon {
-  border-radius: 3px;
+  border-radius: 2px;
   object-fit: contain;
 }
 
@@ -132,6 +175,7 @@
   color: var(--accent-bright);
 }
 
+/* Колесо загрузки — из сегментов, как кольцо загрузок. */
 .tab__spinner {
   width: 14px;
   height: 14px;
@@ -140,6 +184,8 @@
   border-radius: 50%;
   border: 2px solid var(--line-3);
   border-top-color: var(--accent-bright);
+  border-right-color: color-mix(in srgb, var(--accent-bright) 45%, transparent);
+  mask: repeating-conic-gradient(#000 0 36deg, transparent 36deg 45deg);
   /* Оборот — как у колеса загрузки Chromium; фазу задаёт tabs.js. */
   animation: tab-spin 1.57s linear infinite;
 }
@@ -168,7 +214,7 @@
   height: 20px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 2px;
   flex-shrink: 0;
 }
 
@@ -194,8 +240,14 @@
 }
 
 /* Тесная вкладка: крестик у неактивной не занимает места, подписи остаётся
-   больше. У активной крестик на месте. */
+   больше. У активной крестик на месте. Номер тесной вкладке не по карману. */
 .tab[data-compact="true"]:not([data-active="true"]) .tab__close {
+  display: none;
+}
+
+.tab[data-compact="true"]::after,
+.tab[data-narrow="true"]::after,
+.tab[data-pinned="true"]::after {
   display: none;
 }
 
@@ -224,26 +276,38 @@
   opacity: 0.5;
 }
 
-/* «+» — сразу за последней вкладкой, по центру её высоты. */
+/* «+» — сразу за последней вкладкой, по центру её высоты, в уголках
+   прицела. */
 .tabs__new {
+  --corner: var(--line-3);
   flex-shrink: 0;
   width: 28px;
   height: 28px;
-  margin-bottom: 2px;
+  margin: 0 0 2px 4px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
   color: var(--text-mid);
-  transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
+  background:
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 6px 1px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 1px 6px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 6px 1px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 1px 6px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 6px 1px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 1px 6px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 6px 1px no-repeat,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 1px 6px no-repeat;
+  background-color: transparent;
+  transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
 }
 
 .tabs__new:hover {
-  background: var(--overlay-3);
+  --corner: color-mix(in srgb, var(--accent-bright) 80%, transparent);
+  background-color: var(--overlay-3);
   color: var(--text-hi);
 }
 
 .tabs__new:active {
-  background: var(--overlay-4);
+  background-color: var(--overlay-4);
 }
 
 /* ── Закреплённые, спящие и разделённый экран ───────────────── */
@@ -274,8 +338,8 @@
 }
 
 /* Вторая вкладка разделённого экрана подсвечена как активная, но полоской
-   снизу показано, что она справа. Полоска — фоном, а не ::after: псевдоэлементы
-   заняты ушками активной вкладки. */
+   снизу показано, что она справа. Полоска — фоном самой вкладки:
+   псевдоэлементы заняты телом и номером. */
 .tabstrip .tab[data-split="true"] {
   background-image: linear-gradient(var(--accent), var(--accent));
   background-size: calc(100% - 16px) 2px;
@@ -291,16 +355,16 @@
   flex: 0 0 auto;
   align-self: center;
   max-width: 140px;
-  height: 22px;
+  height: 20px;
   margin-inline-end: 2px;
-  padding-inline: 10px;
+  padding-inline: 8px 10px;
   border: 0;
-  border-radius: 11px;
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
   background: var(--group, var(--accent));
   color: #fff;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
-  line-height: 22px;
+  line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -341,11 +405,23 @@
   --group: #6b7280;
 }
 
-/* Вкладка в группе помечена полоской её цвета по верхнему краю — тенью, а не
-   ::before: у активной вкладки псевдоэлементы заняты ушками, и полоска
-   съедала левое. У активной вкладки группы риска — цвета группы. */
+/* Вкладка в группе помечена полоской её цвета по верхнему краю — вторым
+   фоном рядом с риской-разделителем; у активной кромка — цвета группы. */
 .tab[data-group]:not([data-group=""]) {
-  box-shadow: inset 0 2px 0 -0.5px var(--group);
+  --edge: var(--group);
+  background-image:
+    linear-gradient(var(--group), var(--group)),
+    linear-gradient(to top right, transparent calc(50% - 0.6px), var(--line-3) 50%, transparent calc(50% + 0.6px));
+  background-size: calc(100% - var(--cut)) 2px, 6px 16px;
+  background-position: left top, right center;
+}
+
+/* Там, где риска-разделитель гаснет (у соседа наведения или активной),
+   полоска группы остаётся. */
+.tab[data-group]:not([data-group=""]):is(:last-child, :hover, :has(+ .tab:hover), :has(+ .tab[data-active="true"])) {
+  background-image: linear-gradient(var(--group), var(--group));
+  background-size: calc(100% - var(--cut)) 2px;
+  background-position: left top;
 }
 
 /* Упавшая страница: значок предупреждения вместо значка сайта. */

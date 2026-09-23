@@ -3,32 +3,49 @@
 
    Общие для окна браузера, встроенных страниц и всплывающего окна —
    одна кнопка «Сохранить» должна выглядеть одинаково везде.
+
+   Геометрия HUD: у кнопки срезаны два угла, переключатель и флажок —
+   прямоугольные, выбор в списке — ромб, полоса прогресса — из сегментов.
    ───────────────────────────────────────────────────────────── */
 
+/* Кнопка: срез правого верхнего и левого нижнего углов. Рамка по срезу
+   дорисована фоном — clip-path отрезал бы её вместе с углом. */
 .btn {
+  --btn-bg: var(--overlay-3);
+  --btn-line: var(--line-2);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   height: 32px;
   padding: 0 14px;
-  border-radius: 6px;
-  background: var(--overlay-3);
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--btn-line);
+  clip-path: var(--clip-btn);
+  background:
+    linear-gradient(45deg, transparent calc(50% - 1px), var(--btn-line) calc(50% - 1px), var(--btn-line) 50%, transparent 50%)
+      100% 0 / var(--cut-sm) var(--cut-sm) no-repeat border-box,
+    linear-gradient(225deg, transparent calc(50% - 1px), var(--btn-line) calc(50% - 1px), var(--btn-line) 50%, transparent 50%)
+      0 100% / var(--cut-sm) var(--cut-sm) no-repeat border-box,
+    var(--btn-bg);
   color: var(--text-hi);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.12s var(--ease-out), border-color 0.12s var(--ease-out);
+  transition: background-color 0.12s var(--ease-out), border-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+
+/* Рамка фокуса — внутри: снаружи её срезал бы угол. */
+.btn:focus-visible {
+  outline-offset: -4px;
 }
 
 .btn:hover {
-  background: var(--overlay-4);
-  border-color: var(--line-3);
+  --btn-bg: var(--overlay-4);
+  --btn-line: var(--line-3);
 }
 
 .btn:active {
-  background: var(--overlay-2);
+  --btn-bg: var(--overlay-2);
 }
 
 .btn[disabled] {
@@ -37,29 +54,30 @@
 }
 
 .btn--primary {
-  background: var(--accent);
-  border-color: transparent;
+  --btn-bg: linear-gradient(180deg, color-mix(in srgb, var(--accent-bright) 55%, var(--accent)), var(--accent) 60%);
+  --btn-line: transparent;
   color: var(--on-accent);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
 }
 
 .btn--primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, white);
-  border-color: transparent;
+  --btn-bg: linear-gradient(180deg, var(--accent-bright), color-mix(in srgb, var(--accent) 88%, white) 60%);
+  --btn-line: transparent;
 }
 
 .btn--primary:active {
-  background: color-mix(in srgb, var(--accent) 85%, black);
+  --btn-bg: color-mix(in srgb, var(--accent) 85%, black);
 }
 
 .btn--ghost {
-  background: transparent;
-  border-color: transparent;
+  --btn-bg: transparent;
+  --btn-line: transparent;
   color: var(--text-mid);
 }
 
 .btn--ghost:hover {
-  background: var(--overlay-3);
-  border-color: transparent;
+  --btn-bg: var(--overlay-3);
+  --btn-line: transparent;
   color: var(--text-hi);
 }
 
@@ -86,7 +104,7 @@
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: 1px;
   background: var(--ink-0);
   border: 1px solid var(--line-2);
   border-bottom-color: var(--line-3);
@@ -104,7 +122,7 @@
 
 .field:focus {
   border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  box-shadow: inset 0 -1px 0 var(--accent-bright);
+  box-shadow: inset 0 -1px 0 var(--accent-bright), 0 0 0 3px var(--accent-soft);
 }
 
 .field--mono {
@@ -133,17 +151,18 @@ select.field option {
   color: var(--text-mid);
 }
 
-/* Переключатель в духе Windows 11: пилюля с бегунком. */
+/* Переключатель: прямоугольный паз с квадратным бегунком, во включённом
+   положении — акцент с отсветом. */
 .switch {
   position: relative;
   width: 40px;
   height: 20px;
   flex-shrink: 0;
-  border-radius: 10px;
+  border-radius: 1px;
   border: 1px solid var(--text-lo);
   background: transparent;
   cursor: pointer;
-  transition: background 0.16s var(--ease-out), border-color 0.16s var(--ease-out);
+  transition: background 0.16s var(--ease-out), border-color 0.16s var(--ease-out), box-shadow 0.16s var(--ease-out);
 }
 
 .switch::after {
@@ -153,27 +172,24 @@ select.field option {
   inset-inline-start: 3px;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: 1px;
   background: var(--text-mid);
   transition: transform 0.18s var(--ease-emph), background 0.16s var(--ease-out);
 }
 
-.switch:hover::after {
-  transform: scale(1.1);
+.switch:hover {
+  border-color: var(--text-mid);
 }
 
 .switch[aria-checked="true"] {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 10px var(--accent-glow);
 }
 
 .switch[aria-checked="true"]::after {
   transform: translateX(20px);
   background: #fff;
-}
-
-.switch[aria-checked="true"]:hover::after {
-  transform: translateX(20px) scale(1.1);
 }
 
 /* Радио-список: варианты одной настройки строками. */
@@ -193,19 +209,27 @@ select.field option {
   background: var(--overlay-1);
 }
 
+/* Выбор — ромб: пустой контур или акцент с отсветом. */
 .choice::before {
   content: "";
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
+  margin: 3px;
   flex-shrink: 0;
-  border-radius: 50%;
+  transform: rotate(45deg);
   border: 1px solid var(--text-lo);
   box-sizing: border-box;
-  transition: border 0.14s var(--ease-out);
+  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out), box-shadow 0.14s var(--ease-out);
+}
+
+.choice:hover::before {
+  border-color: var(--text-mid);
 }
 
 .choice[aria-checked="true"]::before {
-  border: 5px solid var(--accent);
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-glow), inset 0 0 0 2px color-mix(in srgb, var(--accent-deep) 70%, transparent);
 }
 
 .choice__hint {
@@ -214,11 +238,11 @@ select.field option {
   color: var(--text-lo);
 }
 
+/* Полоса прогресса из сегментов — как шкала памяти на новой вкладке. */
 .meter {
   position: relative;
   height: 4px;
-  border-radius: 2px;
-  background: var(--overlay-3);
+  background: repeating-linear-gradient(90deg, var(--overlay-4) 0 6px, transparent 6px 8px);
   overflow: hidden;
 }
 
@@ -226,8 +250,9 @@ select.field option {
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
-  border-radius: 2px;
   background: var(--accent-bright);
+  box-shadow: 0 0 6px var(--accent-glow);
+  mask: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px);
   transition: width 0.3s var(--ease-out);
 }
 
@@ -253,12 +278,12 @@ select.field option {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: 1px;
   background: var(--ink-3);
   border: 1px solid var(--line-2);
   border-bottom-color: var(--line-3);
-  font-family: var(--font-body);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   color: var(--text-mid);
   white-space: nowrap;
 }
@@ -275,7 +300,7 @@ select.field option {
 
 .scroll::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
-  border-radius: 10px;
+  border-radius: 1px;
   background-clip: content-box;
   background-color: var(--overlay-4);
 }
@@ -292,7 +317,7 @@ select.field option {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   object-fit: contain;
 }
 

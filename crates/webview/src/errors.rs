@@ -97,15 +97,18 @@ body { margin: 0; min-height: 100vh; display: grid; place-items: center; backgro
   font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
 @media (prefers-color-scheme: light) { body { background: #f6f6f8; color: #18181b; } }
 .box190x4 { box-sizing: border-box; width: min(560px, 100% - 48px); padding: 32px 0; }
-.mark190x4 { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+.mark190x4 { width: 44px; height: 44px; display: grid; place-items: center;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
   background: rgba(222, 87, 114, 0.14); color: #de5772; font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
 h1 { margin: 20px 0 8px; font-size: 24px; font-weight: 650; }
 p { margin: 0 0 6px; opacity: 0.78; }
 .site190x4 { opacity: 0.95; font-weight: 600; }
 .url190x4 { margin-top: 14px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: 0.5; word-break: break-all; }
-button { margin-top: 22px; padding: 9px 18px; border: 0; border-radius: 8px; background: #de5772; color: #fff;
+button { margin-top: 22px; padding: 9px 18px; border: 0; background: #de5772; color: #fff;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
   font: inherit; font-weight: 600; cursor: pointer; }
 button:hover { filter: brightness(1.08); }
+button:focus-visible { outline: 2px solid currentColor; outline-offset: -5px; }
 .more190x4 { margin-top: 26px; }
 .more190x4 summary { cursor: pointer; opacity: 0.7; user-select: none; }
 .more190x4 p { margin-top: 10px; }

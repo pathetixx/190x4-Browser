@@ -60,7 +60,8 @@ button {
   cursor: pointer;
 }
 
-/* Иконки Fluent — заливка, а не обводка: цвет берут из currentColor. */
+/* Иконки 190x4 рисуются линией, детали — заливкой; цвет у обеих — из
+   currentColor, а «без заливки» каждая иконка задаёт у себя сама. */
 svg {
   display: block;
   flex-shrink: 0;
@@ -117,7 +118,11 @@ svg {
   display: flex;
   align-items: stretch;
   padding-inline-start: 10px;
-  background: var(--ink-0);
+  /* Строчная развёртка и слабый красный отсвет сверху — фактура «экрана». */
+  background:
+    radial-gradient(560px 64px at 18% 0, color-mix(in srgb, var(--accent) 9%, transparent), transparent 72%),
+    var(--scan),
+    var(--ink-0);
 }
 
 /* Зона перетаскивания окна — под всем содержимым. Вкладки, «+» и кнопки
@@ -140,8 +145,20 @@ svg {
   display: grid;
   place-items: center;
   width: 30px;
-  margin-inline-end: 4px;
+  margin-inline-end: 6px;
   pointer-events: none;
+}
+
+/* Знак отделён от вкладок тонкой риской. */
+.brand::after {
+  content: "";
+  position: absolute;
+  inset-inline-end: -4px;
+  top: 50%;
+  width: 1px;
+  height: 14px;
+  margin-top: -7px;
+  background: var(--line-3);
 }
 
 .brand__mark {
@@ -206,8 +223,20 @@ svg {
   background: var(--ink-2);
 }
 
+/* Нижний край chrome-а — светящаяся кромка, которая гаснет к краям окна:
+   под панелью инструментов или под панелью закладок, если она видна. */
 :root:not([data-bookmarks="shown"]) .toolbar {
-  border-bottom: 1px solid var(--line-2);
+  box-shadow: inset 0 -1px 0 var(--line-2);
+}
+
+:root:not([data-bookmarks="shown"]) .toolbar::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--hairline);
+  pointer-events: none;
 }
 
 .toolbar__group {
@@ -218,9 +247,10 @@ svg {
 
 .toolbar__sep {
   width: 1px;
-  height: 20px;
-  margin: 0 4px;
-  background: var(--line-2);
+  height: 18px;
+  margin: 0 5px;
+  background: var(--line-3);
+  transform: skewX(-20deg);
 }
 
 /* Найденное обновление — текстовая кнопка перед меню, как в Chrome: видна,
@@ -229,15 +259,18 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 11px 0 8px;
+  height: 26px;
+  padding: 0 12px 0 8px;
   margin: 0 2px;
-  border-radius: 14px;
-  font-size: 12.5px;
-  font-weight: 500;
+  clip-path: var(--clip-btn);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--accent-bright);
-  background: color-mix(in srgb, var(--accent-bright) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent-bright) 32%, transparent);
+  background: color-mix(in srgb, var(--accent-bright) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bright) 34%, transparent);
   transition: background 0.12s var(--ease-out);
 }
 
@@ -246,15 +279,28 @@ svg {
   background: color-mix(in srgb, var(--accent-bright) 22%, transparent);
 }
 
+/* Кнопка-иконка: подложка при наведении — со срезанными углами. Подложка —
+   псевдоэлементом: срез на самой кнопке обрезал бы рамку фокуса. */
 .iconbtn {
   position: relative;
+  isolation: isolate;
   width: 32px;
   height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
   color: var(--text-mid);
-  transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
+  transition: color 0.12s var(--ease-out);
+}
+
+.iconbtn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  clip-path: var(--clip-btn);
+  background: var(--overlay-3);
+  opacity: 0;
+  transition: opacity 0.12s var(--ease-out);
 }
 
 .iconbtn--sm {
@@ -263,14 +309,22 @@ svg {
 }
 
 .iconbtn:hover {
-  background: var(--overlay-3);
   color: var(--text-hi);
+}
+
+.iconbtn:hover::before {
+  opacity: 1;
 }
 
 .iconbtn:active,
 .iconbtn[aria-expanded="true"] {
-  background: var(--overlay-4);
   color: var(--text-hi);
+}
+
+.iconbtn:active::before,
+.iconbtn[aria-expanded="true"]::before {
+  opacity: 1;
+  background: var(--overlay-4);
 }
 
 .iconbtn[disabled] {
@@ -282,25 +336,27 @@ svg {
   color: var(--accent-bright);
 }
 
-/* Значок расширения сообщает о себе точкой: на странице есть видео или идёт
+/* Значок расширения сообщает о себе ромбом: на странице есть видео или идёт
    загрузка. Число здесь было бы лишним — действие одно. */
 .iconbtn__badge {
   position: absolute;
   top: 6px;
   inset-inline-end: 6px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
   background: var(--accent-bright);
-  box-shadow: 0 0 0 2px var(--ink-2);
+  box-shadow: 0 0 0 2px var(--ink-2), 0 0 6px var(--accent-glow);
 }
 
-/* Кнопка загрузок: кольцо прогресса вокруг стрелки, как в Edge. */
+/* Кнопка загрузок: кольцо прогресса вокруг стрелки, из сегментов — как
+   циферблат новой вкладки. */
 .iconbtn--downloads .ring {
   position: absolute;
   inset: 1px;
   transform: rotate(-90deg);
   pointer-events: none;
+  mask: repeating-conic-gradient(from 2deg, #000 0 26deg, transparent 26deg 30deg);
 }
 
 .ring__track,
@@ -315,7 +371,6 @@ svg {
 
 .ring__fill {
   stroke: var(--accent-bright);
-  stroke-linecap: round;
   stroke-dasharray: 81.68;
   stroke-dashoffset: 81.68;
   transition: stroke-dashoffset 0.3s var(--ease-out);
@@ -386,36 +441,54 @@ svg {
 
 .rail__btn {
   position: relative;
+  isolation: isolate;
   width: 36px;
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
   color: var(--text-lo);
-  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
+  transition: color 0.14s var(--ease-out);
+}
+
+.rail__btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  clip-path: var(--clip-btn);
+  background: var(--overlay-2);
+  opacity: 0;
+  transition: opacity 0.14s var(--ease-out);
 }
 
 .rail__btn::before {
   content: "";
   position: absolute;
   inset-inline-start: -6px;
-  inset-block: 10px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--accent);
+  inset-block: 9px;
+  width: 2px;
+  background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-glow);
   opacity: 0;
   transform: scaleY(0.4);
   transition: opacity 0.18s var(--ease-out), transform 0.18s var(--ease-emph);
 }
 
 .rail__btn:hover {
-  background: var(--overlay-2);
   color: var(--text-hi);
 }
 
+.rail__btn:hover::after {
+  opacity: 1;
+}
+
 .rail__btn[aria-pressed="true"] {
-  background: var(--overlay-3);
   color: var(--accent-bright);
+}
+
+.rail__btn[aria-pressed="true"]::after {
+  opacity: 1;
+  background: var(--overlay-3);
 }
 
 .rail__btn[aria-pressed="true"]::before {
@@ -428,9 +501,9 @@ svg {
   top: -2px;
   inset-inline-end: -4px;
   min-width: 16px;
-  height: 16px;
+  height: 14px;
   padding: 0 4px;
-  border-radius: 8px;
+  border-radius: 1px;
   background: var(--accent);
   color: var(--on-accent);
   font-family: var(--font-mono);
@@ -481,12 +554,26 @@ svg {
   border-bottom: 1px solid var(--line-1);
 }
 
+/* Заголовок панели — метка HUD: моноширинные заглавные с ромбом. */
 .panel__title {
-  font-family: var(--font-display);
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-hi);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mid);
+}
+
+.panel__title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  background: var(--accent-bright);
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .panel__body {
@@ -504,7 +591,7 @@ svg {
   gap: 6px;
   padding: 0 8px 0 12px;
   background: var(--ink-2);
-  border-bottom: 1px solid var(--line-2);
+  box-shadow: inset 0 -1px 0 var(--line-2), inset 2px 0 0 var(--accent-bright);
 }
 
 .findbar__icon {
@@ -532,6 +619,7 @@ svg {
 .findbar__count {
   font-family: var(--font-mono);
   font-size: 11px;
+  letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
   color: var(--text-lo);
   white-space: nowrap;
@@ -558,23 +646,34 @@ svg {
 
 /* ── Статусная строка ──────────────────────────────────────── */
 
+/* Строка состояния — телеметрия: моноширинные заглавные, развёртка и
+   кромка сверху, которая горит по краям и гаснет к середине. */
 .statusbar {
   grid-area: status;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
   padding: 0 12px;
   overflow: hidden;
-  background: var(--ink-1);
-  border-top: 1px solid var(--line-1);
+  background:
+    linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent-bright) 40%, transparent),
+        var(--line-1) 30%,
+        var(--line-1) 70%,
+        color-mix(in srgb, var(--accent-bright) 40%, transparent)
+      )
+      0 0 / 100% 1px no-repeat,
+    var(--scan),
+    var(--ink-0);
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.04em;
   color: var(--text-lo);
 }
 
 :root[data-statusbar="hidden"] .statusbar {
-  border-top: 0;
+  background: none;
 }
 
 .status__cell {
@@ -592,7 +691,7 @@ svg {
 .status__label {
   font-size: 9px;
   font-weight: 500;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -609,12 +708,14 @@ svg {
   color: var(--warn);
 }
 
+/* Ромб состояния: горит, пока страница грузится. */
 .status__dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  margin-inline: 1px 2px;
+  transform: rotate(45deg);
+  background: var(--accent-bright);
+  box-shadow: 0 0 7px var(--accent-glow);
 }
 
 .status__dot[data-state="idle"] {
@@ -625,9 +726,10 @@ svg {
 /* ── Приватное окно ─────────────────────────────────────────── */
 
 /* Приватное окно должно быть видно с одного взгляда: в Chrome это тёмная
-   шапка, у нас — акцентная полоса над строкой вкладок и значок в рельсе. */
-:root[data-private="true"] .chrome {
-  box-shadow: inset 0 3px 0 var(--accent);
+   шапка, у нас — другой акцент (токены), полоса над строкой вкладок и
+   значок у меню. */
+:root[data-private="true"] .titlebar {
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 :root[data-private="true"] .rail {
@@ -638,13 +740,16 @@ svg {
   display: none;
   align-items: center;
   gap: 6px;
-  height: 26px;
-  padding-inline: 8px;
-  border-radius: 6px;
+  height: 24px;
+  padding-inline: 8px 10px;
+  clip-path: var(--clip-btn);
   background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  font-size: 12px;
+  color: var(--accent-bright);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 

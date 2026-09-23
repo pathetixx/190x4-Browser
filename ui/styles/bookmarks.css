@@ -8,6 +8,7 @@
 
 .bookmarks {
   grid-area: bookmarks;
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -15,7 +16,18 @@
   padding: 0 8px 3px;
   overflow: hidden;
   background: var(--ink-2);
-  border-bottom: 1px solid var(--line-2);
+  box-shadow: inset 0 -1px 0 var(--line-2);
+}
+
+/* Нижний край chrome-а — светящаяся кромка, как под панелью инструментов. */
+.bookmarks::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--hairline);
+  pointer-events: none;
 }
 
 .bookmarks__items {
@@ -37,10 +49,10 @@
   align-items: center;
   gap: 7px;
   flex-shrink: 0;
-  height: 26px;
+  height: 24px;
   max-width: 190px;
   padding: 0 9px 0 7px;
-  border-radius: 6px;
+  border-radius: 1px;
   color: var(--text-mid);
   font-size: 12px;
   white-space: nowrap;
@@ -71,7 +83,7 @@
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   object-fit: contain;
 }
 
@@ -115,7 +127,7 @@ svg.bookmark__icon {
 
 .bookmarks__empty button {
   padding: 3px 6px;
-  border-radius: 5px;
+  border-radius: 1px;
   color: var(--accent-bright);
 }
 

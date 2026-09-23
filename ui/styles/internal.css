@@ -7,12 +7,15 @@
    напрямую, а чужой сайт до них не дотянется ни фреймом, ни переходом.
    ───────────────────────────────────────────────────────────── */
 
+/* Фон — чёрный лак со слабым красным отсветом сверху, как на новой вкладке. */
 .internal {
   position: absolute;
   inset: 0;
   z-index: 1;
   overflow-y: auto;
-  background: var(--ink-0);
+  background:
+    radial-gradient(1100px 360px at 50% -160px, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    var(--ink-0);
   user-select: text;
 }
 
@@ -71,8 +74,8 @@
 .search .field {
   height: 36px;
   padding-inline-start: 36px;
-  border-radius: 18px;
-  background: var(--ink-1);
+  background: var(--brackets);
+  background-color: var(--ink-1);
 }
 
 .nav__item {
@@ -83,7 +86,6 @@
   width: 100%;
   height: 38px;
   padding: 0 12px;
-  border-radius: 8px;
   text-align: start;
   font-size: 13.5px;
   color: var(--text-mid);
@@ -100,7 +102,7 @@
 }
 
 .nav__item[aria-current="true"] {
-  background: var(--overlay-3);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent 85%);
   color: var(--text-hi);
 }
 
@@ -112,10 +114,10 @@
   content: "";
   position: absolute;
   inset-inline-start: 0;
-  inset-block: 10px;
-  width: 3px;
-  border-radius: 3px;
+  inset-block: 0;
+  width: 2px;
   background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-glow);
 }
 
 /* ── Содержимое ────────────────────────────────────────────── */
@@ -155,18 +157,43 @@
   margin-top: 36px;
 }
 
+/* Заголовок раздела — метка HUD: ромб, моноширинные заглавные и риска до
+   края колонки. */
 .section__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0 0 12px 2px;
-  font-family: var(--font-display);
-  font-size: 18px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-mid);
 }
 
+.section__title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  transform: rotate(45deg);
+  background: var(--accent-bright);
+  box-shadow: 0 0 7px var(--accent-glow);
+}
+
+.section__title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--line-3), transparent);
+}
+
+/* Карточка настроек — в уголках-скобках, как карточки новой вкладки. */
 .group {
-  border-radius: 10px;
-  background: var(--ink-1);
-  border: 1px solid var(--line-1);
+  background: var(--brackets);
+  background-color: var(--ink-1);
+  border: 1px solid var(--line-2);
   overflow: hidden;
 }
 
@@ -226,8 +253,8 @@
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  border-radius: 8px;
-  background: var(--overlay-2);
+  clip-path: var(--clip-btn);
+  background: var(--overlay-3);
   color: var(--text-mid);
 }
 
@@ -369,7 +396,7 @@
 
 .crumbs button {
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 1px;
   color: var(--text-mid);
 }
 
@@ -439,9 +466,12 @@
 
 .day {
   margin: 24px 2px 10px;
-  font-size: 12.5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
-  color: var(--text-mid);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-lo);
   user-select: none;
 }
 
@@ -455,9 +485,9 @@
   gap: 16px;
   align-items: start;
   padding: 14px 12px 14px 16px;
-  border-radius: 10px;
-  background: var(--ink-1);
-  border: 1px solid var(--line-1);
+  background: var(--brackets);
+  background-color: var(--ink-1);
+  border: 1px solid var(--line-2);
 }
 
 .download + .download {
@@ -469,8 +499,8 @@
   height: 40px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: var(--overlay-2);
+  clip-path: var(--clip-btn);
+  background: var(--overlay-3);
   color: var(--text-mid);
 }
 
@@ -561,9 +591,9 @@ button.download__name:hover {
 
 .modal {
   width: min(460px, calc(100vw - 48px));
-  border-radius: 12px;
-  background: var(--ink-1);
-  border: 1px solid var(--line-2);
+  background: var(--brackets), var(--hairline) 0 0 / 100% 1px no-repeat border-box;
+  background-color: var(--ink-1);
+  border: 1px solid var(--line-3);
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
   animation: modal-in 0.18s var(--ease-emph);
   user-select: none;
@@ -610,9 +640,8 @@ button.download__name:hover {
   gap: 8px;
   padding: 14px 22px 18px;
   margin-top: 8px;
-  background: var(--ink-0);
+  background: var(--scan), var(--ink-0);
   border-top: 1px solid var(--line-1);
-  border-radius: 0 0 12px 12px;
 }
 
 .check {
@@ -631,14 +660,15 @@ button.download__name:hover {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
-  border-radius: 4px;
+  border-radius: 1px;
   border: 1px solid var(--text-lo);
   background-position: center;
   background-repeat: no-repeat;
 }
 
 .check[aria-checked="true"]::before {
-  border-color: var(--accent);
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-glow);
   background-color: var(--accent);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M9.85 3.15a.5.5 0 0 1 0 .7l-5 5a.5.5 0 0 1-.7 0l-2-2a.5.5 0 1 1 .7-.7L4.5 7.79l4.65-4.64a.5.5 0 0 1 .7 0z' fill='white'/%3E%3C/svg%3E");
 }
@@ -658,11 +688,10 @@ button.download__name:hover {
   z-index: 80;
   transform: translateX(-50%);
   max-width: min(560px, calc(100% - 48px));
-  padding: 10px 16px;
-  border-radius: 8px;
+  padding: 10px 16px 10px 18px;
   background: var(--ink-3);
-  border: 1px solid var(--line-2);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--line-3);
+  box-shadow: inset 2px 0 0 var(--accent-bright), 0 16px 40px rgba(0, 0, 0, 0.5);
   font-size: 13px;
   color: var(--text-hi);
   animation: toast-in 0.18s var(--ease-emph);
@@ -689,15 +718,16 @@ button.download__name:hover {
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
-  border-radius: 8px;
 }
 
 .history-row:hover {
-  background: var(--ink-2);
+  background: linear-gradient(90deg, var(--overlay-3), transparent);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
 }
 
 .history-row__time {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-lo);
   font-variant-numeric: tabular-nums;
 }

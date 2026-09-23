@@ -122,6 +122,8 @@ pub fn ensure(app: &AppHandle, owner: &str) -> tauri::Result<WebviewWindow> {
     window.with_webview(|platform| {
         browser190x4_webview::tab::configure_interface(&platform.controller());
     })?;
+    #[cfg(windows)]
+    square_corners(&window);
 
     let handle = app.clone();
     let closing = window.clone();
@@ -147,6 +149,26 @@ pub fn destroy(app: &AppHandle, owner: &str) {
         let _ = window.destroy();
     }
     app.state::<crate::state::App>().popup.forget(owner);
+}
+
+/// Углы попапа — прямые: по углам интерфейс рисует уголки-скобки HUD, а
+/// скругление Windows 11 срезало бы их. На Windows 10 атрибута нет, и вызов
+/// просто ничего не меняет.
+#[cfg(windows)]
+fn square_corners(window: &WebviewWindow) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    };
+    let Ok(hwnd) = window.hwnd() else { return };
+    let preference = DWMWCP_DONOTROUND;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&preference).cast(),
+            std::mem::size_of_val(&preference) as u32,
+        );
+    }
 }
 
 /// Видимость попапа ведём сами, через Win32, а не через `show()`/`hide()`

@@ -83,6 +83,41 @@
   /* Кнопка «закрыть окно» — системный красный Windows, а не акцент: это
      деталь ОС, и во всех приложениях она одинаковая. */
   --caption-close: #C42B1C;
+
+  /* ─── HUD: язык новой вкладки во всём интерфейсе ───
+     Вместо скруглений — срез угла по диагонали, по краям панелей — уголки-
+     скобки, подписи разделов — моноширинные заглавные с ромбом. Всё
+     статично: ни одна деталь не анимируется сама, чтобы не будить отрисовку. */
+  --cut: 10px;
+  --cut-sm: 6px;
+  --clip-tab: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+  --clip-panel: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  --clip-btn: polygon(0 0, calc(100% - var(--cut-sm)) 0, 100% var(--cut-sm), 100% 100%, var(--cut-sm) 100%, 0 calc(100% - var(--cut-sm)));
+
+  /* Уголки-скобки — фоном, поверх рамки (background-origin: border-box). */
+  --corner: color-mix(in srgb, var(--accent-bright) 72%, transparent);
+  --brackets:
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 1px 8px no-repeat border-box;
+
+  /* Кромка, которая гаснет к краям, — под панелью инструментов и в статусе. */
+  --hairline: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent-bright) 42%, transparent) 22%,
+    color-mix(in srgb, var(--accent-bright) 42%, transparent) 78%,
+    transparent
+  );
+  /* Строчная развёртка экрана — едва заметная фактура строки вкладок. */
+  --scan: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.017) 0 1px, transparent 1px 3px);
+  /* Свет активного элемента, падающий внутрь сверху. */
+  --spill: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 12px);
 }
 
 :root[data-find="open"] {
@@ -131,11 +166,14 @@
   --accent-deep: #7A1F31;
   --accent-soft: rgba(181, 47, 72, 0.11);
   --accent-glow: rgba(181, 47, 72, 0.18);
+
+  --scan: repeating-linear-gradient(0deg, rgba(35, 31, 26, 0.022) 0 1px, transparent 1px 3px);
+  --spill: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 12px);
 }
 
 /* Приватное окно: тот же лак, другой стежок. Единственный случай, когда
    акцент меняется не по воле пользователя — чтобы окно нельзя было спутать. */
-:root[data-mode="private"] {
+:root[data-private="true"] {
   --accent: #7E96FF;
   --accent-bright: #B8C6FF;
   --accent-deep: #354A9B;

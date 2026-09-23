@@ -1,9 +1,10 @@
 /* ─────────────────────────────────────────────────────────────
    Адресная строка.
 
-   Тёмный «колодец» на панели инструментов. Слева — значок сайта (замок,
-   глобус или знак 190x4 для встроенных страниц), справа — действия
-   страницы: масштаб, пароли, блокировка, перевод, закладка.
+   Тёмный «колодец» на панели инструментов в уголках-скобках прицела, как
+   карточки новой вкладки. Слева — значок сайта (замок, глобус или знак 190x4
+   для встроенных страниц), справа — действия страницы: масштаб, пароли,
+   блокировка, перевод, закладка — короткими метками.
    ───────────────────────────────────────────────────────────── */
 
 .omni {
@@ -15,43 +16,46 @@
   align-items: center;
   gap: 4px;
   padding: 0 4px;
-  border-radius: 17px;
-  background: var(--ink-0);
-  border: 1px solid transparent;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+  border-radius: 1px;
+  background: var(--brackets);
+  background-color: var(--ink-0);
+  border: 1px solid var(--line-2);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
   transition: border-color 0.14s var(--ease-out), box-shadow 0.14s var(--ease-out),
-    background 0.14s var(--ease-out);
+    background-color 0.14s var(--ease-out);
 }
 
 .omni:hover {
-  background: color-mix(in srgb, var(--ink-0) 70%, var(--ink-1));
+  background-color: color-mix(in srgb, var(--ink-0) 70%, var(--ink-1));
+  border-color: var(--line-3);
 }
 
 .omni[data-focused="true"] {
-  background: var(--ink-0);
-  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background-color: var(--ink-0);
+  border-color: color-mix(in srgb, var(--accent-bright) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 18px color-mix(in srgb, var(--accent) 9%, transparent);
 }
 
 /* Подсказки открыты: строка и список становятся одной карточкой. */
 .omni[data-suggest="true"] {
-  border-radius: 17px 17px 0 0;
   border-color: var(--line-2);
   border-bottom-color: transparent;
   box-shadow: none;
-  background: var(--ink-1);
+  background-color: var(--ink-1);
 }
 
+/* Значок сайта — метка в рамке: замок, «Не защищено» или знак 190x4. */
 .omni__site {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
+  height: 24px;
   min-width: 26px;
   padding: 0 5px;
-  border-radius: 13px;
+  border-radius: 1px;
   color: var(--text-lo);
   flex-shrink: 0;
+  transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
 }
 
 .omni__site:hover {
@@ -60,12 +64,16 @@
 }
 
 .omni__site[data-kind="insecure"] {
+  padding-inline-end: 8px;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
   color: var(--warn);
 }
 
 .omni__site[data-kind="internal"] {
   padding-inline-end: 9px;
-  background: var(--overlay-2);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bright) 30%, transparent);
   color: var(--accent-bright);
 }
 
@@ -73,6 +81,16 @@
   font-size: 12px;
   font-weight: 500;
   color: var(--text-hi);
+}
+
+.omni__site[data-kind="internal"] .omni__site-label,
+.omni__site[data-kind="insecure"] .omni__site-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: inherit;
 }
 
 .omni__field {
@@ -125,10 +143,10 @@
 
 .omni__btn {
   width: 28px;
-  height: 28px;
+  height: 26px;
   display: grid;
   place-items: center;
-  border-radius: 14px;
+  border-radius: 1px;
   color: var(--text-mid);
   transition: background 0.12s var(--ease-out), color 0.12s var(--ease-out);
 }
@@ -153,16 +171,20 @@
   }
 }
 
+/* Метки: масштаб, окна, которые не пустили, число заблокированного. */
 .omni__chip {
   display: flex;
   align-items: center;
   gap: 5px;
-  height: 24px;
+  height: 22px;
   padding: 0 8px 0 6px;
-  border-radius: 12px;
+  border-radius: 1px;
   background: var(--overlay-2);
+  box-shadow: inset 0 0 0 1px var(--line-2);
   color: var(--text-mid);
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -173,15 +195,14 @@
 }
 
 .omni__chip--accent {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bright) 26%, transparent);
   color: var(--accent-bright);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
   font-weight: 600;
 }
 
 .omni__chip--accent:hover {
-  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
   color: var(--accent-bright);
 }
 
@@ -193,7 +214,7 @@
   inset-inline: -1px;
   z-index: 40;
   padding: 4px 0 8px;
-  border-radius: 0 0 17px 17px;
+  border-radius: 0 0 1px 1px;
   background: var(--ink-1);
   border: 1px solid var(--line-2);
   border-top: 0;
@@ -220,7 +241,8 @@
 }
 
 .suggest__row[data-selected="true"] {
-  background: var(--overlay-3);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 75%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
   color: var(--text-hi);
 }
 

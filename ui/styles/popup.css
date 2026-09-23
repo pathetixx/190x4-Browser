@@ -1,8 +1,10 @@
 /* ─────────────────────────────────────────────────────────────
    Всплывающее окно: меню, пузыри, расширение-загрузчик.
 
-   Отдельное окно без рамки с системной тенью и скруглением Windows 11.
-   Размер подгоняется под содержимое: окно само сообщает свою высоту.
+   Отдельное окно без рамки с системной тенью. Углы у окна прямые (Rust
+   просит об этом Windows 11): по углам — уголки-скобки HUD, как у карточек
+   новой вкладки. Размер подгоняется под содержимое: окно само сообщает
+   свою высоту.
    ───────────────────────────────────────────────────────────── */
 
 html,
@@ -66,7 +68,7 @@ svg {
 .popup {
   position: relative;
   border: 1px solid var(--line-2);
-  border-radius: 8px;
+  background: var(--brackets), var(--hairline) 0 0 / 100% 1px no-repeat border-box;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -100,15 +102,21 @@ svg {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  border-radius: 5px;
   text-align: start;
   color: var(--text-hi);
   white-space: nowrap;
 }
 
+/* Пункт под курсором — риска акцента слева и отсвет, гаснущий вправо. */
 .menu__item:hover,
 .menu__item[data-selected="true"] {
-  background: var(--overlay-3);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), var(--overlay-2) 70%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+
+.menu__item:hover .menu__icon,
+.menu__item[data-selected="true"] .menu__icon {
+  color: var(--accent-bright);
 }
 
 .menu__item[disabled] {
@@ -132,7 +140,7 @@ svg {
 .menu__icon img {
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .menu__label {
@@ -143,7 +151,9 @@ svg {
 }
 
 .menu__keys {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
   color: var(--text-lo);
 }
 
@@ -151,10 +161,11 @@ svg {
   color: var(--accent-bright);
 }
 
+/* Разделитель — риска, гаснущая вправо. */
 .menu__sep {
   height: 1px;
   margin: 4px -4px;
-  background: var(--line-2);
+  background: linear-gradient(90deg, var(--line-3), var(--line-1) 80%);
 }
 
 /* Меню страницы: без колонки значков, плотнее — как системное. */
@@ -169,9 +180,9 @@ svg {
   position: absolute;
   z-index: 2;
   width: 230px;
-  background: var(--ink-1);
-  border: 1px solid var(--line-2);
-  border-radius: 8px;
+  background: var(--brackets);
+  background-color: var(--ink-1);
+  border: 1px solid var(--line-3);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -180,10 +191,13 @@ svg {
   align-items: center;
   gap: 6px;
   height: 32px;
-  padding: 0 6px 0 4px;
+  padding: 0 6px 0 8px;
   margin-bottom: 2px;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-mid);
 }
 
@@ -241,7 +255,7 @@ svg {
   margin: -6px -8px 0 0;
   display: grid;
   place-items: center;
-  border-radius: 5px;
+  border-radius: 1px;
   color: var(--text-mid);
 }
 
@@ -270,9 +284,9 @@ svg {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--ink-0);
-  border: 1px solid var(--line-1);
+  background: var(--brackets);
+  background-color: var(--ink-0);
+  border: 1px solid var(--line-2);
   font-size: 12.5px;
   color: var(--text-mid);
 }
@@ -293,7 +307,7 @@ svg {
   height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 1px;
   color: var(--text-lo);
 }
 
@@ -313,11 +327,27 @@ svg {
   border-bottom: 1px solid var(--line-1);
 }
 
+/* Заголовок пузыря — метка HUD с ромбом. */
 .panel-head__title {
   flex: 1;
-  font-family: var(--font-display);
-  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mid);
+}
+
+.panel-head__title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  background: var(--accent-bright);
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .panel-head .btn--icon {
@@ -336,7 +366,6 @@ svg {
   gap: 12px;
   align-items: center;
   padding: 8px 6px 8px 10px;
-  border-radius: 6px;
 }
 
 .dl:hover {
@@ -348,8 +377,8 @@ svg {
   height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
-  background: var(--overlay-2);
+  clip-path: var(--clip-btn);
+  background: var(--overlay-3);
   color: var(--text-mid);
 }
 
@@ -427,7 +456,7 @@ svg {
   height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  clip-path: var(--clip-btn);
   background: linear-gradient(160deg, var(--accent-bright), var(--accent-deep));
   color: #fff;
 }
@@ -464,7 +493,7 @@ svg {
 .media__thumb {
   width: 96px;
   height: 54px;
-  border-radius: 6px;
+  border-radius: 1px;
   object-fit: cover;
   background: var(--ink-3);
 }
@@ -489,10 +518,13 @@ svg {
 }
 
 .formats__label {
-  margin: 12px 2px 6px;
-  font-size: 12px;
+  margin: 14px 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-mid);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-lo);
 }
 
 .format {
@@ -502,12 +534,12 @@ svg {
   width: 100%;
   height: 36px;
   padding: 0 10px;
-  border-radius: 6px;
   text-align: start;
 }
 
 .format:hover {
-  background: var(--overlay-3);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), var(--overlay-2) 70%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
 }
 
 .format svg {
@@ -524,16 +556,17 @@ svg {
 }
 
 .format__size {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-lo);
   font-variant-numeric: tabular-nums;
 }
 
 .progress-card {
   padding: 12px;
-  border-radius: 8px;
-  background: var(--ink-0);
-  border: 1px solid var(--line-1);
+  background: var(--brackets);
+  background-color: var(--ink-0);
+  border: 1px solid var(--line-2);
   margin-bottom: 10px;
 }
 
@@ -563,7 +596,6 @@ svg {
 .error-card {
   padding: 10px 12px;
   margin-bottom: 10px;
-  border-radius: 8px;
   background: color-mix(in srgb, var(--err) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--err) 25%, transparent);
   font-size: 12.5px;
@@ -577,6 +609,8 @@ svg {
   border-radius: 50%;
   border: 2px solid var(--line-3);
   border-top-color: var(--accent-bright);
+  border-right-color: color-mix(in srgb, var(--accent-bright) 45%, transparent);
+  mask: repeating-conic-gradient(#000 0 36deg, transparent 36deg 45deg);
   animation: spin 0.7s linear infinite;
 }
 
@@ -593,9 +627,9 @@ svg {
   overflow-y: auto;
   margin: 0 0 12px;
   padding: 10px 12px;
-  border-radius: 8px;
   background: var(--ink-0);
-  border: 1px solid var(--line-1);
+  border: 1px solid var(--line-2);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--text-mid);
@@ -619,10 +653,6 @@ svg {
 
 /* ── Подсказка полноэкранного режима ───────────────────────── */
 
-.popup--hint {
-  border-radius: 10px;
-}
-
 .hint-bubble {
   padding: 12px 18px;
   text-align: center;
@@ -635,17 +665,13 @@ svg {
   margin-inline-start: 2px;
   padding: 1px 7px;
   border: 1px solid var(--line-3);
-  border-radius: 5px;
+  border-radius: 1px;
   background: var(--overlay-2);
   font-family: var(--font-mono);
   font-size: 12px;
 }
 
 /* ── Подсказки адресной строки ─────────────────────────────── */
-
-.popup--suggest {
-  border-radius: 12px;
-}
 
 .suggest {
   padding: 6px 0;
@@ -664,7 +690,8 @@ svg {
 
 .suggest__row:hover,
 .suggest__row[data-selected="true"] {
-  background: var(--overlay-3);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), var(--overlay-2) 75%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
   color: var(--text-hi);
 }
 
@@ -770,7 +797,7 @@ svg {
   height: 16px;
   margin: 1px 0 0;
   border: 1px solid var(--text-lo);
-  border-radius: 4px;
+  border-radius: 1px;
   background: transparent;
   cursor: pointer;
 }
@@ -780,8 +807,9 @@ svg {
 }
 
 .check input:checked {
-  border-color: var(--accent);
+  border-color: var(--accent-bright);
   background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
 }
 
 .check input:checked::after {
@@ -802,18 +830,22 @@ svg {
   padding: 10px 4px 4px;
 }
 
+/* Цвета группы — ромбами. */
 .palette__dot {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
+  margin: 2px;
   padding: 0;
   border: 2px solid transparent;
-  border-radius: 50%;
+  transform: rotate(45deg);
   background: var(--dot);
+  background-clip: padding-box;
   cursor: pointer;
 }
 
 .palette__dot[aria-pressed="true"] {
   border-color: var(--text-hi);
+  box-shadow: 0 0 8px var(--dot);
 }
 
 .palette__dot[data-color="rose"] {
