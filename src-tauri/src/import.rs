@@ -22,13 +22,55 @@ enum Root {
 
 /// Браузер: ярлык, имя, папка данных и одна ли в ней папка профиля (Opera).
 const KNOWN: [(&str, &str, Root, &str, bool); 7] = [
-    ("chrome", "Google Chrome", Root::Local, r"Google\Chrome\User Data", false),
-    ("edge", "Microsoft Edge", Root::Local, r"Microsoft\Edge\User Data", false),
-    ("yandex", "Яндекс Браузер", Root::Local, r"Yandex\YandexBrowser\User Data", false),
-    ("brave", "Brave", Root::Local, r"BraveSoftware\Brave-Browser\User Data", false),
-    ("vivaldi", "Vivaldi", Root::Local, r"Vivaldi\User Data", false),
-    ("opera", "Opera", Root::Roaming, r"Opera Software\Opera Stable", true),
-    ("opera-gx", "Opera GX", Root::Roaming, r"Opera Software\Opera GX Stable", true),
+    (
+        "chrome",
+        "Google Chrome",
+        Root::Local,
+        r"Google\Chrome\User Data",
+        false,
+    ),
+    (
+        "edge",
+        "Microsoft Edge",
+        Root::Local,
+        r"Microsoft\Edge\User Data",
+        false,
+    ),
+    (
+        "yandex",
+        "Яндекс Браузер",
+        Root::Local,
+        r"Yandex\YandexBrowser\User Data",
+        false,
+    ),
+    (
+        "brave",
+        "Brave",
+        Root::Local,
+        r"BraveSoftware\Brave-Browser\User Data",
+        false,
+    ),
+    (
+        "vivaldi",
+        "Vivaldi",
+        Root::Local,
+        r"Vivaldi\User Data",
+        false,
+    ),
+    (
+        "opera",
+        "Opera",
+        Root::Roaming,
+        r"Opera Software\Opera Stable",
+        true,
+    ),
+    (
+        "opera-gx",
+        "Opera GX",
+        Root::Roaming,
+        r"Opera Software\Opera GX Stable",
+        true,
+    ),
 ];
 
 /// Историю старше этого браузер не переносит — Chrome и сам столько хранит.
@@ -169,7 +211,9 @@ pub fn browser_import(
     if bookmarks {
         if let Ok(json) = std::fs::read_to_string(target.path.join("Bookmarks")) {
             let nodes = chromium::parse_bookmarks(&json).map_err(|err| err.to_string())?;
-            let report = store.import_bookmarks(&nodes).map_err(|err| err.to_string())?;
+            let report = store
+                .import_bookmarks(&nodes)
+                .map_err(|err| err.to_string())?;
             imported.links = report.links;
             imported.folders = report.folders;
             imported.skipped = report.skipped;
