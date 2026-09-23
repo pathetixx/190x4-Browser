@@ -18,7 +18,7 @@ import {
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
 import { initContextMenu, openContextMenu, wantsBackgroundTab } from "./context-menu.js";
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
-import { displayHost, el, hostOf } from "./dom.js";
+import { displayHost, displayUrl, el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
@@ -38,6 +38,7 @@ import {
   closeAnswered,
   cycle,
   endSplit,
+  INTERNAL,
   initTabs,
   isLeaving,
   moveActive,
@@ -174,7 +175,23 @@ initPalette([
     icon: "paint",
     run: () => setPref("theme", document.documentElement.dataset.theme === "shiro" ? "kurogane" : "shiro"),
   },
-]);
+], { found: openTabCommands });
+
+/** Открытые вкладки окна для Ctrl+K: набрали часть заголовка или адреса — переход на неё. */
+function openTabCommands() {
+  return [...state.tabs.values()]
+    .filter((tab) => !tab.closing && !isNewTabUrl(tab.url))
+    .map((tab) => ({
+      group: "Открытые вкладки",
+      title: tab.title || displayHost(hostOf(tab.url)) || tab.url,
+      keywords: tab.internal ? tab.url : displayUrl(tab.url ?? ""),
+      hint: tab.id === state.activeId ? "эта вкладка" : tab.internal ? "190x4" : displayHost(hostOf(tab.url)),
+      image: tab.internal ? undefined : tab.favicon ?? "",
+      icon: tab.internal ? INTERNAL[tab.internal]?.icon : undefined,
+      exact: true,
+      run: () => activate(tab.id),
+    }));
+}
 
 /* ── Окно ──────────────────────────────────────────────────── */
 

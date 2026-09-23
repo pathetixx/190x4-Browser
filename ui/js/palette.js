@@ -6,7 +6,7 @@
  */
 
 import { invoke } from "./bridge.js";
-import { el, icon } from "./dom.js";
+import { el, favicon, icon } from "./dom.js";
 import { setOverlay } from "./layout.js";
 
 const palette = document.getElementById("palette");
@@ -15,11 +15,17 @@ const list = document.getElementById("palette-list");
 const scrim = document.getElementById("scrim");
 
 let commands = [];
+let extra = () => [];
 let filtered = [];
 let selected = 0;
 
-export function initPalette(registry) {
+/**
+ * `registry` — команды браузера. `found` — то, что ищется вместе с ними, но
+ * только по набранному: открытые вкладки окна, как поиск вкладок в Chrome.
+ */
+export function initPalette(registry, { found = () => [] } = {}) {
   commands = registry;
+  extra = found;
 
   input.addEventListener("input", () => render(input.value));
   input.addEventListener("keydown", (event) => {
@@ -80,6 +86,9 @@ function run(command) {
  */
 function match(command, query) {
   if (!query) return 0;
+  // Вкладки ищутся подстрокой: по буквам вразброс длинный адрес нашёлся бы на
+  // любой запрос.
+  if (command.exact) return `${command.title} ${command.keywords ?? ""}`.toLowerCase().indexOf(query.toLowerCase());
   const haystack = `${command.title} ${command.group} ${command.keywords ?? ""}`.toLowerCase();
   let index = 0;
   let score = 0;
@@ -93,7 +102,8 @@ function match(command, query) {
 }
 
 function render(query) {
-  filtered = commands
+  const pool = query.trim() ? [...commands, ...extra()] : commands;
+  filtered = pool
     .filter((command) => !command.when || command.when())
     .map((command) => ({ command, score: match(command, query.trim()) }))
     .filter((item) => item.score >= 0)
@@ -113,7 +123,9 @@ function render(query) {
     const row = el("button", "palette__row");
     row.dataset.index = index;
     row.dataset.selected = String(index === selected);
-    row.append(icon(command.icon ?? "find", 20, "palette__icon"), el("span", "palette__label", command.title));
+    const glyph = command.image !== undefined ? favicon(command.image, "palette__icon palette__icon--site") : icon(command.icon ?? "find", 20, "palette__icon");
+    row.append(glyph, el("span", "palette__label", command.title));
+    if (command.hint) row.append(el("span", "palette__hint", command.hint));
     if (command.keys) row.append(el("span", "kbd", command.keys));
     list.append(row);
   });

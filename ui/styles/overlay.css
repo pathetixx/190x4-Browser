@@ -122,6 +122,26 @@
   text-overflow: ellipsis;
 }
 
+/* Значок сайта открытой вкладки — на месте 20-пиксельной иконки команды. */
+.palette__icon--site {
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.palette__hint {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
 .palette__foot {
   display: flex;
   align-items: center;
