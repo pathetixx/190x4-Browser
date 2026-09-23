@@ -13,7 +13,9 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 $lists = @{
     "easylist.txt"    = "https://easylist.to/easylist/easylist.txt"
     "easyprivacy.txt" = "https://easylist.to/easylist/easyprivacy.txt"
-    "ruadlist.txt"    = "https://easylist-downloads.adblockplus.org/ruadlist+easylist.txt"
+    # Без EasyList внутри: он и так идёт отдельным списком, а вдвоём его
+    # правила разбирались и хранились дважды.
+    "ruadlist.txt"    = "https://easylist-downloads.adblockplus.org/advblock+cssfixes.txt"
 }
 
 foreach ($name in $lists.Keys) {

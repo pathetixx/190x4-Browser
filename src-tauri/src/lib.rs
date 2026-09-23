@@ -680,7 +680,8 @@ static FILTER_BUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 ///
 /// До этого момента браузер уже работает — просто без блокировок (или со
 /// старым набором правил). Первый запуск не должен ждать разбор сотен тысяч
-/// правил.
+/// правил, а следующие не разбирают их вовсе: собранный движок лежит снимком
+/// (`engine.bin`) и поднимается заново, пока набор списков тот же.
 pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::AppHandle) {
     use browser190x4_adblock::{FilterList, ListSource, Subscriptions};
     use std::sync::atomic::Ordering;
@@ -696,31 +697,36 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
         };
         let downloaded = filters_dir();
 
+        // Вшитые в установщик списки свежее скачанных не бывают: канал фильтров
+        // обновляет их каждый день, установщик — только с новой версией.
         let enabled = enabled_lists(&store);
-        let mut lists = Vec::new();
-        for spec in Subscriptions::default()
+        let lists: Vec<ListFile> = Subscriptions::default()
             .lists
-            .iter()
+            .into_iter()
             .filter(|spec| enabled.contains(&spec.id))
-        {
-            let path = match &spec.source {
-                ListSource::Bundled(name) => bundled.join(name),
-                ListSource::Downloaded(name) => downloaded.join(name),
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(text) => lists.push(FilterList {
-                    text,
+            .map(|spec| {
+                let (path, optional) = match &spec.source {
+                    ListSource::Bundled(name) => {
+                        let fresh = downloaded.join(name);
+                        let path = if fresh.exists() {
+                            fresh
+                        } else {
+                            bundled.join(name)
+                        };
+                        (path, false)
+                    }
+                    ListSource::Downloaded(name) => (downloaded.join(name), true),
+                };
+                ListFile {
+                    id: spec.id,
                     trusted: spec.trusted,
-                }),
-                // Скачанного списка нет до первого обновления фильтров.
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::NotFound
-                        && matches!(spec.source, ListSource::Downloaded(_)) => {}
-                Err(err) => tracing::warn!(list = %spec.id, %err, "список не прочитан"),
-            }
-        }
+                    optional,
+                    path,
+                }
+            })
+            .collect();
 
-        let resources = match std::fs::read_to_string(downloaded.join("resources.json")) {
+        let resources = || match std::fs::read_to_string(downloaded.join("resources.json")) {
             Ok(json) => Guard::parse_resources(&json).unwrap_or_else(|err| {
                 tracing::warn!(%err, "ресурсы скриптлетов не разобраны");
                 Vec::new()
@@ -729,20 +735,106 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
         };
 
         let started = std::time::Instant::now();
-        let count = lists.len();
-        let scriptlets = resources.len();
-        let engine = Guard::build(lists, resources);
+        let count = lists.iter().filter(|list| list.path.exists()).count();
+        let key = snapshot_key(&lists);
+        let snapshot = downloaded.join(SNAPSHOT);
+        let restored = std::fs::read_to_string(downloaded.join(SNAPSHOT_KEY))
+            .ok()
+            .filter(|saved| *saved == key)
+            .and_then(|_| std::fs::read(&snapshot).ok())
+            .and_then(|bytes| Guard::restore(&bytes, resources()));
+        let fresh = restored.is_none();
+        let engine = match restored {
+            Some(engine) => engine,
+            None => {
+                let mut texts = Vec::new();
+                for list in &lists {
+                    match std::fs::read_to_string(&list.path) {
+                        Ok(text) => texts.push(FilterList {
+                            text,
+                            trusted: list.trusted,
+                        }),
+                        Err(err) => {
+                            // Скачанного списка нет до первого обновления фильтров.
+                            if !(list.optional && err.kind() == std::io::ErrorKind::NotFound) {
+                                tracing::warn!(list = %list.id, %err, "список не прочитан");
+                            }
+                        }
+                    }
+                }
+                Guard::build(texts, resources())
+            }
+        };
         if FILTER_BUILD.load(Ordering::SeqCst) != build {
             tracing::debug!("списки сменились, пока фильтр собирался — этот набор устарел");
             return;
         }
+        let bytes = fresh.then(|| Guard::snapshot(&engine));
         guard.swap(engine);
         tracing::info!(
             lists = count,
-            scriptlets,
+            snapshot = !fresh,
             ms = started.elapsed().as_millis(),
             "фильтр собран"
         );
         let _ = app.emit("adblock-ready", count);
+
+        // Снимок пишется после того, как фильтр уже работает: ключ — последним,
+        // иначе оборванная запись выглядела бы готовым снимком.
+        if let Some(bytes) = bytes {
+            let saved = std::fs::create_dir_all(&downloaded)
+                .and_then(|()| write_replacing(&snapshot, &bytes))
+                .and_then(|()| write_replacing(&downloaded.join(SNAPSHOT_KEY), key.as_bytes()));
+            if let Err(err) = saved {
+                tracing::debug!(%err, "снимок фильтра не записан");
+            }
+        }
     });
+}
+
+/// Собранный движок фильтра и отпечаток набора списков, из которого он собран.
+const SNAPSHOT: &str = "engine.bin";
+const SNAPSHOT_KEY: &str = "engine.key";
+
+/// Включённый список фильтров и файл, из которого он читается.
+struct ListFile {
+    id: String,
+    trusted: bool,
+    /// Скачиваемый список: до первого обновления фильтров его может не быть.
+    optional: bool,
+    path: std::path::PathBuf,
+}
+
+/// Отпечаток набора списков: версия браузера (с ней меняется движок), какие
+/// списки включены и какие файлы лежат на диске — размер и время записи.
+/// Сменилось что угодно — снимок устарел, списки собираются заново.
+fn snapshot_key(lists: &[ListFile]) -> String {
+    let mut lines = vec![env!("CARGO_PKG_VERSION").to_string()];
+    for list in lists {
+        let stamp = match std::fs::metadata(&list.path) {
+            Ok(meta) => {
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |since| since.as_nanos());
+                format!("{} {modified}", meta.len())
+            }
+            Err(_) => "-".to_string(),
+        };
+        lines.push(format!(
+            "{} {} {} {stamp}",
+            list.id,
+            list.trusted,
+            list.path.display()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Записать файл целиком: через временный рядом и переименование.
+fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = path.with_extension("tmp");
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, path)
 }

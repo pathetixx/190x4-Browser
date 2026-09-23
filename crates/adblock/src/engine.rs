@@ -163,6 +163,23 @@ impl Guard {
         engine
     }
 
+    /// Собранный движок в байтах. Следующий запуск поднимает его через
+    /// [`Guard::restore`], не разбирая списки заново: разбор сотен тысяч
+    /// правил стоит сотен миллисекунд процессора на каждом старте.
+    pub fn snapshot(engine: &Engine) -> Vec<u8> {
+        engine.serialize()
+    }
+
+    /// Движок из снимка [`Guard::snapshot`]. Ресурсы скриптлетов в снимок не
+    /// входят — их кладут заново. `None` — снимок испорчен или записан другой
+    /// версией движка: тогда списки собираются как обычно.
+    pub fn restore(bytes: &[u8], resources: Vec<Resource>) -> Option<Engine> {
+        let mut engine = Engine::default();
+        engine.deserialize(bytes).ok()?;
+        engine.use_resources(resources);
+        Some(engine)
+    }
+
     /// Ресурсы скриптлетов из `resources.json`.
     pub fn parse_resources(json: &str) -> anyhow::Result<Vec<Resource>> {
         Ok(serde_json::from_str(json)?)
@@ -422,6 +439,43 @@ mod tests {
             ),
             Decision::Block
         );
+    }
+
+    #[test]
+    fn snapshot_restores_rules_and_scriptlets() {
+        let json = serde_json::json!([
+            {"name": "mark.js", "aliases": [], "kind": {"mime": "application/javascript"},
+             "content": b64("function mark(value) { window.__mark = value; }"), "dependencies": [], "permission": 0},
+        ])
+        .to_string();
+        let resources = Guard::parse_resources(&json).unwrap();
+        let engine = Guard::build(
+            vec![list(
+                "||ads.example.com^\nexample.com##.promo\nexample.com##+js(mark, 1)",
+                false,
+            )],
+            resources,
+        );
+        let bytes = Guard::snapshot(&engine);
+
+        let resources = Guard::parse_resources(&json).unwrap();
+        let restored = Guard::restore(&bytes, resources).unwrap();
+        let guard = Guard::empty();
+        guard.swap(restored);
+        assert_eq!(
+            guard.check(
+                "https://ads.example.com/banner.js",
+                "https://news.example/",
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
+        );
+        let cosmetics = guard.cosmetics("https://example.com/");
+        assert_eq!(cosmetics.hide, vec![".promo".to_string()]);
+        assert!(cosmetics.script.contains("function mark"));
+
+        assert!(Guard::restore(b"not an engine", Vec::new()).is_none());
     }
 
     #[test]

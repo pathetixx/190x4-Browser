@@ -22,6 +22,14 @@ import { pathToFileURL } from "node:url";
 const OUT = resolve(process.argv[2] ?? "filters-out");
 const LISTS = ["filters", "quick-fixes", "privacy", "unbreak"];
 const LIST_BASE = "https://ublockorigin.github.io/uAssets/filters/";
+// Основные списки вшиты и в установщик, но обновлять их только с выпуском
+// браузера — значит неделями жить со старыми правилами. Здесь они свежие, и
+// браузер берёт скачанную копию вместо вшитой. RU AdList — без EasyList внутри.
+const BASE_LISTS = {
+  "easylist.txt": "https://easylist.to/easylist/easylist.txt",
+  "easyprivacy.txt": "https://easylist.to/easylist/easyprivacy.txt",
+  "ruadlist.txt": "https://easylist-downloads.adblockplus.org/advblock+cssfixes.txt",
+};
 const REPO = "gorhill/uBlock";
 const TRUSTED = 1;
 
@@ -164,6 +172,11 @@ for (const name of LISTS) {
   if (list.split("\n").length < 50) throw new Error(`список ${name} подозрительно короткий`);
   put(`ubo-${name}.txt`, name === "unbreak" ? `${list}\n${FIXES}` : list);
 }
+for (const [name, url] of Object.entries(BASE_LISTS)) {
+  const list = await preprocess(await text(url), url);
+  if (list.split("\n").length < 1000) throw new Error(`список ${name} подозрительно короткий`);
+  put(name, list);
+}
 const { tag, resources } = await scriptlets();
 put("resources.json", JSON.stringify(resources));
 put(
@@ -172,6 +185,9 @@ put(
 (https://github.com/gorhill/uBlock, release ${tag}) and uAssets
 (https://github.com/uBlockOrigin/uAssets). They are licensed under the GNU
 General Public License v3.0; the source is available at those addresses.
+easylist.txt, easyprivacy.txt and ruadlist.txt (RU AdList) come from EasyList
+(https://easylist.to/pages/licence.html) and are dual-licensed under the GNU
+General Public License v3.0 and Creative Commons Attribution-ShareAlike 3.0.
 The lists are preprocessed for 190x4 Browser: conditional directives resolved
 and includes inlined. The rules after "Исправления 190x4 Browser" at the end of
 ubo-unbreak.txt are 190x4 Browser's own.
