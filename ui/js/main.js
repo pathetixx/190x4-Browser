@@ -798,17 +798,23 @@ function renderStatus() {
   const tab = activeTab();
   if (!toastTimer) {
     statusDot.dataset.state = tab?.loading ? "busy" : "idle";
-    statusState.textContent = tab?.loading ? "загрузка" : "готов";
+    setText(statusState, tab?.loading ? "загрузка" : "готов");
   }
-  statusTarget.textContent = tab?.internal ? tab.url : tab?.url && !isNewTabUrl(tab.url) ? displayHost(hostOf(tab.url)) : "";
-  statusBlocked.textContent = state.blockedTotal;
-  statusTabs.textContent = state.tabs.size;
+  setText(statusTarget, tab?.internal ? tab.url : tab?.url && !isNewTabUrl(tab.url) ? displayHost(hostOf(tab.url)) : "");
+  setText(statusBlocked, state.blockedTotal);
+  setText(statusTabs, state.tabs.size);
 
-  statusLatency.textContent = state.latencyMicros ? `${state.latencyMicros.toFixed(1)} мкс` : "—";
+  setText(statusLatency, state.latencyMicros ? `${state.latencyMicros.toFixed(1)} мкс` : "—");
   statusLatency.dataset.grade = state.latencyMicros > 100 ? "warn" : "good";
 
   railBadge.hidden = state.blockedTotal === 0;
-  railBadge.textContent = state.blockedTotal > 999 ? "999+" : state.blockedTotal;
+  setText(railBadge, state.blockedTotal > 999 ? "999+" : state.blockedTotal);
+}
+
+/** Текст меняется, только если он другой: иначе раскладка строки пересчитывалась бы на каждое событие. */
+function setText(node, value) {
+  const text = String(value);
+  if (node.textContent !== text) node.textContent = text;
 }
 
 /**

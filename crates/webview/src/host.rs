@@ -358,9 +358,15 @@ impl HostState {
 fn hide_offscreen_after(weak: Weak<RefCell<HostState>>, ms: u32) {
     crate::later::after(ms, move || {
         let Some(inner) = weak.upgrade() else { return };
-        match inner.try_borrow_mut() {
-            Ok(mut state) => state.hide_offscreen(),
-            Err(_) => hide_offscreen_after(Rc::downgrade(&inner), 50),
+        let busy = match inner.try_borrow_mut() {
+            Ok(mut state) => {
+                state.hide_offscreen();
+                false
+            }
+            Err(_) => true,
+        };
+        if busy {
+            hide_offscreen_after(Rc::downgrade(&inner), 50);
         }
     });
 }
