@@ -1037,7 +1037,7 @@ const BUILDERS = {
 
     const licenses = setting(
       "Сторонние компоненты",
-      "Значки интерфейса — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0). Расширенные фильтры и скриптлеты — uBlock Origin и uAssets (GPL-3.0), скачиваются отдельно. Погода на новой вкладке — Open-Meteo (CC BY 4.0), названия мест — © участники OpenStreetMap (ODbL).",
+      "Погодные значки новой вкладки — Fluent UI System Icons (Microsoft, MIT). Блокировка — adblock-rust (Brave, MPL-2.0). Расширенные фильтры и скриптлеты — uBlock Origin и uAssets (GPL-3.0), скачиваются отдельно. Погода на новой вкладке — Open-Meteo (CC BY 4.0), названия мест — © участники OpenStreetMap (ODbL).",
       null
     );
 

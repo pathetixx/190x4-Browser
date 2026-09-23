@@ -1,6 +1,7 @@
-icons.svg собран из Fluent UI System Icons
+Погодные значки в icons.svg — Fluent UI System Icons
 https://github.com/microsoft/fluentui-system-icons
-Сборка: scripts/icons/build_sprite.py
+Сборка: scripts/icons/build_pages_sprite.py
+Остальные значки нарисованы для 190x4: scripts/icons/build_sprite.py
 
 MIT License
 

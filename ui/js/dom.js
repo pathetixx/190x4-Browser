@@ -12,7 +12,7 @@ export function el(tag, className, text) {
   return node;
 }
 
-/** Иконка из спрайта Fluent. `id` — без префикса: "back", "star-16". */
+/** Иконка из спрайта 190x4. `id` — без префикса: "back", "star-16". */
 export function icon(id, size = 16, className = "") {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("width", size);
