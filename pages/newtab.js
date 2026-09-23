@@ -345,12 +345,41 @@
   function glitchLater() {
     setTimeout(() => {
       const time = $("time");
-      if (document.visibilityState === "visible" && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (
+        document.visibilityState === "visible" &&
+        document.documentElement.dataset.hud === "live" &&
+        !matchMedia("(prefers-reduced-motion: reduce)").matches
+      ) {
         time.classList.add("glitch");
         setTimeout(() => time.classList.remove("glitch"), 260);
       }
       glitchLater();
     }, 6000 + Math.random() * 7000);
+  }
+
+  /* ── Живой и спокойный HUD ────────────────────────────────── */
+
+  // Кольца, дуга секунд и мигание двоеточия перерисовывают страницу с частотой
+  // экрана: на мониторе 165 Гц это больше половины ядра, пока вкладка на виду.
+  // Поэтому HUD живёт, пока на него смотрят, — первые секунды после показа
+  // вкладки и пока двигают мышью или печатают, — а потом затихает: кольца
+  // замирают, где были, секунды меняются скачком раз в секунду (newtab.css,
+  // `data-hud`).
+  const LIVE_MS = 10000;
+  let calmTimer = 0;
+
+  function setHud(mode) {
+    if (document.documentElement.dataset.hud !== mode) document.documentElement.dataset.hud = mode;
+  }
+
+  function wake() {
+    setHud("live");
+    clearTimeout(calmTimer);
+    calmTimer = setTimeout(() => setHud("calm"), LIVE_MS);
+  }
+
+  for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
+    addEventListener(type, wake, { passive: true });
   }
 
   /* ── Поиск ────────────────────────────────────────────────── */
@@ -1010,7 +1039,12 @@
 
   document.addEventListener("visibilitychange", () => {
     syncMonitor();
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      clearTimeout(calmTimer);
+      setHud("calm");
+      return;
+    }
+    wake();
     // Тему и плитки могли поменять, пока вкладка была в фоне.
     send({ evt: "newtab_init" });
     if (state.weather && Date.now() - weatherAt > WEATHER_EVERY) requestWeather(false);
@@ -1132,5 +1166,7 @@
   buildHud();
   tick();
   glitchLater();
+  if (document.visibilityState === "visible") wake();
+  else setHud("calm");
   send({ evt: "newtab_init" });
 })();

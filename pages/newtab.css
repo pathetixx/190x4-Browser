@@ -181,6 +181,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   background: linear-gradient(transparent, color-mix(in srgb, var(--accent) 6%, transparent) 70%, transparent);
   animation: scan 11s linear infinite;
   will-change: transform;
+  transition: opacity 0.6s;
 }
 @keyframes scan { to { transform: translateY(160vh); } }
 .bg__noise {
@@ -202,7 +203,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: 2px;
   color: var(--text-lo);
   border: 1px solid transparent;
   transition: color 0.16s, background 0.16s, border-color 0.16s;
@@ -212,11 +213,21 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .gear:hover svg, .gear[aria-expanded="true"] svg { transform: rotate(90deg); }
 
 .pop {
+  --corner: color-mix(in srgb, var(--accent-bright) 72%, transparent);
   position: fixed;
   z-index: 20;
   padding: 6px;
-  border-radius: 12px;
-  background: var(--ink-1);
+  border-radius: 1px;
+  background:
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 0 / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 0 / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 0 100% / 1px 8px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 8px 1px no-repeat border-box,
+    linear-gradient(var(--corner), var(--corner)) 100% 100% / 1px 8px no-repeat border-box,
+    var(--ink-1);
   border: 1px solid var(--line-3);
   box-shadow: var(--shadow), 0 12px 32px rgba(0, 0, 0, 0.3);
   animation: pop-in 0.16s var(--ease);
@@ -239,7 +250,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   gap: 16px;
   height: 38px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: 2px;
   cursor: pointer;
 }
 .toggle:hover { background: var(--line-1); }
@@ -248,7 +259,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   position: relative;
   width: 32px;
   height: 18px;
-  border-radius: 9px;
+  border-radius: 2px;
   background: var(--ink-4);
   transition: background 0.16s;
 }
@@ -259,11 +270,11 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   left: 3px;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: 1px;
   background: var(--text-mid);
   transition: transform 0.2s var(--ease), background 0.16s;
 }
-.toggle input:checked + i { background: var(--accent); }
+.toggle input:checked + i { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
 .toggle input:checked + i::after { transform: translateX(14px); background: #fff; }
 .toggle input:focus-visible + i { outline: 2px solid var(--accent-bright); outline-offset: 2px; }
 
@@ -275,10 +286,14 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   width: 100%;
   height: 34px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: 2px;
   color: var(--text-hi);
 }
-.tile-menu button:hover, .tile-menu button:focus-visible { background: var(--line-2); outline: none; }
+.tile-menu button:hover, .tile-menu button:focus-visible {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), var(--line-1) 70%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+  outline: none;
+}
 .tile-menu svg { width: 18px; height: 18px; color: var(--text-mid); }
 .tile-menu .danger:hover, .tile-menu .danger:focus-visible { color: var(--accent-bright); }
 .tile-menu .danger:hover svg { color: var(--accent-bright); }
@@ -443,7 +458,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   min-width: 3ch;
   padding: 3px 7px 2px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 5px;
+  border-radius: 2px;
   font: 600 12px/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-align: center;
@@ -470,7 +485,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   align-items: center;
   gap: 14px;
   padding: 0 14px 0 20px;
-  border-radius: 16px;
+  border-radius: 2px;
   background: var(--glass);
   border: 1px solid var(--line-2);
   box-shadow: inset 0 1px 0 var(--shine), var(--shadow);
@@ -487,8 +502,8 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   transition: opacity 0.2s, transform 0.3s var(--ease);
   pointer-events: none;
 }
-.search::before { top: -6px; left: -6px; border-right: 0; border-bottom: 0; border-top-left-radius: 7px; transform: translate(5px, 5px); }
-.search::after { right: -6px; bottom: -6px; border-left: 0; border-top: 0; border-bottom-right-radius: 7px; transform: translate(-5px, -5px); }
+.search::before { top: -6px; left: -6px; border-right: 0; border-bottom: 0; transform: translate(5px, 5px); }
+.search::after { right: -6px; bottom: -6px; border-left: 0; border-top: 0; transform: translate(-5px, -5px); }
 .search:focus-within {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
   box-shadow: 0 0 0 4px var(--accent-soft), 0 0 48px -12px var(--accent-glow), var(--shadow);
@@ -509,7 +524,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .search__input::placeholder { color: var(--text-faint); }
 .search__key {
   padding: 5px 7px 4px;
-  border-radius: 6px;
+  border-radius: 2px;
   border: 1px solid var(--line-2);
   background: var(--ink-2);
   font: 500 10px/1 var(--font-mono);
@@ -529,7 +544,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
   gap: 8px;
 }
-.dial { position: relative; border-radius: 14px; min-width: 0; }
+.dial { position: relative; border-radius: 2px; min-width: 0; }
 .dial__link, .dial--add {
   display: flex;
   flex-direction: column;
@@ -537,7 +552,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   gap: 10px;
   width: 100%;
   padding: 16px 8px 12px;
-  border-radius: 14px;
+  border-radius: 2px;
   text-decoration: none;
   color: var(--text-mid);
   background: color-mix(in srgb, var(--ink-1) 55%, transparent);
@@ -558,7 +573,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   height: 52px;
   display: grid;
   place-items: center;
-  border-radius: 14px;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
   /* Светлое пятно под значком: тёмные логотипы не тонут в тёмной плашке. */
   background:
     radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.09), transparent 68%),
@@ -579,8 +594,8 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 /* Подложка по яркости самого значка: чёрный логотип на тёмной плашке не виден. */
 .dial__plate--light { background: radial-gradient(circle at 50% 40%, #FFFFFF, #E4E1DA); }
 .dial__plate--dark { background: linear-gradient(160deg, #2A2A33, #15151A); }
-.dial__icon { width: 32px; height: 32px; object-fit: contain; border-radius: 7px; }
-.dial__icon--small { width: 20px; height: 20px; border-radius: 3px; }
+.dial__icon { width: 32px; height: 32px; object-fit: contain; border-radius: 2px; }
+.dial__icon--small { width: 20px; height: 20px; border-radius: 2px; }
 .dial__mono { font: 700 20px/1 var(--font-display); letter-spacing: -0.01em; color: var(--text-hi); }
 .dial__name { max-width: 100%; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dial__more {
@@ -591,7 +606,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   height: 24px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 2px;
   color: var(--text-lo);
   opacity: 0;
   transition: opacity 0.16s, background 0.16s, color 0.16s;
@@ -620,19 +635,19 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   position: relative;
   min-width: 0;
   padding: 18px 18px 16px;
-  border-radius: 16px;
+  border-radius: 2px;
   background: var(--glass);
   border: 1px solid var(--line-2);
   box-shadow: inset 0 1px 0 var(--shine), var(--shadow);
   backdrop-filter: blur(18px) saturate(120%);
 }
-/* HUD-уголки внутри рамки. */
+/* HUD-уголки по краю рамки — как у панелей и карточек интерфейса. */
 .card::before {
   content: "";
   position: absolute;
-  inset: 7px;
+  inset: -1px;
   pointer-events: none;
-  opacity: 0.6;
+  opacity: 0.75;
   background:
     linear-gradient(var(--corner), var(--corner)) 0 0 / 10px 1px,
     linear-gradient(var(--corner), var(--corner)) 0 0 / 1px 10px,
@@ -694,7 +709,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   height: 28px;
   padding: 0 8px;
   margin-right: -6px;
-  border-radius: 8px;
+  border-radius: 2px;
   color: var(--text-mid);
   font-size: 12.5px;
 }
@@ -746,7 +761,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   gap: 8px;
   height: 32px;
   padding: 0 6px;
-  border-radius: 8px;
+  border-radius: 2px;
   font-size: 13px;
   color: var(--text-mid);
 }
@@ -761,7 +776,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .weather__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .skeleton {
   height: 14px;
-  border-radius: 6px;
+  border-radius: 2px;
   background: linear-gradient(90deg, var(--line-1), var(--line-3), var(--line-1));
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
@@ -777,14 +792,14 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   gap: 8px;
   height: 40px;
   padding: 0 4px 0 12px;
-  border-radius: 10px;
+  border-radius: 2px;
   background: var(--ink-2);
   border: 1px solid var(--line-2);
 }
 .picker__field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .picker__field > svg { width: 16px; height: 16px; color: var(--text-lo); }
 .picker__field input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: none; }
-.picker__close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: var(--text-lo); }
+.picker__close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 2px; color: var(--text-lo); }
 .picker__close:hover { background: var(--line-2); color: var(--text-hi); }
 .picker__close svg { width: 16px; height: 16px; }
 .picker__row {
@@ -794,7 +809,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   width: 100%;
   min-height: 36px;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 2px;
   text-align: left;
   color: var(--text-hi);
 }
@@ -853,7 +868,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   display: flex;
   height: 8px;
   margin-top: 14px;
-  border-radius: 4px;
+  border-radius: 2px;
   overflow: hidden;
   background: repeating-linear-gradient(90deg, var(--line-2) 0 3px, transparent 3px 5px);
 }
@@ -879,7 +894,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .gauge {
   min-width: 0;
   padding: 10px 10px 6px;
-  border-radius: 10px;
+  border-radius: 2px;
   background: color-mix(in srgb, var(--ink-2) 72%, transparent);
   border: 1px solid var(--line-1);
 }
@@ -899,7 +914,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   gap: 10px;
   height: 30px;
   padding: 0 8px;
-  border-radius: 8px;
+  border-radius: 2px;
   font-size: 12.5px;
   /* Доля памяти браузера — тонкая шкала под строкой. */
   background:
@@ -909,9 +924,9 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 }
 .group:hover { background-color: var(--line-1); }
 .group__icon { width: 18px; height: 18px; display: grid; place-items: center; color: var(--text-lo); }
-.group__icon img { width: 16px; height: 16px; border-radius: 4px; object-fit: contain; }
-.group__icon--light { border-radius: 5px; background: #ECEAE4; }
-.group__icon--dark { border-radius: 5px; background: #1D1D24; }
+.group__icon img { width: 16px; height: 16px; border-radius: 2px; object-fit: contain; }
+.group__icon--light { border-radius: 2px; background: #ECEAE4; }
+.group__icon--dark { border-radius: 2px; background: #1D1D24; }
 .group__icon svg { width: 16px; height: 16px; }
 .group__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-hi); }
 .group__mem, .group__cpu { font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
@@ -933,7 +948,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .dialog {
   width: min(420px, calc(100vw - 32px));
   padding: 22px;
-  border-radius: 16px;
+  border-radius: 2px;
   border: 1px solid var(--line-3);
   background: var(--ink-1);
   color: var(--text-hi);
@@ -946,7 +961,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .field input {
   height: 40px;
   padding: 0 12px;
-  border-radius: 10px;
+  border-radius: 2px;
   border: 1px solid var(--line-2);
   background: var(--ink-2);
   outline: none;
@@ -959,7 +974,7 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 .btn {
   height: 34px;
   padding: 0 14px;
-  border-radius: 9px;
+  border-radius: 2px;
   border: 1px solid var(--line-2);
   background: var(--ink-2);
   font-weight: 500;
@@ -977,6 +992,15 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
 :root[data-motion="off"] *,
 :root[data-motion="off"] *::before,
 :root[data-motion="off"] *::after { animation: none !important; transition: none !important; }
+
+/* Спокойный HUD (newtab.js, «Живой и спокойный HUD»): всё, что двигалось
+   само, замирает на месте, секунды меняются скачком, двоеточие не мигает.
+   Страница перерисовывается раз в секунду, а не с частотой экрана. */
+:root[data-hud="calm"] :is(.hud__outer, .hud__seg, .bg__grid, .bg__scan) { animation-play-state: paused; }
+:root[data-hud="calm"] .bg__scan { opacity: 0; }
+:root[data-hud="calm"] :is(.hud__arc, .hud__marker) { transition: none; }
+:root[data-hud="calm"] .chrono__colon { animation: none; }
+:root[data-hud="calm"] .live i::before { animation: none; opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .bg__grid, .bg__scan { animation: none; }
