@@ -381,9 +381,14 @@ function recordVisit(id, url, title) {
  * поверх страницы), браузер не пускает — как Chrome. Такие окна копятся
  * у значка в адресной строке: оттуда их можно открыть или разрешить сайту.
  */
+/** Когда на странице нажали средней кнопкой по ссылке: такая ссылка — в фон. */
+const middleClickAt = new Map();
+
 function onPagePopup({ opener, url, token, user_initiated: userInitiated, background }) {
   if (isClosed(opener)) return;
   const fromMenu = wantsBackgroundTab();
+  const middle = userInitiated && performance.now() - (middleClickAt.get(opener) ?? -Infinity) < 1500;
+  middleClickAt.delete(opener);
   const page = state.tabs.get(opener);
   const site = siteKey(page?.url ?? "");
   const allowed = (pref("popups_allowed_sites") ?? []).includes(site);
@@ -399,7 +404,7 @@ function onPagePopup({ opener, url, token, user_initiated: userInitiated, backgr
   // ссылку в новой вкладке» из меню оставляют её в фоне.
   // Место в строке — за страницей-родителем и открытыми ею раньше (tabs.js).
   open(url, {
-    background: background || fromMenu,
+    background: background || fromMenu || middle,
     popup: token,
     opener,
   }).catch(() => invoke("tab_popup_deny", { opener, token }).catch(() => {}));
@@ -476,6 +481,10 @@ function handlePageMessage({ id, source, payload }) {
   const fromPages = typeof source === "string" && source.startsWith("http://190x4-pages.invalid/");
   if (fromPages && message.evt === "navigate" && typeof message.url === "string") {
     invoke("tab_navigate", { id, url: message.url }).catch(() => {});
+    return;
+  }
+  if (message.evt === "middle_click") {
+    middleClickAt.set(id, performance.now());
     return;
   }
   if (message.evt === "media_found" && typeof message.url === "string") {

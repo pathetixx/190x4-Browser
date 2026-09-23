@@ -185,6 +185,18 @@
 
   on(document, "submit", (event) => capture(event.target), true);
 
+  // Средняя кнопка по ссылке открывает вкладку в фоне, как в Chrome. Движок не
+  // сообщает, какой кнопкой открыто новое окно, — об этом говорит нажатие.
+  on(
+    window,
+    "mousedown",
+    (event) => {
+      if (event.button !== 1 || !event.isTrusted || !(event.target instanceof Element)) return;
+      if (event.target.closest("a[href]")) post({ evt: "middle_click" });
+    },
+    true
+  );
+
   // Разбирать щелчки и Enter стоит только там, где есть вход: поиск формы
   // вокруг кнопки обходит DOM и пересчитывает раскладку, а на странице без
   // формы входа (почти на любой) это была бы цена каждого щелчка.

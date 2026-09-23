@@ -233,15 +233,12 @@ pub fn hide(app: &AppHandle, owner: &str) {
 /// Скрыть попап по просьбе интерфейса. `seq` — какой показ закрывают: если
 /// его уже сменил следующий попап, закрывать нечего.
 pub fn hide_shown(app: &AppHandle, owner: &str, seq: Option<u64>) {
-    let current = app
-        .state::<crate::state::App>()
-        .popup
-        .with(owner, |state| {
-            if seq == Some(state.seq) {
-                state.cancelled = seq;
-            }
-            state.seq
-        });
+    let current = app.state::<crate::state::App>().popup.with(owner, |state| {
+        if seq == Some(state.seq) {
+            state.cancelled = seq;
+        }
+        state.seq
+    });
     if seq.is_none_or(|seq| seq == current) {
         hide(app, owner);
     }
