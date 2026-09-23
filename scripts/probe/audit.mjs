@@ -109,7 +109,8 @@ if (want("palette")) {
     const rows = [...document.querySelectorAll('.palette__row .palette__label')].map((n) => n.textContent);
     p.closePalette();
     return rows;`);
-  check(found.some((row) => /ticker/i.test(row)), "палитра нашла вкладку", JSON.stringify(found));
+  // Заголовок ticker.html — «tick N»: вкладка находится по адресу.
+  check(found.some((row) => /^tick/i.test(row)), "палитра нашла вкладку по адресу", JSON.stringify(found));
   await ui(`${TABS} await tabs.close(${id}); return 1;`);
 }
 

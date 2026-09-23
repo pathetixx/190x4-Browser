@@ -32,7 +32,7 @@ const S = `const { state } = await import('./js/state.js');`;
   await sleep(1500);
   let st = await ui(`${S} const d = await import('./js/dialogs.js'); return { open: state.tabs.has(${id}), leave: d.hasLeaveDialog(${id}) };`);
   check(st.open && st.leave, "закрытие спросило «Покинуть сайт?», вкладка ждёт", JSON.stringify(st));
-  const popup = await connect((await targets()).find((t) => t.url.includes("popup.html")));
+  const popup = await connect((await targets()).find((t) => t.url.includes("tauri.localhost/popup.html")));
   await popup.evaluate(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Остаться'); b.click(); return 1; })()`);
   await sleep(1200);
   st = await ui(`${S} return { open: state.tabs.has(${id}), active: state.activeId };`);

@@ -169,11 +169,11 @@ fn sources() -> Vec<Source> {
         .iter()
         .filter_map(|(id, name, root, relative, single)| {
             let data = root_dir(root)?.join(relative);
-            let profiles = profiles(&data, *single);
-            (!profiles.is_empty()).then_some(Source {
-                id: *id,
-                name: *name,
-                profiles,
+            let found = profiles(&data, *single);
+            (!found.is_empty()).then_some(Source {
+                id,
+                name,
+                profiles: found,
             })
         })
         .collect()
