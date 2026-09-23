@@ -46,7 +46,7 @@ python3 -m http.server 8777 --directory ui
 `?demo=palette|find|settings|downloads|history-page|shield|bookmarks|history|translate`,
 `&section=passwords` — раздел настроек, `?motion=off` — без анимаций (нужно для
 детерминированных скриншотов). Всплывающее окно отдельно:
-`popup.html?kind=menu|downloads|bookmark|bookmark-folder|group|media|password|accounts|site|extensions`.
+`popup.html?kind=menu|downloads|bookmark|bookmark-folder|group|media|password|accounts|site`.
 
 ## Сервисы
 

@@ -322,19 +322,6 @@ export function popupDemo(kind) {
           { id: "exit", label: "Закрыть браузер", icon: "exit" },
         ],
       };
-    case "extensions":
-      return {
-        kind: "menu",
-        payload: {
-          menu: "extensions",
-          items: [
-            { type: "header", label: "Расширения" },
-            { id: "media", label: "Загрузчик видео 190x4", icon: "video", trailing: "pinned" },
-            { separator: true },
-            { id: "manage", label: "Управление расширениями", icon: "settings" },
-          ],
-        },
-      };
     case "bookmark":
       return {
         mode: "edit",

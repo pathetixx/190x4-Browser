@@ -199,15 +199,6 @@ const VIEWS = {
       if (item.checked) row.append(icon("checkmark-16", 16, "menu__check"));
       else if (item.keys) row.append(el("span", "menu__keys", item.keys));
 
-      if (item.trailing) {
-        const pinned = item.trailing === "pinned";
-        const pin = iconButton(pinned ? "pin-16-filled" : "pin-16", pinned ? "Открепить от панели" : "Закрепить на панели", () => {
-          act(kind, `${item.id}:pin`);
-        });
-        if (pinned) pin.style.color = "var(--accent-bright)";
-        row.append(pin);
-      }
-
       row.addEventListener("mouseenter", () => {
         for (const other of list.querySelectorAll(".menu__item")) other.dataset.selected = "false";
         row.dataset.selected = "true";

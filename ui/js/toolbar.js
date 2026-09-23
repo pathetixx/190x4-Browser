@@ -1,5 +1,5 @@
 /**
- * Панель инструментов справа от адресной строки: расширения, загрузки,
+ * Панель инструментов справа от адресной строки: загрузчик видео, загрузки,
  * меню «Настройки и прочее».
  */
 
@@ -7,7 +7,7 @@ import { invoke } from "./bridge.js";
 import { displayUrl } from "./dom.js";
 import { onDownloads, summary } from "./downloads-model.js";
 import { openMenu } from "./popups.js";
-import { onPref, pref, setPref } from "./prefs.js";
+import { onPref, pref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
 import { endSplit, hasClosedTabs, open, reopenClosed, reopenLabel } from "./tabs.js";
 import { openUpdateBubble, update } from "./updates.js";
@@ -47,7 +47,6 @@ export function initToolbar() {
 
   downloadsButton.addEventListener("click", () => openDownloadsBubble());
   mediaButton.addEventListener("click", () => openMediaExtension());
-  document.getElementById("ext-menu").addEventListener("click", (event) => showExtensionsMenu(event.currentTarget));
   document.getElementById("open-menu").addEventListener("click", (event) => showMainMenu(event.currentTarget));
 
   onDownloads((event) => {
@@ -244,36 +243,6 @@ function showMainMenu(button) {
         case "exit":
           return closeBrowser();
       }
-    },
-    { width: 300, align: "end" }
-  );
-}
-
-/* ── Меню расширений ───────────────────────────────────────── */
-
-function showExtensionsMenu(button) {
-  const enabled = pref("ext_media_enabled");
-  const items = [
-    { type: "header", label: "Расширения" },
-    {
-      id: "media",
-      label: "Загрузчик видео 190x4",
-      icon: "video",
-      disabled: !enabled,
-      trailing: pref("ext_media_pinned") ? "pinned" : "unpinned",
-    },
-    { separator: true },
-    { id: "manage", label: "Управление расширениями", icon: "settings" },
-  ];
-
-  openMenu(
-    "extensions",
-    button,
-    items,
-    (action) => {
-      if (action === "media") openMediaExtension();
-      if (action === "media:pin") setPref("ext_media_pinned", !pref("ext_media_pinned"));
-      if (action === "manage") openSettings("extensions");
     },
     { width: 300, align: "end" }
   );

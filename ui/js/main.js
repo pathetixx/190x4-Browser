@@ -76,6 +76,7 @@ let progressTimer = 0;
 await loadPrefs();
 applyTheme();
 applyStatusbar();
+applySidebar();
 state.adblockOn = pref("adblock_enabled");
 
 // Какое это окно: приватное не пишет историю и красится иначе.
@@ -163,6 +164,7 @@ initPalette([
   { group: "Браузер", title: "Показать или скрыть панель закладок", icon: "favorites", keys: "Ctrl+Shift+B", run: toggleBookmarksBar },
   { group: "Браузер", title: "Пароли", icon: "key", keywords: "password логин", run: () => openSettings("passwords") },
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
+  { group: "Браузер", title: "Переводчик", icon: "translate", keywords: "перевод translate", run: () => openPanel("translate") },
   { group: "Браузер", title: "Удалить данные о работе в браузере", icon: "broom", keys: "Ctrl+Shift+Del", run: () => openSettings("privacy") },
   { group: "Браузер", title: "Настройки", icon: "settings", run: () => openSettings() },
   { group: "Браузер", title: "Браузер по умолчанию", icon: "globe", keywords: "default основной", run: () => openSettings("default") },
@@ -195,9 +197,16 @@ document.addEventListener("contextmenu", (event) => {
 onPref((key) => {
   if (key === "theme") applyTheme();
   if (key === "statusbar") applyStatusbar();
+  if (key === "sidebar") applySidebar();
   if (key === "adblock_enabled") state.adblockOn = pref("adblock_enabled");
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+
+function applySidebar() {
+  if (pref("sidebar")) delete document.documentElement.dataset.sidebar;
+  else document.documentElement.dataset.sidebar = "hidden";
+  syncDuring(80);
+}
 
 function applyStatusbar() {
   if (pref("statusbar")) delete document.documentElement.dataset.statusbar;

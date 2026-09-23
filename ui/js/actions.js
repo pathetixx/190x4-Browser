@@ -181,7 +181,7 @@ export async function addBookmarkFolder(parent, anchor) {
 export async function openMediaExtension(explicitUrl = null) {
   const tab = activeTab();
   const pinned = document.getElementById("ext-media");
-  const anchor = pinned && !pinned.hidden ? pinned : document.getElementById("ext-menu");
+  const anchor = pinned && !pinned.hidden ? pinned : document.getElementById("open-menu");
   const page = tab && !tab.internal && !isNewTabUrl(tab.url) ? tab.url : "";
   await openPopup("media", anchor, {
     width: 380,

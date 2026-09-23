@@ -888,12 +888,15 @@
   /* ── Ресурсы ──────────────────────────────────────────────── */
 
   let monitorTimer = 0;
+  const MONITOR_EVERY = 2000;
 
   function syncMonitor() {
     const on = state.monitor && document.visibilityState === "visible";
     if (on && !monitorTimer) {
       send({ evt: "newtab_resources" });
-      monitorTimer = setInterval(() => send({ evt: "newtab_resources" }), 1000);
+      // Раз в две секунды: замер опрашивает счётчики видеокарты по всем
+      // процессам системы, и сам монитор не должен заметно грузить машину.
+      monitorTimer = setInterval(() => send({ evt: "newtab_resources" }), MONITOR_EVERY);
     } else if (!on && monitorTimer) {
       clearInterval(monitorTimer);
       monitorTimer = 0;
