@@ -9,7 +9,7 @@
  */
 
 import { invoke, listen } from "./bridge.js";
-import { hasLeaveDialog } from "./dialogs.js";
+import { dismissLeaveDialogs, hasLeaveDialog } from "./dialogs.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
 import { setPageHidden } from "./layout.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
@@ -428,7 +428,7 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   // окно вернётся с ней при запуске, другое вернёт Ctrl+Shift+T.
   if (![...state.tabs.values()].some((other) => other.id !== id && !other.closing)) {
     if (!force && !tab.internal && !tab.sleeping && !(await confirmClose(id))) return;
-    invoke("window_command", { action: "close" }).catch(() => {});
+    invoke("window_command", { action: "close_asked" }).catch(() => {});
     return;
   }
 
@@ -455,8 +455,9 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   if (!tab.internal && !tab.sleeping) await invoke("tab_close", { id }).catch(() => {});
 
   if (state.tabs.size === 0) {
-    // Закрыли все вкладки разом — окно закрывается, как в Chrome.
-    invoke("window_command", { action: "close" }).catch(() => {});
+    // Закрыли все вкладки разом — окно закрывается, как в Chrome. Страницы уже
+    // согласились уйти, каждая при закрытии своей вкладки.
+    invoke("window_command", { action: "close_asked" }).catch(() => {});
     return;
   }
   if (state.activeId === null) {
@@ -465,11 +466,53 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   }
 }
 
-/** Вернуть вкладку, которую закрывают, если её страница спросила «Покинуть сайт?». */
+/**
+ * Страница спросила «Покинуть сайт?», пока её вкладку или всё окно закрывают:
+ * вкладка возвращается на место и выходит на экран — окно встаёт над ней.
+ */
 export function returnLeaving(id) {
-  if (!state.tabs.get(id)?.closing) return;
-  upsertTab(id, { closing: false });
+  const tab = state.tabs.get(id);
+  if (!tab) return;
+  if (tab.closing) upsertTab(id, { closing: false });
   activate(id);
+}
+
+/**
+ * Окно закрывают (крестик, Alt+F4, Ctrl+Shift+W): каждую страницу
+ * спрашивают, можно ли уйти, — как при закрытии вкладки. Страницы решают
+ * разом, а окна «Покинуть сайт?» встают по одному, каждое над своей вкладкой.
+ * «Остаться» на любой странице — окно остаётся, остальным отвечаем так же.
+ */
+export function confirmWindowClose() {
+  const ids = [...state.tabs.values()]
+    .filter((tab) => tab.id > 0 && !tab.internal && !tab.sleeping && !tab.closing)
+    .map((tab) => tab.id);
+  if (!ids.length) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const pending = new Set(ids);
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    for (const id of ids) {
+      confirmClose(id).then((ok) => {
+        pending.delete(id);
+        if (done) return;
+        if (!ok) {
+          dismissLeaveDialogs([...pending]);
+          finish(false);
+        } else if (!pending.size) {
+          finish(true);
+        } else {
+          // Следующее «Покинуть сайт?», которое ждёт в фоновой вкладке.
+          const next = [...pending].find((other) => hasLeaveDialog(other));
+          if (next != null && next !== state.activeId) activate(next);
+        }
+      });
+    }
+  });
 }
 
 /** Вкладки, которые видны в строке: без спрятанных в свёрнутых группах и закрываемых. */

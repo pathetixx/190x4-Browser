@@ -364,6 +364,8 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
         "close" => window.close().map_err(text),
         // Закрыть, хотя идут загрузки: человек ответил «Закрыть окно».
         "close_force" => windows::close_anyway(&app, window.label()).map_err(text),
+        // Страницы уже согласились закрыться («Покинуть сайт?»).
+        "close_asked" => windows::close_asked(&app, window.label()).map_err(text),
         // Видео на весь экран и F11: окно занимает экран целиком, интерфейс
         // прячет сам chrome.
         "fullscreen" => window.set_fullscreen(true).map_err(text),

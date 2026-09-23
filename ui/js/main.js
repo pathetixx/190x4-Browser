@@ -36,6 +36,7 @@ import {
   adoptTab,
   close,
   closeAnswered,
+  confirmWindowClose,
   cycle,
   endSplit,
   INTERNAL,
@@ -582,6 +583,21 @@ onPopupAction("site", ({ action }) => {
 });
 onPopupAction("media", ({ action }) => {
   if (action === "settings") openSettings("extensions");
+});
+
+// Окно закрывают (крестик, Alt+F4, панель задач): сперва страницы — каждая
+// может спросить «Покинуть сайт?». Затем Rust спросит про загрузки.
+let closingWindow = false;
+listen("close-asked", async () => {
+  if (closingWindow) return;
+  closingWindow = true;
+  try {
+    if (await confirmWindowClose()) await invoke("window_command", { action: "close_asked" });
+  } catch {
+    // Окно уже закрывается.
+  } finally {
+    closingWindow = false;
+  }
 });
 
 // Окно закрывают, а в нём идут загрузки: закрытие их оборвёт — сперва спросить.

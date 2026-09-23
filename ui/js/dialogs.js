@@ -10,7 +10,7 @@
  * `dialog-done`.
  */
 
-import { listen } from "./bridge.js";
+import { invoke, listen } from "./bridge.js";
 import { isPageHidden, onPageHidden } from "./layout.js";
 import { closePopup, onPopupAction, onPopupClosed, openPopup, openPopupKey } from "./popups.js";
 import { rightPaneId, state, subscribe } from "./state.js";
@@ -85,6 +85,21 @@ export function onDialogsClosed({ id, tokens }) {
 export function hasLeaveDialog(id) {
   const leave = (item) => item.tab === id && item.request.type === "script" && item.request.kind === "beforeunload";
   return queue.some(leave);
+}
+
+/**
+ * Окно браузера остаётся открытым: страницам, которые ещё спрашивают «Покинуть
+ * сайт?», отвечаем «Остаться» — человек уже ответил на такой вопрос.
+ */
+export function dismissLeaveDialogs(tabs) {
+  const ids = new Set(tabs);
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const item = queue[i];
+    if (!ids.has(item.tab) || item.request.type !== "script" || item.request.kind !== "beforeunload") continue;
+    queue.splice(i, 1);
+    if (shown?.tab === item.tab && shown.tokens.includes(item.token)) hide();
+    invoke("tab_dialog", { id: item.tab, tokens: [item.token], answer: { action: "cancel" } }).catch(() => {});
+  }
 }
 
 /** Новая страница во вкладке — счёт её окон заново. */

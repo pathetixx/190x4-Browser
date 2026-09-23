@@ -490,13 +490,15 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             remember_geometry(&handle, &label);
         }
         WindowEvent::CloseRequested { api, .. } => {
+            let force = take_mark(&CLOSING_ANYWAY, &label);
+            // Сначала страницы: каждая может попросить «Покинуть сайт?», как при
+            // закрытии вкладки. Спрашивает интерфейс, ответ — `close_asked`.
+            if !force && !pages_asked(&label) {
+                api.prevent_close();
+                let _ = handle.emit_to(label.as_str(), "close-asked", ());
+                return;
+            }
             // Закрытие окна обрывает его загрузки — как Chrome, сначала спросить.
-            let force = {
-                let mut anyway = CLOSING_ANYWAY.lock();
-                let before = anyway.len();
-                anyway.retain(|other| *other != label);
-                anyway.len() != before
-            };
             let downloads = state::active_downloads(&label);
             if !force && downloads > 0 {
                 api.prevent_close();
@@ -554,12 +556,59 @@ fn closing(app: &AppHandle, label: &str) {
 /// Окна, которые закрывают, несмотря на идущие загрузки: человек подтвердил.
 static CLOSING_ANYWAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Окна, чьи страницы уже согласились закрыться («Покинуть сайт?» пройден).
+static PAGES_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Когда страницы окна спросили в последний раз. Интерфейс, который не
+/// ответил (завис, упал), не должен держать окно: повторное закрытие позже
+/// этого срока закрывает без вопроса страницам.
+static ASKED_AT: Mutex<Vec<(String, std::time::Instant)>> = Mutex::new(Vec::new());
+const ASK_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Снять отметку окна; `true` — она была.
+fn take_mark(marks: &Mutex<Vec<String>>, label: &str) -> bool {
+    let mut marks = marks.lock();
+    let before = marks.len();
+    marks.retain(|other| other != label);
+    marks.len() != before
+}
+
+/// Спрошены ли уже страницы окна. Нет — запомнить, что спрашиваем сейчас.
+fn pages_asked(label: &str) -> bool {
+    if take_mark(&PAGES_ASKED, label) {
+        ASKED_AT.lock().retain(|(other, _)| other != label);
+        return true;
+    }
+    let mut asked = ASKED_AT.lock();
+    let now = std::time::Instant::now();
+    match asked.iter().position(|(other, _)| other == label) {
+        Some(index) if now.duration_since(asked[index].1) >= ASK_PATIENCE => {
+            asked.remove(index);
+            true
+        }
+        Some(_) => false,
+        None => {
+            asked.push((label.to_string(), now));
+            false
+        }
+    }
+}
+
 /// Закрыть окно без вопроса о загрузках — на него уже ответили «Закрыть».
 pub fn close_anyway(app: &AppHandle, label: &str) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(label) else {
         return Ok(());
     };
     CLOSING_ANYWAY.lock().push(label.to_string());
+    window.close()
+}
+
+/// Страницы окна согласились закрыться — дальше вопрос только о загрузках.
+pub fn close_asked(app: &AppHandle, label: &str) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(label) else {
+        return Ok(());
+    };
+    PAGES_ASKED.lock().push(label.to_string());
     window.close()
 }
 
