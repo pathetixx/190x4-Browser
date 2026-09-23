@@ -15,19 +15,33 @@ import { anchorOf } from "./dom.js";
 
 const REOPEN_GUARD_MS = 300;
 const handlers = new Map();
+const closers = new Set();
 
 let openKind = null;
 let openAnchor = null;
+/**
+ * Номер показа попапа, открытого отсюда (его выдаёт Rust); 0 — попап ещё
+ * открывается. Закрытие прежнего меню приходит отдельным путём и может
+ * опоздать — по номеру оно не спутается с закрытием нового попапа.
+ */
+let openSeq = 0;
+let opening = 0;
 let closedKind = null;
 let closedAt = 0;
 
 export function initPopups() {
-  listen("popup-closed", () => {
-    closedKind = openKind;
-    closedAt = performance.now();
-    openAnchor?.removeAttribute("aria-expanded");
-    openKind = null;
-    openAnchor = null;
+  listen("popup-closed", (payload) => {
+    const seq = Number(payload?.seq) || 0;
+    const replaced = Boolean(payload?.replaced);
+    if (seq && seq === openSeq) {
+      closedKind = openKind;
+      closedAt = performance.now();
+      openAnchor?.removeAttribute("aria-expanded");
+      openKind = null;
+      openAnchor = null;
+      openSeq = 0;
+    }
+    for (const fn of closers) fn(seq, replaced);
   });
 
   listen("popup-action", (message) => {
@@ -42,6 +56,20 @@ export function onPopupAction(kind, handler) {
 }
 
 /**
+ * Попап закрылся или его сменил другой: `fn(seq, replaced)` получает номер
+ * закрытого показа — тот, что вернул `openPopup` (или `popup_open`), — и
+ * `replaced`, если окно не пряталось, а его занял следующий попап.
+ */
+export function onPopupClosed(fn) {
+  closers.add(fn);
+  return () => closers.delete(fn);
+}
+
+/**
+ * Возвращает номер показа (для `onPopupClosed`) или `false`, если попап не
+ * открылся: повторный щелчок по кнопке только что закрытого попапа — это
+ * «закрыть».
+ *
  * @param {string} kind    вид попапа: menu, downloads, bookmark, media, password…
  * @param {Element|{x,y,width,height}} anchor  кнопка или прямоугольник
  */
@@ -56,17 +84,24 @@ export async function openPopup(kind, anchor, { width = 320, align = "start", pa
   openKind = key;
   openAnchor = anchor instanceof Element ? anchor : null;
   openAnchor?.setAttribute("aria-expanded", "true");
+  openSeq = 0;
+  const request = ++opening;
 
   const rect = anchor instanceof Element ? anchorOf(anchor) : anchor;
+  let seq;
   try {
-    await invoke("popup_open", { kind, anchor: rect, width, align, payload });
+    seq = await invoke("popup_open", { kind, anchor: rect, width, align, payload });
   } catch (error) {
-    openAnchor?.removeAttribute("aria-expanded");
-    openKind = null;
-    openAnchor = null;
+    if (request === opening) {
+      openAnchor?.removeAttribute("aria-expanded");
+      openKind = null;
+      openAnchor = null;
+    }
     throw error;
   }
-  return true;
+  if (request === opening) openSeq = Number(seq) || 0;
+  // В макете без Rust номера нет — попап всё равно «открыт».
+  return Number(seq) || true;
 }
 
 /** Меню — самый частый попап: список пунктов, выбор приходит в `onPick`. */
@@ -75,8 +110,9 @@ export function openMenu(menu, anchor, items, onPick, { width = 280, align = "st
   return openPopup("menu", anchor, { width, align, payload: { menu, items } });
 }
 
+/** Закрыть попап, открытый отсюда, — но не тот, что успел его сменить. */
 export function closePopup() {
-  invoke("popup_hide").catch(() => {});
+  invoke("popup_hide", { seq: openSeq || null }).catch(() => {});
 }
 
 /** Какой попап открыт: `вид:меню` или null. */

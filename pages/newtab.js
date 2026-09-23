@@ -272,22 +272,30 @@
       fixed += line(i * 6 - 90, major ? 131 : 133, 137, major ? "hud__second hud__second--major" : "hud__second");
     }
 
-    $("hud").innerHTML = `
-      <defs>
-        <path id="hud-top" d="M 50 200 A 150 150 0 0 1 350 200"/>
-        <path id="hud-bottom" d="M 50 200 A 150 150 0 0 0 350 200"/>
-      </defs>
-      <g class="hud__static">${fixed}</g>
-      <g class="hud__outer">${outer}</g>
-      <g class="hud__seg">${seg}</g>
-      <g transform="rotate(-90 200 200)">
-        <circle class="hud__track" cx="200" cy="200" r="${ARC_RADIUS}"/>
-        <circle class="hud__arc" id="hud-arc" cx="200" cy="200" r="${ARC_RADIUS}"
-          stroke-dasharray="${f(ARC_LENGTH)}" stroke-dashoffset="${f(ARC_LENGTH)}"/>
-      </g>
-      <g class="hud__marker" id="hud-marker"><circle cx="200" cy="${200 - ARC_RADIUS}" r="3.2"/></g>
-      <text class="hud__text"><textPath href="#hud-top" startOffset="50%" text-anchor="middle" id="hud-zone">МЕСТНОЕ ВРЕМЯ</textPath></text>
-      <text class="hud__text hud__text--accent" dy="9"><textPath href="#hud-bottom" startOffset="50%" text-anchor="middle" id="hud-week"></textPath></text>`;
+    // Каждая движущаяся часть — свой слой: кольца крутит и маркер ведёт
+    // композитор, не перерисовывая циферблат. Внутри одного SVG вращение
+    // перерисовывало весь HUD с тенями 60 раз в секунду, пока вкладка открыта.
+    const layer = (className, content, id = "") =>
+      `<svg class="hud__layer ${className}"${id ? ` id="${id}"` : ""} viewBox="0 0 400 400">${content}</svg>`;
+    $("hud").innerHTML =
+      layer("", `${fixed}<g transform="rotate(-90 200 200)"><circle class="hud__track" cx="200" cy="200" r="${ARC_RADIUS}"/></g>`) +
+      layer("hud__outer", outer) +
+      layer("hud__seg", seg) +
+      layer(
+        "hud__sweep",
+        `<circle class="hud__arc" id="hud-arc" cx="200" cy="200" r="${ARC_RADIUS}" transform="rotate(-90 200 200)"
+          stroke-dasharray="${f(ARC_LENGTH)}" stroke-dashoffset="${f(ARC_LENGTH)}"/>`
+      ) +
+      layer("hud__marker", `<circle cx="200" cy="${200 - ARC_RADIUS}" r="3.2"/>`, "hud-marker") +
+      layer(
+        "",
+        `<defs>
+          <path id="hud-top" d="M 50 200 A 150 150 0 0 1 350 200"/>
+          <path id="hud-bottom" d="M 50 200 A 150 150 0 0 0 350 200"/>
+        </defs>
+        <text class="hud__text"><textPath href="#hud-top" startOffset="50%" text-anchor="middle" id="hud-zone">МЕСТНОЕ ВРЕМЯ</textPath></text>
+        <text class="hud__text hud__text--accent" dy="9"><textPath href="#hud-bottom" startOffset="50%" text-anchor="middle" id="hud-week"></textPath></text>`
+      );
   }
 
   function isoWeek(date) {

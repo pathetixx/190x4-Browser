@@ -71,6 +71,7 @@ const railBadge = document.getElementById("rail-blocked");
 let sessionReady = false;
 let sessionTimer = 0;
 let toastTimer = 0;
+let progressTimer = 0;
 
 await loadPrefs();
 applyTheme();
@@ -775,9 +776,13 @@ function renderNav() {
     reload.setAttribute("aria-label", loading ? "Остановить" : "Обновить");
     reload.querySelector("use").setAttribute("href", `./assets/icons.svg#i-${loading ? "stop" : "reload"}`);
   }
+  // Полоса реагирует только на смену состояния: иначе каждое событие вкладки
+  // заводило таймер, и запоздавший таймер обнулял полосу посреди загрузки.
+  if (progress.dataset.active === String(loading)) return;
   progress.dataset.active = String(loading);
+  clearTimeout(progressTimer);
   progress.style.width = loading ? "70%" : "100%";
-  if (!loading) setTimeout(() => (progress.style.width = "0"), 220);
+  if (!loading) progressTimer = setTimeout(() => (progress.style.width = "0"), 220);
 }
 
 function renderStatus() {
@@ -940,17 +945,32 @@ function sessionTabs() {
     }));
 }
 
+/**
+ * Последняя записанная сессия. Перерисовка идёт на каждое событие вкладки
+ * (счётчик блокировок, звук, загрузка), а сессия от них не меняется — без
+ * сравнения каждая пауза в событиях стоила записи в базу.
+ */
+let savedSession = "";
+
+function writeSession() {
+  const tabs = sessionTabs();
+  savedSession = JSON.stringify(tabs);
+  return invoke("session_save", { tabs }).catch(() => {});
+}
+
 function scheduleSessionSave() {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
-  sessionTimer = setTimeout(() => invoke("session_save", { tabs: sessionTabs() }).catch(() => {}), 800);
+  sessionTimer = setTimeout(() => {
+    if (JSON.stringify(sessionTabs()) !== savedSession) writeSession();
+  }, 800);
 }
 
 /** Перед обновлением браузер закроется — сессию пишем сразу, без отложенного таймера. */
 async function saveSessionNow() {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
-  await invoke("session_save", { tabs: sessionTabs() }).catch(() => {});
+  await writeSession();
 }
 
 // Окно закрывают: сессию пишем сразу. Отложенный таймер сюда уже не успеет, а
@@ -958,7 +978,7 @@ async function saveSessionNow() {
 window.addEventListener("beforeunload", () => {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
-  invoke("session_save", { tabs: sessionTabs() }).catch(() => {});
+  writeSession();
 });
 
 /* ── Режим без Rust: макет для ревью вёрстки ───────────────── */

@@ -103,6 +103,9 @@ function run() {
   const query = field.value;
   if (!tab || !query) {
     counter.textContent = "0/0";
+    counter.dataset.empty = "false";
+    // Поле стёрли — подсветка прежнего запроса уходит со страницы.
+    if (tab) invoke("tab_find_step", { id: tab.id, action: "stop" }).catch(() => {});
     return;
   }
   invoke("tab_find", { id: tab.id, query }).catch(() => {

@@ -2013,12 +2013,10 @@ impl Tab {
     ///
     /// Свой диалог движка подавляем: строка поиска нарисована в chrome и
     /// живёт по его правилам, а два поля ввода на экране — это брак.
-    pub fn find(
-        &self,
-        env: &ICoreWebView2Environment,
-        query: &str,
-        sink: EventSink,
-    ) -> anyhow::Result<()> {
+    ///
+    /// Счётчик уходит через маршрут вкладки, а не через хост, открывший поиск:
+    /// обработчики вешаются один раз, а вкладку могут унести в другое окно.
+    pub fn find(&self, env: &ICoreWebView2Environment, query: &str) -> anyhow::Result<()> {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             ICoreWebView2Environment15, ICoreWebView2_28,
         };
@@ -2049,6 +2047,7 @@ impl Tab {
             // Объект Find у вкладки один: подписка на каждый набранный символ
             // множила бы события счётчика и держала бы мёртвые обработчики.
             if !self.find_wired.replace(true) {
+                let sink = self.sink.clone();
                 let count_find = find.clone();
                 let count_sink = sink.clone();
                 find.add_MatchCountChanged(
@@ -2059,7 +2058,7 @@ impl Tab {
                 )?;
 
                 let index_find = find.clone();
-                let index_sink = sink.clone();
+                let index_sink = sink;
                 find.add_ActiveMatchIndexChanged(
                     &FindActiveMatchIndexChangedEventHandler::create(Box::new(move |_, _| {
                         report_find(id, &index_find, &index_sink)

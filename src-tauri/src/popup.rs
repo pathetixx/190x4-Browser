@@ -15,6 +15,7 @@
 //! выпрыгивать поверх первого.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -27,6 +28,12 @@ use tauri::{
 
 /// Окно, которое просит страница: alert, запрос разрешения, вход на сайт.
 pub const DIALOG: &str = "dialog";
+
+/// Номер показа попапа. Закрытие меню и открытие следующего попапа (меню →
+/// «Закрыть браузер?») идут разными путями, и без номера запоздавшее «меню
+/// закрыто» принималось за закрытие нового попапа: подтверждение отвечало
+/// «нет» само, меню страницы переставало выполнять команды.
+static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Ярлык попапа своего окна браузера.
 pub fn label_for(owner: &str) -> String {
@@ -69,6 +76,12 @@ struct State {
     /// не закрывается от потери фокуса и едет вместе с окном браузера:
     /// страница ждёт ответа.
     sticky: Option<PhysicalPosition<i32>>,
+    /// Номер текущего показа (`NEXT_SEQ`). Тот же попап на том же месте
+    /// (подсказки на каждую клавишу) номер не меняет.
+    seq: u64,
+    /// Показ, который закрыли раньше, чем попап успел появиться: подсказки
+    /// адресной строки, по которым уже нажали Enter.
+    cancelled: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -196,13 +209,41 @@ fn native_hide(window: &WebviewWindow) {
 fn hide_window(app: &AppHandle, owner: &str, window: &WebviewWindow) {
     if native_visible(window) {
         native_hide(window);
-        let _ = app.emit_to(owner, "popup-closed", ());
+        let seq = app
+            .state::<crate::state::App>()
+            .popup
+            .with(owner, |state| state.seq);
+        closed(app, owner, seq, false);
     }
+}
+
+/// Сказать окну браузера, какой показ попапа закончился. `replaced` — окно не
+/// пряталось, его содержимое сменил следующий попап.
+fn closed(app: &AppHandle, owner: &str, seq: u64, replaced: bool) {
+    let payload = serde_json::json!({ "seq": seq, "replaced": replaced });
+    let _ = app.emit_to(owner, "popup-closed", payload);
 }
 
 pub fn hide(app: &AppHandle, owner: &str) {
     if let Some(window) = app.get_webview_window(&label_for(owner)) {
         hide_window(app, owner, &window);
+    }
+}
+
+/// Скрыть попап по просьбе интерфейса. `seq` — какой показ закрывают: если
+/// его уже сменил следующий попап, закрывать нечего.
+pub fn hide_shown(app: &AppHandle, owner: &str, seq: Option<u64>) {
+    let current = app
+        .state::<crate::state::App>()
+        .popup
+        .with(owner, |state| {
+            if seq == Some(state.seq) {
+                state.cancelled = seq;
+            }
+            state.seq
+        });
+    if seq.is_none_or(|seq| seq == current) {
+        hide(app, owner);
     }
 }
 
@@ -237,6 +278,8 @@ pub fn main_moved(app: &AppHandle, owner: &str) {
 }
 
 /// Показать попап под элементом chrome-а. Размеры — в CSS-пикселях окна.
+/// Возвращает номер показа: по нему интерфейс узнаёт, что закрылся именно
+/// этот попап, а не тот, что был на экране до него.
 pub fn open(
     app: &AppHandle,
     owner: &str,
@@ -245,7 +288,7 @@ pub fn open(
     width: f64,
     align: &str,
     payload: Value,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let main = app
         .get_webview_window(owner)
         .ok_or_else(|| anyhow::anyhow!("нет окна браузера"))?;
@@ -286,7 +329,8 @@ pub fn open(
     // Подсказки адресной строки приходят на каждую клавишу: если тот же попап
     // уже стоит на этом месте, меняется только содержимое. Переезд и сжатие
     // окна до черновой высоты на каждый символ заставляли его мигать.
-    let reuse = state.with(owner, |state| {
+    let visible = native_visible(&popup);
+    let (reuse, seq, replaced) = state.with(owner, |state| {
         state.width = width;
         state.max_height = if point {
             (main_height - 16.0).max(160.0)
@@ -295,10 +339,20 @@ pub fn open(
         };
         state.point = point.then_some(anchor.y);
         state.sticky = (kind == DIALOG).then_some(origin);
-        let reuse = native_visible(&popup) && state.placement.as_ref() == Some(&placement);
+        let reuse = visible && state.placement.as_ref() == Some(&placement);
         state.placement = Some(placement);
-        reuse
+        // Новый попап сменил тот, что был на экране: для интерфейса прежний
+        // закрылся, хотя окно и не пряталось.
+        let replaced = (visible && !reuse).then_some(state.seq);
+        if !reuse {
+            state.seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
+        }
+        state.cancelled = None;
+        (reuse, state.seq, replaced)
     });
+    if let Some(previous) = replaced {
+        closed(app, owner, previous, true);
+    }
 
     if !reuse {
         popup.set_position(PhysicalPosition::new(x, y))?;
@@ -311,10 +365,11 @@ pub fn open(
         "width": width,
         "reuse": reuse,
         "owner": owner,
+        "seq": seq,
     });
     state.with(owner, |state| state.pending = Some(message.clone()));
     app.emit_to(label_for(owner).as_str(), "popup-render", message)?;
-    Ok(())
+    Ok(seq)
 }
 
 /// Попап отрисовал содержимое и знает свою высоту — показываем. Возвращает
@@ -322,17 +377,28 @@ pub fn open(
 /// запрошенной, и попапу нужно прокручивать содержимое, а не резать его.
 ///
 /// `focus = false` — показать, не забирая фокус: так живут подсказки адресной
-/// строки, пока пользователь печатает.
-pub fn show(app: &AppHandle, owner: &str, height: f64, focus: bool) -> anyhow::Result<f64> {
+/// строки, пока пользователь печатает. `seq` — какой показ отрисован: показ,
+/// который уже сменили или закрыли, на экран не выходит.
+pub fn show(
+    app: &AppHandle,
+    owner: &str,
+    height: f64,
+    focus: bool,
+    seq: Option<u64>,
+) -> anyhow::Result<f64> {
     let popup = ensure(app, owner)?;
     let state = &app.state::<crate::state::App>().popup;
-    let (width, height, point) = state.with(owner, |state| {
+    let (width, height, point, stale) = state.with(owner, |state| {
         (
             state.width,
             height.min(state.max_height).max(24.0),
             state.point,
+            seq.is_some_and(|seq| seq != state.seq || state.cancelled == Some(seq)),
         )
     });
+    if stale {
+        return Ok(height);
+    }
     popup.set_size(LogicalSize::new(width, height))?;
     if let Some(y) = point {
         place_at_point(app, owner, &popup, y, height)?;

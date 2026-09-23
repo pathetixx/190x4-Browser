@@ -9,7 +9,7 @@
 
 import { emit, invoke, isNative, listen } from "./bridge.js";
 import { anchorOf, displayHost, displayPath, displayUrl, el, favicon, hostOf, icon } from "./dom.js";
-import { onPopupAction, openMenu, openPopup } from "./popups.js";
+import { onPopupAction, onPopupClosed, openMenu, openPopup } from "./popups.js";
 import { onPref, pref, setPref } from "./prefs.js";
 import { activeTab, emit as emitState, state } from "./state.js";
 import { open } from "./tabs.js";
@@ -40,6 +40,9 @@ let suggestToken = 0;
 /// Подсказки в приложении живут во всплывающем окне поверх страницы: HTML-слой
 /// ушёл бы под нативную поверхность. В mock-режиме — прежний выпадающий список.
 let suggestShown = false;
+/// Номер показа подсказок (его выдаёт Rust): закрытие чужого попапа не
+/// значит, что закрылись подсказки.
+let suggestSeq = 0;
 /// Адрес, дописанный прямо в строке: набранное `typed`, всё поле `text`
 /// (дописанный хвост выделен) и `url`, куда он ведёт.
 let inline = null;
@@ -109,8 +112,10 @@ export function initOmnibox() {
     field.blur();
     navigate(value);
   });
-  listen("popup-closed", () => {
+  onPopupClosed((seq) => {
+    if (!seq || seq !== suggestSeq) return;
     suggestShown = false;
+    suggestSeq = 0;
   });
 
   // Новая вкладка ставит курсор в адресную строку, как в Chrome.
@@ -179,15 +184,41 @@ function exitEdit() {
   suggest.hidden = true;
   rows = [];
   suggestToken += 1;
-  if (suggestShown) {
-    suggestShown = false;
-    invoke("popup_hide").catch(() => {});
-  }
+  hideSuggestions();
 }
+
+function hideSuggestions() {
+  if (!suggestShown) return;
+  suggestShown = false;
+  invoke("popup_hide", { seq: suggestSeq || null }).catch(() => {});
+  suggestSeq = 0;
+}
+
+/** Что уже нарисовано: адресная строка перестраивается, только когда это меняется. */
+let rendered = "";
 
 export function renderOmnibox() {
   const tab = activeTab();
   const url = tab?.url ?? "";
+
+  // Интерфейс перерисовывается на каждое событие любой вкладки (счётчик
+  // блокировок, звук, заголовок фоновой вкладки) — пересобирать строку ради
+  // них незачем.
+  const signature = JSON.stringify([
+    tab?.id,
+    tab?.internal,
+    url,
+    tab?.blocked ?? 0,
+    tab?.zoom ?? 1,
+    tab ? state.blockedPopups.get(tab.id)?.length ?? 0 : 0,
+    tab ? state.passwordSites.has(tab.id) : false,
+    state.passwordOffer?.tab ?? null,
+    state.insecureHosts.size,
+    pref("translate_button"),
+  ]);
+  syncStar(tab?.internal || isNewTabUrl(url) ? "" : url);
+  if (signature === rendered) return;
+  rendered = signature;
 
   display.replaceChildren();
   siteLabel.hidden = true;
@@ -238,8 +269,6 @@ export function renderOmnibox() {
   key.hidden = !(tab && (state.passwordSites.has(tab.id) || state.passwordOffer?.tab === tab.id));
   translateButton.hidden = !pref("translate_button") || Boolean(tab?.internal);
   star.hidden = Boolean(tab?.internal) || isNewTabUrl(url);
-
-  syncStar(tab?.internal || isNewTabUrl(url) ? "" : url);
 }
 
 function setSite(kind, iconId) {
@@ -506,10 +535,16 @@ function paint() {
         width: omni.getBoundingClientRect().width,
         align: "start",
         payload: { rows, selected },
-      }).catch(() => {});
-    } else if (suggestShown) {
-      suggestShown = false;
-      invoke("popup_hide").catch(() => {});
+      })
+        .then((seq) => {
+          if (suggestShown) suggestSeq = Number(seq) || 0;
+          // Ввод закончился, пока подсказки открывались: иначе они остались бы
+          // висеть над страницей.
+          else if (seq) invoke("popup_hide", { seq }).catch(() => {});
+        })
+        .catch(() => {});
+    } else {
+      hideSuggestions();
     }
     return;
   }

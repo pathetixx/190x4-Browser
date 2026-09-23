@@ -11,9 +11,9 @@
  * для него, иначе следующий правый щелчок он бы не прислал.
  */
 
-import { invoke, listen } from "./bridge.js";
+import { invoke } from "./bridge.js";
 import { hooks, openInNewWindow, openInPrivateWindow, openInSplit, openMediaExtension } from "./actions.js";
-import { onPopupAction, openPopup } from "./popups.js";
+import { onPopupAction, onPopupClosed, openPopup } from "./popups.js";
 import { pref } from "./prefs.js";
 import { rightPaneId, state } from "./state.js";
 import { open } from "./tabs.js";
@@ -57,7 +57,12 @@ let backgroundUntil = 0;
 
 export function initContextMenu(options) {
   translate = options.translate;
-  listen("popup-closed", () => answer(null));
+  // Меню закрыли без выбора — движку тоже. Закрытие прежнего попапа (оно
+  // бывает и после открытия этого меню) — не ответ: команды меню перестали бы
+  // работать.
+  onPopupClosed((seq) => {
+    if (current?.seq && seq === current.seq) answer(null);
+  });
   onPopupAction("context", ({ action, token }) => {
     if (!current || token !== current.menu) return;
     // Команду «Открыть ссылку в новой вкладке» выполняет движок, а попап лишь
@@ -111,6 +116,7 @@ export async function openContextMenu({ id, menu, x, y, target, items }) {
     payload: { menu: `page:${menu}`, tab: id, token: menu, rows },
   }).catch(() => false);
   if (!opened && current === menuState) answer(null);
+  else if (typeof opened === "number") menuState.seq = opened;
 }
 
 /** Где начинается правая половина разделённого экрана, в физических пикселях. */

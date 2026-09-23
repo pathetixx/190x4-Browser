@@ -264,14 +264,7 @@ impl HostState {
             }
         }
         if later {
-            let weak = self.weak.clone();
-            crate::later::after(HANDOVER_MS, move || {
-                let Some(inner) = weak.upgrade() else { return };
-                let Ok(mut state) = inner.try_borrow_mut() else {
-                    return;
-                };
-                state.hide_offscreen();
-            });
+            hide_offscreen_after(self.weak.clone(), HANDOVER_MS);
         }
         container::set_visible(self.container, !self.overlay);
         Ok(())
@@ -357,6 +350,19 @@ impl HostState {
         }
         Ok(())
     }
+}
+
+/// Спрятать прежнюю вкладку, когда новая уже нарисована. Хост в этот миг
+/// может быть занят (таймер сработал во вложенном цикле сообщений) — тогда
+/// позже: невидимая, но «показанная» вкладка рисовала бы кадры под новой.
+fn hide_offscreen_after(weak: Weak<RefCell<HostState>>, ms: u32) {
+    crate::later::after(ms, move || {
+        let Some(inner) = weak.upgrade() else { return };
+        match inner.try_borrow_mut() {
+            Ok(mut state) => state.hide_offscreen(),
+            Err(_) => hide_offscreen_after(Rc::downgrade(&inner), 50),
+        }
+    });
 }
 
 /// `Rc` внутри уже делает тип не `Send`, так что случайно уехать в
@@ -774,7 +780,7 @@ impl TabHost {
             .tabs
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
-        tab.find(&state.env, query, state.sink.clone())
+        tab.find(&state.env, query)
     }
 
     /// Спросить страницу, можно ли её закрыть (`Tab::request_close`).

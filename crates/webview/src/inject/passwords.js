@@ -89,14 +89,15 @@
   // email, поэтому смотрим и на тип, и на имя поля.
   const LOGIN_HINT = /e-?mail|login|user|account|identifier|phone|почт|логин|телефон/i;
   const SEARCH_HINT = /search|query|поиск/i;
+  // Похоже ли поле на логин. Видимость (`usable`) проверяется последней: она
+  // пересчитывает раскладку страницы, а полей ввода на странице бывают сотни.
+  const loginLike = (input) =>
+    input instanceof HTMLInputElement &&
+    /^(text|email|tel|)$/i.test(input.type) &&
+    !SEARCH_HINT.test(describe(input)) &&
+    (hasToken(input, "username") || input.type === "email" || LOGIN_HINT.test(describe(input)));
   const loginsIn = (scope) =>
-    Array.from((scope || document).querySelectorAll("input")).filter(
-      (input) =>
-        usable(input) &&
-        /^(text|email|tel|)$/i.test(input.type) &&
-        !SEARCH_HINT.test(describe(input)) &&
-        (hasToken(input, "username") || input.type === "email" || LOGIN_HINT.test(describe(input)))
-    );
+    Array.from((scope || document).querySelectorAll("input")).filter((input) => loginLike(input) && usable(input));
 
   // Страница входа. Единственную учётку браузер подставит сам только здесь, а
   // не в любое поле email вроде подписки на рассылку.
@@ -184,6 +185,11 @@
 
   on(document, "submit", (event) => capture(event.target), true);
 
+  // Разбирать щелчки и Enter стоит только там, где есть вход: поиск формы
+  // вокруг кнопки обходит DOM и пересчитывает раскладку, а на странице без
+  // формы входа (почти на любой) это была бы цена каждого щелчка.
+  const hasLogin = () => asked !== "" || document.querySelector('input[type="password"]') !== null;
+
   // Отправка формы сразу уводит страницу. Сообщение, ушедшее за миг до этого,
   // может не дойти — повторяем его, когда документ уже уходит.
   on(window, "pagehide", () => {
@@ -195,6 +201,7 @@
     document,
     "click",
     (event) => {
+      if (!hasLogin()) return;
       const target = event.target instanceof Element ? event.target : null;
       const button = target && target.closest('button, input[type="submit"], [role="button"]');
       if (button) capture(button.form || scopeFor(button));
@@ -206,7 +213,7 @@
     document,
     "keydown",
     (event) => {
-      if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+      if (event.key === "Enter" && event.target instanceof HTMLInputElement && hasLogin()) {
         capture(scopeFor(event.target));
       }
     },
@@ -251,6 +258,19 @@
   } else {
     start();
   }
+
+  // Форма входа, открытая позже (окно «Войти» через минуту чтения), за DOM
+  // уже не следят: её узнаём, когда человек встаёт в поле логина или пароля.
+  on(
+    document,
+    "focusin",
+    (event) => {
+      const target = event.target;
+      if (asked === "password" || !(target instanceof HTMLInputElement)) return;
+      if (target.type === "password" || loginLike(target)) ask();
+    },
+    true
+  );
 
   /* ── Список учёток под полем ────────────────────────────────── */
 
@@ -579,6 +599,10 @@
       if (menu && menu.shown) {
         if (!render()) hideMenu();
         else place();
+      } else if (interacted && document.activeElement instanceof HTMLInputElement) {
+        // Учётки пришли, когда человек уже щёлкнул в поле (форму узнали по
+        // этому щелчку): список — сразу, а не по второму щелчку.
+        showMenu(document.activeElement);
       }
       return;
     }

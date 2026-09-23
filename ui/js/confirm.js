@@ -6,16 +6,21 @@
  * закрытое без ответа (Escape, щелчок мимо), — это «нет».
  */
 
-import { listen } from "./bridge.js";
-import { onPopupAction, openPopup } from "./popups.js";
+import { onPopupAction, onPopupClosed, openPopup } from "./popups.js";
 
 const WIDTH = 400;
 let pending = null;
+/** Номер показа окна подтверждения: закрытие прежнего меню — не ответ «нет». */
+let pendingSeq = 0;
 
 onPopupAction("confirm", ({ action }) => pending?.(action === "yes"));
 // Выбор приходит раньше закрытия, но порядок двух событий не гарантирован:
 // «нет» по закрытию — с небольшой задержкой.
-listen("popup-closed", () => setTimeout(() => pending?.(false), 150));
+onPopupClosed((seq) => {
+  if (!seq || seq !== pendingSeq) return;
+  const answer = pending;
+  setTimeout(() => answer?.(false), 150);
+});
 
 export function confirmAction({ title, text, confirm, cancel = "Отмена" }) {
   pending?.(false);
@@ -26,9 +31,13 @@ export function confirmAction({ title, text, confirm, cancel = "Отмена" })
       resolve(value);
     };
     pending = answer;
+    pendingSeq = 0;
     const anchor = { x: Math.max(8, (innerWidth - WIDTH) / 2), y: 64, width: WIDTH, height: 0 };
     openPopup("confirm", anchor, { width: WIDTH, payload: { title, text, confirm, cancel } })
-      .then((opened) => opened || answer(false))
+      .then((opened) => {
+        if (!opened) answer(false);
+        else if (pending === answer && typeof opened === "number") pendingSeq = opened;
+      })
       .catch(() => answer(false));
   });
 }

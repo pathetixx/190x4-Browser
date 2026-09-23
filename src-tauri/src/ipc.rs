@@ -1824,7 +1824,7 @@ pub async fn popup_open(
     width: f64,
     align: Option<String>,
     payload: Option<Value>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     popup::open(
         &app,
         &owner(&window),
@@ -1848,8 +1848,9 @@ pub async fn popup_show(
     window: tauri::Window,
     height: f64,
     focus: Option<bool>,
+    seq: Option<u64>,
 ) -> Result<f64, String> {
-    popup::show(&app, &owner(&window), height, focus.unwrap_or(true)).map_err(text)
+    popup::show(&app, &owner(&window), height, focus.unwrap_or(true), seq).map_err(text)
 }
 
 #[tauri::command]
@@ -1861,9 +1862,15 @@ pub async fn popup_resize(
     popup::resize(&app, &owner(&window), height).map_err(text)
 }
 
+/// Скрыть попап. `seq` — номер показа, который закрывают: запоздавшая просьба
+/// закрыть прежнее меню не должна прятать попап, открытый вслед за ним.
 #[tauri::command]
-pub async fn popup_hide(app: AppHandle, window: tauri::Window) -> Result<(), String> {
-    popup::hide(&app, &owner(&window));
+pub async fn popup_hide(
+    app: AppHandle,
+    window: tauri::Window,
+    seq: Option<u64>,
+) -> Result<(), String> {
+    popup::hide_shown(&app, &owner(&window), seq);
     Ok(())
 }
 

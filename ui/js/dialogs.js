@@ -12,7 +12,7 @@
 
 import { listen } from "./bridge.js";
 import { isPageHidden, onPageHidden } from "./layout.js";
-import { closePopup, onPopupAction, openPopup, openPopupKey } from "./popups.js";
+import { closePopup, onPopupAction, onPopupClosed, openPopup, openPopupKey } from "./popups.js";
 import { rightPaneId, state, subscribe } from "./state.js";
 
 /** Окно, закрытое без ответа, возвращается с задержкой: меню, ради которого оно
@@ -34,10 +34,15 @@ let onScreen = "";
 export function initDialogs() {
   listen("dialog-done", ({ id, tokens }) => forget(id, tokens));
   onPopupAction("dialog", ({ tab, tokens }) => forget(tab, tokens));
-  listen("popup-closed", () => {
-    if (!shown) return;
-    shown = null;
-    later();
+  // Окно страницы закрыл ресайз — оно вернётся, когда станет можно. Его место
+  // занял другой попап (меню, подсказки адресной строки) — вернётся, когда
+  // закроется тот: иначе они вытесняли бы друг друга.
+  onPopupClosed((seq, replaced) => {
+    if (shown?.seq && seq === shown.seq) {
+      shown = null;
+      if (replaced) return;
+    }
+    if (!shown && queue.length) later();
   });
   listen("window-state", ({ minimized: now = false }) => {
     minimized = now;
@@ -151,6 +156,7 @@ function show() {
   opening
     .then((opened) => {
       if (!opened && shown === mine) shown = null;
+      else if (typeof opened === "number") mine.seq = opened;
     })
     .catch(() => {
       if (shown === mine) shown = null;

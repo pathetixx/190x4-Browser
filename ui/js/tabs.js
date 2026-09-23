@@ -994,11 +994,18 @@ export function renderTabs() {
   // место появлялось (окно развернули, вкладки закрыли).
   const visible = tabs.filter((tab) => !tab.group?.collapsed && !tab.closing).length;
   strip.parentElement.style.setProperty("--tab-count", String(visible + pills.size));
-  requestAnimationFrame(() => {
-    updateNarrow();
-    revealActive();
-  });
+  // Событий за кадр бывает много (загрузка, счётчик, звук) — мерить вкладки
+  // хватит один раз.
+  if (!measureFrame) {
+    measureFrame = requestAnimationFrame(() => {
+      measureFrame = 0;
+      updateNarrow();
+      revealActive();
+    });
+  }
 }
+
+let measureFrame = 0;
 
 /**
  * Вкладок больше, чем помещается: строка прокручивается, а активная вкладка

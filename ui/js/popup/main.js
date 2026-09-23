@@ -59,7 +59,7 @@ if (!isNative) demo();
 
 /* ── Жизненный цикл ────────────────────────────────────────── */
 
-function render({ kind, payload, reuse = false }) {
+function render({ kind, payload, reuse = false, seq = null }) {
   // Тот же попап на прежнем месте (подсказки на каждую клавишу): окно уже на
   // экране, нужно только подогнать высоту, а не показывать его заново.
   const keep = reuse && visible && current?.kind === kind;
@@ -68,7 +68,7 @@ function render({ kind, payload, reuse = false }) {
   if (!view) return;
   root.replaceChildren();
   root.className = `popup popup--${kind}`;
-  current = { kind, payload, cleanup: null };
+  current = { kind, payload, seq, cleanup: null };
   current.cleanup = view(payload ?? {}) ?? null;
   visible = keep;
   requestAnimationFrame(fit);
@@ -106,7 +106,11 @@ async function fitNow() {
       visible = true;
       // Подсказки адресной строки и подсказка полноэкранного режима не
       // забирают фокус: курсор остаётся в строке, Escape — у видео.
-      applied = await invoke("popup_show", { height, focus: !["suggest", "hint"].includes(current?.kind) });
+      applied = await invoke("popup_show", {
+        height,
+        focus: !["suggest", "hint"].includes(current?.kind),
+        seq: current?.seq ?? null,
+      });
       root.querySelector("[autofocus]")?.focus();
     }
     if (Number.isFinite(applied)) root.style.maxHeight = `${applied}px`;
@@ -116,10 +120,11 @@ async function fitNow() {
 }
 
 function close() {
+  const seq = current?.seq ?? null;
   current?.cleanup?.();
   current = null;
   visible = false;
-  if (isNative) invoke("popup_hide").catch(() => {});
+  if (isNative) invoke("popup_hide", { seq }).catch(() => {});
 }
 
 /** Сообщить окну браузера о выборе. */
