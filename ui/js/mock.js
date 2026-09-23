@@ -204,6 +204,20 @@ export async function invoke(command, args = {}) {
     case "default_browser_set":
       defaultBrowser = true;
       return null;
+    case "browsers_found":
+      return [
+        {
+          id: "chrome",
+          name: "Google Chrome",
+          profiles: [
+            { dir: "Default", name: "Дима" },
+            { dir: "Profile 1", name: "Работа" },
+          ],
+        },
+        { id: "yandex", name: "Яндекс Браузер", profiles: [{ dir: "Default", name: "Пользователь 1" }] },
+      ];
+    case "browser_import":
+      return { links: 214, folders: 12, skipped: 0, pages: 1840, visits: 9312 };
     case "about_info":
       return { version: "0.1.0", webview: "131.0.2903.70", profile: "C:\\Users\\me\\AppData\\Local\\190x4 Browser" };
     case "translate_text":

@@ -11,6 +11,7 @@
 
 mod bookmarks;
 pub mod bookmarks_html;
+pub mod chromium;
 mod downloads;
 pub(crate) mod history;
 mod passwords;

@@ -165,6 +165,13 @@ initPalette([
   { group: "Браузер", title: "Диспетчер закладок", icon: "favorites", keys: "Ctrl+Shift+O", run: () => openSettings("bookmarks") },
   { group: "Браузер", title: "Показать или скрыть панель закладок", icon: "favorites", keys: "Ctrl+Shift+B", run: toggleBookmarksBar },
   { group: "Браузер", title: "Пароли", icon: "key", keywords: "password логин", run: () => openSettings("passwords") },
+  {
+    group: "Браузер",
+    title: "Перенести закладки и историю из другого браузера",
+    icon: "import",
+    keywords: "импорт chrome edge яндекс opera brave vivaldi",
+    run: () => openSettings("bookmarks"),
+  },
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
   { group: "Браузер", title: "Переводчик", icon: "translate", keywords: "перевод translate", run: () => openPanel("translate") },
   { group: "Браузер", title: "Удалить данные о работе в браузере", icon: "broom", keys: "Ctrl+Shift+Del", run: () => openSettings("privacy") },

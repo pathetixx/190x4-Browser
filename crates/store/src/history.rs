@@ -291,7 +291,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
 /// Строка, по которой ищут: заголовок и адрес в нижнем регистре. Считается
 /// в Rust — `lower()` внутри SQLite знает только ASCII, а «Хабр» надо
 /// находить и по «хабр».
-fn searchable(title: &str, url: &str) -> String {
+pub(crate) fn searchable(title: &str, url: &str) -> String {
     format!("{title} {url}").to_lowercase()
 }
 
@@ -313,7 +313,7 @@ fn like_pattern(query: &str) -> String {
 ///
 /// Встроенные страницы и служебные схемы — шум: пользователь ищет сайты, а не
 /// свою же новую вкладку.
-fn is_recordable(url: &str) -> bool {
+pub(crate) fn is_recordable(url: &str) -> bool {
     !(url.is_empty()
         || url.starts_with("about:")
         || url.starts_with("data:")
@@ -321,7 +321,7 @@ fn is_recordable(url: &str) -> bool {
         || url.contains("190x4-pages.invalid"))
 }
 
-fn host_of(url: &str) -> String {
+pub(crate) fn host_of(url: &str) -> String {
     url.split_once("://")
         .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or("").to_string())
         .unwrap_or_default()

@@ -14,6 +14,7 @@ mod default_browser;
 mod external;
 mod filters;
 mod hello;
+mod import;
 pub mod ipc;
 mod launch;
 mod newtab;
@@ -232,6 +233,8 @@ pub fn run() {
             launch::launch_adopt_take,
             default_browser::default_browser_state,
             default_browser::default_browser_set,
+            import::browsers_found,
+            import::browser_import,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

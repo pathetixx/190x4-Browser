@@ -660,8 +660,13 @@ const BUILDERS = {
             ])
           ),
           setting(
+            "Перенести из другого браузера",
+            "Закладки и история из Chrome, Edge, Яндекс Браузера, Brave, Vivaldi или Opera на этом компьютере",
+            button("Перенести", importFromBrowser, { iconId: "import" })
+          ),
+          setting(
             "Импорт закладок",
-            "HTML-файл из Chrome, Edge, Яндекс Браузера, Firefox или Opera",
+            "HTML-файл из любого браузера, в том числе Firefox",
             button("Выбрать файл", importBookmarks, { iconId: "import" })
           ),
           setting(
@@ -1169,6 +1174,62 @@ async function importBookmarks() {
       (report.folders ? ` и ${report.folders} ${plural(report.folders, "папка", "папки", "папок")}` : "") +
       (report.skipped ? `, повторы пропущены: ${report.skipped}` : "")
   );
+}
+
+/** Галочка в окне настроек: `checked()` — отмечена ли. */
+function checkRow(text, hint, on = true) {
+  const node = el("button", "check");
+  node.type = "button";
+  node.setAttribute("role", "checkbox");
+  node.setAttribute("aria-checked", String(on));
+  node.append(el("span", null, text));
+  if (hint) node.append(el("span", "check__hint", hint));
+  node.addEventListener("click", () => node.setAttribute("aria-checked", String(!(node.getAttribute("aria-checked") === "true"))));
+  return { node, checked: () => node.getAttribute("aria-checked") === "true" };
+}
+
+/**
+ * Закладки и история другого браузера на Chromium — без файлов экспорта:
+ * браузер читает его профиль сам. Пароли так не перенести, они зашифрованы
+ * ключом того браузера, — для них остаётся CSV.
+ */
+export async function importFromBrowser() {
+  const found = await invoke("browsers_found").catch(() => []);
+  const sources = Array.isArray(found) ? found : [];
+  if (!sources.length) {
+    hooks.toast("Chrome, Edge, Яндекс Браузер, Brave, Vivaldi и Opera на этом компьютере не нашлись");
+    return;
+  }
+  const from = el("select", "field");
+  for (const source of sources) {
+    for (const profile of source.profiles) {
+      const named = source.profiles.length > 1 && profile.name;
+      const option = el("option", null, named ? `${source.name} — ${profile.name}` : source.name);
+      option.value = JSON.stringify([source.id, profile.dir]);
+      from.append(option);
+    }
+  }
+  const bookmarks = checkRow("Закладки", "панель закладок и все папки");
+  const history = checkRow("История", "посещения за последние 90 дней");
+  const answer = await modal({
+    title: "Перенести из другого браузера",
+    text: "Пароли так не перенести: экспортируйте их в CSV в том браузере и импортируйте в разделе «Пароли».",
+    body: [label("Откуда"), from, bookmarks.node, history.node],
+    actions: [
+      [null, "Отмена", "btn btn--ghost"],
+      ["import", "Перенести", "btn btn--primary"],
+    ],
+  });
+  if (answer !== "import" || !(bookmarks.checked() || history.checked())) return;
+  const [browser, profile] = JSON.parse(from.value);
+  const report = await attempt(
+    invoke("browser_import", { browser, profile, bookmarks: bookmarks.checked(), history: history.checked() })
+  );
+  if (!report) return;
+  const parts = [];
+  if (report.links) parts.push(`${report.links} ${plural(report.links, "закладка", "закладки", "закладок")}`);
+  if (report.pages) parts.push(`${report.pages} ${plural(report.pages, "адрес", "адреса", "адресов")} истории`);
+  hooks.toast(parts.length ? `Перенесено: ${parts.join(" и ")}` : "Переносить нечего — всё уже здесь");
 }
 
 async function exportBookmarks() {
