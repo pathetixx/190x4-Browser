@@ -69,7 +69,10 @@
   --accent-soft: rgba(192, 48, 74, 0.14);
   --accent-glow: rgba(192, 48, 74, 0.36);
 
-  --glass: rgba(13, 13, 16, 0.74);
+  /* Подложка карточек и поиска плотная, без размытия фона (backdrop-filter):
+     под ними едет сетка пола, и размытие пересчитывалось бы на каждом кадре,
+     а на глаз разницы нет. */
+  --glass: rgba(13, 13, 16, 0.84);
   --shadow: 0 34px 80px -40px rgba(0, 0, 0, 0.9);
   --grid-line: rgba(222, 87, 114, 0.2);
   --vignette: rgba(0, 0, 0, 0.6);
@@ -104,7 +107,7 @@
   --accent-soft: rgba(181, 47, 72, 0.1);
   --accent-glow: rgba(181, 47, 72, 0.22);
 
-  --glass: rgba(250, 250, 248, 0.78);
+  --glass: rgba(250, 250, 248, 0.88);
   --shadow: 0 26px 60px -34px rgba(48, 42, 34, 0.3);
   --grid-line: rgba(181, 47, 72, 0.13);
   --vignette: transparent;
@@ -410,7 +413,11 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   stroke-width: 2.2;
   stroke-linecap: round;
   filter: drop-shadow(0 0 4px var(--accent-glow));
-  transition: stroke-dashoffset 0.95s linear;
+  /* Рост дуги — перерисовка слоя с тенью, композитор его не ведёт: плавный
+     переход перерисовывал её с частотой экрана (165 раз в секунду на 165 Гц).
+     Двенадцать шагов в секунду — это сдвиг меньше пикселя, на глаз так же
+     плавно; маркер при этом едет композитором. */
+  transition: stroke-dashoffset 0.95s steps(12, end);
 }
 .hud__marker {
   transform-origin: 50% 50%;
@@ -489,7 +496,6 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   background: var(--glass);
   border: 1px solid var(--line-2);
   box-shadow: inset 0 1px 0 var(--shine), var(--shadow);
-  backdrop-filter: blur(16px);
   transition: border-color 0.2s, box-shadow 0.25s var(--ease);
 }
 .search::before, .search::after {
@@ -639,7 +645,6 @@ svg { width: 1em; height: 1em; fill: currentColor; flex: none; }
   background: var(--glass);
   border: 1px solid var(--line-2);
   box-shadow: inset 0 1px 0 var(--shine), var(--shadow);
-  backdrop-filter: blur(18px) saturate(120%);
 }
 /* HUD-уголки по краю рамки — как у панелей и карточек интерфейса. */
 .card::before {

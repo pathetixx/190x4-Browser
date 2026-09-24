@@ -152,7 +152,9 @@
     state.theme = message.theme ?? "kurogane";
     applyTheme();
     applyVisibility();
-    renderTiles();
+    // Состояние приходит при каждом показе вкладки: плитки пересобираются,
+    // только если они сменились, — иначе значки мигали подложкой.
+    if (tilesKey() !== tilesShown) renderTiles();
 
     if (state.weather && (!weatherAt || Date.now() - weatherAt > WEATHER_EVERY)) requestWeather(false);
     state.loaded = true;
@@ -181,7 +183,11 @@
       localStorage.setItem("190x4-theme", root.dataset.theme);
     } catch {}
   }
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    applyTheme();
+    // Подложка значка подбирается под тему.
+    if (tilesKey() !== tilesShown) renderTiles();
+  });
 
   function applyVisibility() {
     $("weather").hidden = !state.weather;
@@ -312,6 +318,7 @@
   }
 
   let lastMinute = -1;
+  let tickTimer = 0;
 
   function tick() {
     const now = new Date();
@@ -339,7 +346,9 @@
       $("date").textContent = now.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" });
     }
 
-    setTimeout(tick, 1000 - new Date().getMilliseconds() + 8);
+    // Спрятанной вкладке (прогретой или фоновой) часы не нужны: при показе
+    // они сразу встают на нужное время и идут дальше.
+    tickTimer = document.visibilityState === "visible" ? setTimeout(tick, 1000 - new Date().getMilliseconds() + 8) : 0;
   }
 
   function glitchLater() {
@@ -400,7 +409,12 @@
   let menuButton = null;
   let dragIndex = -1;
 
+  /** Что нарисовано на плитках: сами плитки и тема, под которую подобраны подложки. */
+  let tilesShown = "";
+  const tilesKey = () => JSON.stringify([state.tiles, root.dataset.theme]);
+
   function renderTiles() {
+    tilesShown = tilesKey();
     const count = state.tiles.length + (state.tiles.length < MAX_TILES ? 1 : 0);
     dials.style.setProperty("--cols", String(Math.max(3, Math.min(8, count))));
     dials.replaceChildren();
@@ -1045,6 +1059,7 @@
       return;
     }
     wake();
+    if (!tickTimer) tick();
     // Тему и плитки могли поменять, пока вкладка была в фоне.
     send({ evt: "newtab_init" });
     if (state.weather && Date.now() - weatherAt > WEATHER_EVERY) requestWeather(false);
