@@ -23,6 +23,8 @@ import {
   openSettings,
   openTranslator,
   tabAction,
+  toggleAutoscroll,
+  autoscrollSite,
 } from "./actions.js";
 
 const RING = 81.68;
@@ -31,6 +33,7 @@ const downloadsButton = document.getElementById("downloads-btn");
 const ring = document.getElementById("downloads-ring");
 const mediaButton = document.getElementById("ext-media");
 const translateButton = document.getElementById("ext-translate");
+const autoscrollButton = document.getElementById("ext-autoscroll");
 const mediaBadge = document.getElementById("ext-media-badge");
 const homeButton = document.getElementById("nav-home");
 
@@ -50,6 +53,7 @@ export function initToolbar() {
   downloadsButton.addEventListener("click", () => openDownloadsBubble());
   mediaButton.addEventListener("click", () => openMediaExtension());
   translateButton.addEventListener("click", () => openTranslator());
+  autoscrollButton.addEventListener("click", () => toggleAutoscroll());
   document.getElementById("open-menu").addEventListener("click", (event) => showMainMenu(event.currentTarget));
 
   onDownloads((event) => {
@@ -67,11 +71,28 @@ export function renderToolbar() {
   // Без ключа сервиса расширение ничего не сделает — значку на панели не место.
   mediaButton.hidden = !(state.services.media && pref("ext_media_enabled") && pref("ext_media_pinned"));
   translateButton.hidden = !(state.services.translate && pref("ext_translate_enabled") && pref("ext_translate_pinned"));
+  renderAutoscroll();
   renderDownloads(null);
 
   const tab = activeTab();
   const busy = summary().active > 0;
   mediaBadge.hidden = !(tab?.media || (busy && hasMediaJob()));
+}
+
+/**
+ * Кнопка автопролистывания — только на ленте, которую расширение листает, и
+ * если этот сайт не выключен в настройках. Нажата — пролистывание идёт.
+ */
+function renderAutoscroll() {
+  const tab = activeTab();
+  const site = tab && !tab.internal ? autoscrollSite(tab.url ?? "") : null;
+  autoscrollButton.hidden = !(site && pref("ext_autoscroll_pinned") && pref(`autoscroll_${site}`));
+  const on = Boolean(pref("ext_autoscroll_enabled"));
+  autoscrollButton.setAttribute("aria-pressed", String(on));
+  autoscrollButton.setAttribute("aria-label", "Автопролистывание");
+  autoscrollButton.title = on
+    ? "Автопролистывание включено — выключить"
+    : "Автопролистывание выключено — включить: доигравший ролик сменится следующим";
 }
 
 function hasMediaJob() {

@@ -982,6 +982,22 @@ const BUILDERS = {
       // второго читалась бы как настройка первого.
       group([
         setting(
+          "Автопролистывание",
+          "Доигравший ролик в YouTube Shorts, Reels в Instagram и TikTok сам сменяется следующим — лента листается так же, как стрелкой вниз. Пока вы пишете комментарий, лента стоит.",
+          toggle("ext_autoscroll_enabled"),
+          { iconId: "autoscroll" }
+        ),
+        switchSetting(
+          "ext_autoscroll_pinned",
+          "Показывать кнопку на панели инструментов",
+          "Кнопка появляется только в этих лентах и одним щелчком включает или выключает пролистывание"
+        ),
+        switchSetting("autoscroll_youtube", "YouTube Shorts", "youtube.com/shorts"),
+        switchSetting("autoscroll_instagram", "Reels в Instagram", "instagram.com/reels"),
+        switchSetting("autoscroll_tiktok", "TikTok", "tiktok.com"),
+      ]),
+      group([
+        setting(
           "SponsorBlock",
           "Пропускает в видео YouTube спонсорские вставки, просьбы подписаться и другие сегменты, которые разметили зрители. Разметка — сообщество SponsorBlock (sponsor.ajay.app, CC BY-NC-SA 4.0); на сервер уходит не номер видео, а начало его хеша.",
           toggle("ext_sponsorblock_enabled"),

@@ -165,6 +165,11 @@ ICONS = {
     "puzzle": path("M3.5 7h3.5V4.5h3V7h3.5v3.5H16v3h-2.5V17h-10z"),
     "video": path(VIDEO_FRAME) + path(VIDEO_PLAY),
     "video-filled": fill(VIDEO_FRAME) + path(VIDEO_FRAME) + solid(VIDEO_PLAY) + path(VIDEO_PLAY),
+    # Автопролистывание ленты: экран телефона и стрелка вниз.
+    "autoscroll": path(cut_rect(5.5, 2.75, 9, 14.5, tr=2)) + path("M10 6.75v6.5M7.75 11 10 13.25 12.25 11"),
+    "autoscroll-filled": fill(cut_rect(5.5, 2.75, 9, 14.5, tr=2))
+    + path(cut_rect(5.5, 2.75, 9, 14.5, tr=2))
+    + path("M10 6.75v6.5M7.75 11 10 13.25 12.25 11"),
     # Пропустить сегмент (SponsorBlock): треугольник «играть» и черта конца.
     "skip": path("M4.75 4.75v10.5L12.25 10z") + path("M15.25 4.75v10.5"),
     "shield": path(SHIELD_SHAPE),

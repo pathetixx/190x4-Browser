@@ -13,6 +13,7 @@ import {
   openSettings,
   openTranslator,
   tabAction,
+  toggleAutoscroll,
   toggleBookmarksBar,
   zoom,
 } from "./actions.js";
@@ -175,6 +176,13 @@ initPalette([
     run: () => openSettings("bookmarks"),
   },
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
+  {
+    group: "Браузер",
+    title: "Включить или выключить автопролистывание",
+    icon: "autoscroll",
+    keywords: "shorts reels tiktok лента листать",
+    run: toggleAutoscroll,
+  },
   {
     group: "Браузер",
     title: "Переводчик",

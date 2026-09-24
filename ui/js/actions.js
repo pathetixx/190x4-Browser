@@ -208,6 +208,33 @@ export async function openTranslator(text = "") {
   });
 }
 
+/**
+ * Лента коротких видео, которую листает расширение «Автопролистывание»: ключ
+ * сайта в настройках или `null`. Так же решает скрипт ленты — адрес Shorts у
+ * YouTube, Reels у Instagram, весь TikTok.
+ */
+export function autoscrollSite(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+  const on = (domain) => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`);
+  if (on("youtube.com") && parsed.pathname.startsWith("/shorts/")) return "youtube";
+  if (on("instagram.com") && /^\/reels?\//.test(parsed.pathname)) return "instagram";
+  if (on("tiktok.com")) return "tiktok";
+  return null;
+}
+
+/** Кнопка расширения: включить или выключить пролистывание одним щелчком. */
+export async function toggleAutoscroll() {
+  const on = !pref("ext_autoscroll_enabled");
+  await setPref("ext_autoscroll_enabled", on).catch(() => {});
+  hooks.toast(on ? "Автопролистывание включено: доигравший ролик сменится следующим" : "Автопролистывание выключено");
+}
+
 export function openDownloadsBubble() {
   const button = document.getElementById("downloads-btn");
   button.hidden = false;

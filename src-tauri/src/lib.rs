@@ -9,6 +9,7 @@
 //! Окон браузера может быть несколько (обычные и приватные), у каждого свой
 //! хост вкладок — см. [`browser_windows`].
 
+mod autoscroll;
 mod browser_windows;
 mod default_browser;
 mod external;
@@ -348,6 +349,7 @@ pub(crate) fn route_event(
             // принимают сообщения лишь от документа вкладки.
             if passwords::handle_message(app, label, *id, *frame, source, payload)
                 || sponsorblock::handle_message(app, *id, *frame, source, payload)
+                || autoscroll::handle_message(app, *id, *frame, source, payload)
                 || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)
                 || !for_interface(payload)

@@ -45,6 +45,13 @@ export const DEFAULTS = {
   sponsorblock_preview: "show",
   sponsorblock_filler: "off",
   sponsorblock_music_offtopic: "off",
+  // Автопролистывание: общее включение (его же переключает кнопка на панели)
+  // и сайты. Те же ключи читает src-tauri/src/autoscroll.rs.
+  ext_autoscroll_enabled: true,
+  ext_autoscroll_pinned: true,
+  autoscroll_youtube: true,
+  autoscroll_instagram: true,
+  autoscroll_tiktok: true,
   ext_media_enabled: true,
   ext_media_pinned: true,
   updates_auto: true,

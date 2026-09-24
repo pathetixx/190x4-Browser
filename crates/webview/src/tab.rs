@@ -43,11 +43,22 @@ const PASSWORDS_SCRIPT: &str = include_str!("inject/passwords.js");
 /// пускает в скрипт управляющие символы.
 static PASSWORDS_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(PASSWORDS_SCRIPT));
 
-/// SponsorBlock в плеере YouTube: сообщает номер видео и пропускает сегменты,
-/// которые пришлёт браузер (`src-tauri/src/sponsorblock.rs`). На остальных
-/// сайтах сразу выходит — проверка хоста первой строкой.
-const SPONSORBLOCK_SCRIPT: &str = include_str!("inject/sponsorblock.js");
-static SPONSORBLOCK_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(SPONSORBLOCK_SCRIPT));
+/// Скрипты расширений, которые работают только на своих сайтах и на остальных
+/// сразу выходят — проверка хоста первой строкой:
+/// * SponsorBlock в плеере YouTube сообщает номер видео и пропускает сегменты,
+///   которые пришлёт браузер (`src-tauri/src/sponsorblock.rs`);
+/// * автопролистывание в Shorts, Reels и TikTok спрашивает, листать ли дальше
+///   доигравший ролик (`src-tauri/src/autoscroll.rs`).
+const SITE_SCRIPTS: [(&str, &str); 2] = [
+    ("SponsorBlock", include_str!("inject/sponsorblock.js")),
+    ("автопролистывания", include_str!("inject/autoscroll.js")),
+];
+static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
+    SITE_SCRIPTS
+        .iter()
+        .map(|(name, source)| (*name, engine_script(source)))
+        .collect()
+});
 
 fn engine_script(source: &str) -> String {
     source
@@ -1118,15 +1129,20 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
 /// Скрипты, которые движок вставляет в каждый документ до его собственных.
 fn inject_scripts(core: &ICoreWebView2, ready: Rc<ScriptsReady>) -> windows_core::Result<()> {
     unsafe {
-        core.AddScriptToExecuteOnDocumentCreated(
-            &HSTRING::from(SPONSORBLOCK_ENGINE.as_str()),
-            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|code, _id| {
-                if let Err(err) = code {
-                    tracing::warn!(%err, "скрипт SponsorBlock не встроен");
-                }
-                Ok(())
-            })),
-        )?;
+        for (name, script) in SITE_ENGINE.iter() {
+            let name = *name;
+            core.AddScriptToExecuteOnDocumentCreated(
+                &HSTRING::from(script.as_str()),
+                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                    move |code, _id| {
+                        if let Err(err) = code {
+                            tracing::warn!(%err, "скрипт {name} не встроен");
+                        }
+                        Ok(())
+                    },
+                )),
+            )?;
+        }
         core.AddScriptToExecuteOnDocumentCreated(
             &HSTRING::from(PASSWORDS_ENGINE.as_str()),
             &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
@@ -2390,7 +2406,9 @@ mod tests {
     /// autocrlf) `engine_script` уже убирает.
     #[test]
     fn password_script_has_no_control_characters() {
-        for script in [PASSWORDS_SCRIPT, SPONSORBLOCK_SCRIPT] {
+        for script in
+            std::iter::once(PASSWORDS_SCRIPT).chain(SITE_SCRIPTS.map(|(_, script)| script))
+        {
             let bad = engine_script(script)
                 .char_indices()
                 .find(|(_, ch)| ch.is_control() && *ch != '\n');
