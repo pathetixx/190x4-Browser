@@ -28,6 +28,25 @@ import { hooks, navigate } from "../actions.js";
 import { PERMISSIONS } from "../permissions.js";
 import { checkUpdates, installUpdate, onUpdate, update } from "../updates.js";
 
+/** Категории SponsorBlock: как их назвать и что в них бывает. */
+const SPONSORBLOCK_CATEGORIES = [
+  ["sponsor", "Спонсорская вставка", "Оплаченная реклама внутри видео"],
+  ["selfpromo", "Реклама автора", "Свой мерч, курсы, донаты, другие каналы"],
+  ["interaction", "Просьба подписаться", "«Подпишитесь, поставьте лайк, нажмите колокольчик»"],
+  ["intro", "Заставка", "Вступление без содержания"],
+  ["outro", "Концовка", "Титры, конечные заставки, прощание"],
+  ["preview", "Анонс", "Нарезка того, что будет дальше в видео или в прошлых выпусках"],
+  ["filler", "Отступление", "Шутки и сцены не по теме"],
+  ["music_offtopic", "Не музыка в клипе", "Разговоры и сценки в музыкальном видео"],
+];
+
+const SPONSORBLOCK_MODES = [
+  ["skip", "Пропускать"],
+  ["ask", "Спрашивать"],
+  ["show", "Отмечать на полосе"],
+  ["off", "Не трогать"],
+];
+
 const SECTIONS = [
   { id: "appearance", title: "Внешний вид", icon: "paint" },
   { id: "default", title: "Браузер по умолчанию", icon: "globe" },
@@ -961,6 +980,17 @@ const BUILDERS = {
       ),
       // Каждое расширение — своей группой: иначе строка «Показывать значок»
       // второго читалась бы как настройка первого.
+      group([
+        setting(
+          "SponsorBlock",
+          "Пропускает в видео YouTube спонсорские вставки, просьбы подписаться и другие сегменты, которые разметили зрители. Разметка — сообщество SponsorBlock (sponsor.ajay.app, CC BY-NC-SA 4.0); на сервер уходит не номер видео, а начало его хеша.",
+          toggle("ext_sponsorblock_enabled"),
+          { iconId: "skip" }
+        ),
+        ...SPONSORBLOCK_CATEGORIES.map(([category, label, hint]) =>
+          setting(label, hint, select(`sponsorblock_${category}`, SPONSORBLOCK_MODES))
+        ),
+      ]),
       group(
         [
           setting(

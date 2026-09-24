@@ -22,6 +22,7 @@ mod passwords;
 mod popup;
 mod resources;
 mod site_icons;
+mod sponsorblock;
 mod state;
 mod suggest;
 mod transfers;
@@ -129,6 +130,7 @@ pub fn run() {
         })
         .manage(updates::Updates::default())
         .manage(newtab::NewTab::default())
+        .manage(sponsorblock::SponsorBlock::default())
         .manage(launched)
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
@@ -341,9 +343,11 @@ pub(crate) fn route_event(
             if payload.len() > MAX_PAGE_MESSAGE {
                 return;
             }
-            // Фреймам доступен только менеджер паролей: новая вкладка и chrome
+            // Фреймам доступны только менеджер паролей и SponsorBlock (плеер
+            // YouTube, встроенный в чужую страницу): новая вкладка и chrome
             // принимают сообщения лишь от документа вкладки.
             if passwords::handle_message(app, label, *id, *frame, source, payload)
+                || sponsorblock::handle_message(app, *id, *frame, source, payload)
                 || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)
                 || !for_interface(payload)

@@ -34,6 +34,17 @@ export const DEFAULTS = {
   translate_source: "auto",
   ext_translate_enabled: true,
   ext_translate_pinned: true,
+  // SponsorBlock: режим каждой категории — skip, ask, show или off. Те же
+  // умолчания — в src-tauri/src/sponsorblock.rs (`CATEGORIES`).
+  ext_sponsorblock_enabled: true,
+  sponsorblock_sponsor: "skip",
+  sponsorblock_selfpromo: "show",
+  sponsorblock_interaction: "show",
+  sponsorblock_intro: "show",
+  sponsorblock_outro: "show",
+  sponsorblock_preview: "show",
+  sponsorblock_filler: "off",
+  sponsorblock_music_offtopic: "off",
   ext_media_enabled: true,
   ext_media_pinned: true,
   updates_auto: true,

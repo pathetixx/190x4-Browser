@@ -165,6 +165,8 @@ ICONS = {
     "puzzle": path("M3.5 7h3.5V4.5h3V7h3.5v3.5H16v3h-2.5V17h-10z"),
     "video": path(VIDEO_FRAME) + path(VIDEO_PLAY),
     "video-filled": fill(VIDEO_FRAME) + path(VIDEO_FRAME) + solid(VIDEO_PLAY) + path(VIDEO_PLAY),
+    # Пропустить сегмент (SponsorBlock): треугольник «играть» и черта конца.
+    "skip": path("M4.75 4.75v10.5L12.25 10z") + path("M15.25 4.75v10.5"),
     "shield": path(SHIELD_SHAPE),
     "shield-filled": fill(SHIELD_SHAPE, 0.3) + path(SHIELD_SHAPE),
     "favorites": path(FAVORITES_STAR) + path("M13.5 7.5h3M13 11h3.5M4 15.5h12.5"),
