@@ -391,6 +391,11 @@ pub struct Tab {
     /// Цвет, которым движок заливает вкладку до первой отрисовки страницы.
     page_color: PageColor,
     cert: Rc<CertState>,
+    /// Значок сайта `data:`-адресом (`wire_favicon`): его досылают интерфейсу
+    /// окна, куда вкладку отдали или унесли.
+    favicon: Rc<RefCell<String>>,
+    /// Вкладка приватного окна: её значок интерфейс не может брать по адресу.
+    private: bool,
 }
 
 /// Цвет страниц браузера (новая вкладка) под тему, `[r, g, b]`. Им же
@@ -1166,6 +1171,7 @@ impl Tab {
         announced: Rc<Cell<bool>>,
         bounds: RECT,
         visible: bool,
+        private: bool,
     ) -> anyhow::Result<Self> {
         let core = unsafe { controller.CoreWebView2()? };
         let source: SourceUrl = Rc::new(RefCell::new(String::new()));
@@ -1240,9 +1246,12 @@ impl Tab {
             low_memory: Cell::new(false),
             page_color,
             cert: Rc::new(CertState::default()),
+            favicon: Rc::default(),
+            private,
         };
-        tab.wire_events(sink, popups)?;
+        tab.wire_events(sink.clone(), popups)?;
         tab.wire_certificates();
+        tab.wire_favicon(sink);
         tracing::debug!(?id, "вкладка готова");
         Ok(tab)
     }
@@ -1572,30 +1581,6 @@ impl Tab {
                 })),
                 &mut token,
             )?;
-
-            // Иконка сайта. Интерфейса нет на совсем старом рантайме — тогда
-            // вкладки живут с глобусом.
-            if let Ok(core15) = core.cast::<ICoreWebView2_15>() {
-                let s = sink.clone();
-                core15.add_FaviconChanged(
-                    &FaviconChangedEventHandler::create(Box::new(move |sender, _| {
-                        let Some(sender) = sender else { return Ok(()) };
-                        let core15: ICoreWebView2_15 = sender.cast()?;
-                        let mut raw = PWSTR::null();
-                        core15.FaviconUri(&mut raw)?;
-                        let url = take_pwstr(raw);
-                        let mut raw = PWSTR::null();
-                        sender.Source(&mut raw)?;
-                        s(TabEvent::Favicon {
-                            id,
-                            page: take_pwstr(raw),
-                            url,
-                        });
-                        Ok(())
-                    })),
-                    &mut token,
-                )?;
-            }
         }
 
         Ok(())
@@ -1661,13 +1646,7 @@ impl Tab {
         if !title.is_empty() {
             (self.sink)(TabEvent::Title { id, title });
         }
-        if let Some(icon) = self.favicon_url().filter(|icon| !icon.is_empty()) {
-            (self.sink)(TabEvent::Favicon {
-                id,
-                page: url,
-                url: icon,
-            });
-        }
+        self.announce_favicon(url);
     }
 
     /// Вкладку принесли из другого окна: интерфейс нового окна узнаёт всё,
@@ -1686,13 +1665,7 @@ impl Tab {
         if !title.is_empty() {
             (self.sink)(TabEvent::Title { id, title });
         }
-        if let Some(icon) = self.favicon_url().filter(|icon| !icon.is_empty()) {
-            (self.sink)(TabEvent::Favicon {
-                id,
-                page: url,
-                url: icon,
-            });
-        }
+        self.announce_favicon(url);
         let mut back = BOOL::default();
         let mut forward = BOOL::default();
         unsafe {
@@ -1980,13 +1953,94 @@ impl Tab {
         self.visible
     }
 
-    /// Иконка сайта — через ICoreWebView2_15. На старом evergreen интерфейса
-    /// нет: вкладка тогда живёт с дефолтной иконкой, а не падает.
-    pub fn favicon_url(&self) -> Option<String> {
-        let core15: ICoreWebView2_15 = self.core.cast().ok()?;
-        let mut raw = PWSTR::null();
-        unsafe { core15.FaviconUri(&mut raw).ok()? };
-        Some(take_pwstr(raw))
+    /// Значок, который вкладка уже знает, — интерфейсу, который о ней только
+    /// узнал.
+    fn announce_favicon(&self, page: String) {
+        let url = self.favicon.borrow().clone();
+        if !url.is_empty() {
+            (self.sink)(TabEvent::Favicon {
+                id: self.id.0,
+                page,
+                url,
+            });
+        }
+    }
+
+    /// Значок сайта. Интерфейса нет на совсем старом рантайме — тогда вкладки
+    /// живут с глобусом.
+    ///
+    /// Картинку отдаёт движок вкладки (`GetFavicon`), а интерфейс получает её
+    /// `data:`-адресом. По адресу значка интерфейс загружал бы его сам — из
+    /// своего профиля, а не из профиля вкладки: у приватного окна это запрос к
+    /// сайту с куками обычного профиля и след в его кэше на диске, у обычного —
+    /// лишний запрос за тем, что вкладка уже скачала.
+    fn wire_favicon(&self, sink: EventSink) {
+        use base64::Engine as _;
+        use webview2_com::GetFaviconCompletedHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG;
+
+        /// Значок вкладки — 16–32 px; больше — не значок.
+        const MAX_ICON: usize = 64 * 1024;
+
+        let Ok(core15) = self.core.cast::<ICoreWebView2_15>() else {
+            return;
+        };
+        let id = self.id.0;
+        let private = self.private;
+        let known = self.favicon.clone();
+        let mut token = 0i64;
+        let result = unsafe {
+            core15.add_FaviconChanged(
+                &FaviconChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(sender) = sender else { return Ok(()) };
+                    let core15: ICoreWebView2_15 = sender.cast()?;
+                    let mut raw = PWSTR::null();
+                    core15.FaviconUri(&mut raw)?;
+                    let uri = take_pwstr(raw);
+                    let mut raw = PWSTR::null();
+                    sender.Source(&mut raw)?;
+                    let page = take_pwstr(raw);
+                    // Значка нет или это страница браузера — в строке глобус.
+                    if uri.is_empty() || is_pages_url(&page) {
+                        known.borrow_mut().clear();
+                        sink(TabEvent::Favicon {
+                            id,
+                            page,
+                            url: String::new(),
+                        });
+                        return Ok(());
+                    }
+                    let (sink, known) = (sink.clone(), known.clone());
+                    core15.GetFavicon(
+                        COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,
+                        &GetFaviconCompletedHandler::create(Box::new(move |code, stream| {
+                            let image = code
+                                .ok()
+                                .and(stream)
+                                .and_then(|stream| crate::stream::read_all(&stream, MAX_ICON))
+                                .filter(|bytes| !bytes.is_empty());
+                            let url = match image {
+                                Some(bytes) => format!(
+                                    "data:image/png;base64,{}",
+                                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                                ),
+                                // Картинки движок не отдал: обычному окну хватит
+                                // адреса, приватному — глобуса.
+                                None if !private && uri.starts_with("https://") => uri,
+                                None => String::new(),
+                            };
+                            known.borrow_mut().clone_from(&url);
+                            sink(TabEvent::Favicon { id, page, url });
+                            Ok(())
+                        })),
+                    )
+                })),
+                &mut token,
+            )
+        };
+        if let Err(err) = result {
+            tracing::warn!(%err, "значки сайтов не подключены");
+        }
     }
 
     pub fn close(self) -> windows_core::Result<()> {

@@ -582,6 +582,7 @@ impl TabHost {
                     Rc::new(std::cell::Cell::new(!spare)),
                     bounds,
                     visible,
+                    state.private,
                 ) {
                     Ok(tab) => tab,
                     Err(err) => {

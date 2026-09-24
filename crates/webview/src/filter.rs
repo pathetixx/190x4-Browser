@@ -140,6 +140,14 @@ pub fn install(
             &WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
                 let Some(args) = args else { return Ok(()) };
 
+                // Страницы браузера (новая вкладка) — не сайт: списки
+                // блокировки к ним не относятся, а их общие правила вроде
+                // «прятать ссылки на dzen.ru» ломали плитки. Такой запрос не
+                // разбираем вовсе — ни адреса, ни метода.
+                if is_browser_page(&source.borrow()) {
+                    return Ok(());
+                }
+
                 let request = args.Request()?;
                 let url = {
                     let mut raw = PWSTR::null();
@@ -150,6 +158,17 @@ pub fn install(
                 let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
                 args.ResourceContext(&mut context)?;
 
+                let main_frame = context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
+                    && url.as_str() == source.borrow().as_str();
+                if main_frame {
+                    counter.reset(id, &sink);
+                }
+                // Блокировка выключена или сайт в исключениях — дальше смотреть
+                // нечего, а счётчик новой страницы уже обнулён.
+                if !guard.filters(&source.borrow()) {
+                    return Ok(());
+                }
+
                 // Метод нужен правилам с `$method=`; для GET это лишний
                 // вызов, но различать до чтения всё равно нечем.
                 let method = {
@@ -157,22 +176,6 @@ pub fn install(
                     request.Method(&mut raw)?;
                     take_pwstr(raw)
                 };
-
-                let document = source.borrow();
-                // Страницы браузера (новая вкладка) — не сайт: списки
-                // блокировки к ним не относятся, а их общие правила вроде
-                // «прятать ссылки на dzen.ru» ломали плитки.
-                if is_browser_page(&document) {
-                    return Ok(());
-                }
-                let main_frame = context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
-                    && url.as_str() == document.as_str();
-                if main_frame {
-                    drop(document);
-                    counter.reset(id, &sink);
-                } else {
-                    drop(document);
-                }
 
                 let kind = map_context(context, main_frame);
                 match guard.check(&url, &source.borrow(), kind, &method) {

@@ -32,6 +32,10 @@ struct Inner {
     key_by_id: HashMap<i64, u64>,
     /// Загрузки через загрузчик видео: номер записи → задание на сервере.
     media_jobs: HashMap<i64, String>,
+    /// Файлы, скачанные в приватном окне: записи в базе у них нет, а открыть
+    /// файл и показать его в папке из пузыря загрузок всё равно нужно. Живут до
+    /// выхода из браузера.
+    private_files: HashMap<i64, PathBuf>,
 }
 
 struct Entry {
@@ -142,20 +146,29 @@ fn apply_engine_event(
     // Приватное окно не оставляет следов: прогресс виден в пузыре загрузок,
     // но в списке и в базе такой загрузки нет.
     if state.windows.is_private(window) {
-        let _ = app.emit_to(
-            window,
-            "download",
-            DownloadEvent {
-                id: private_id(key),
-                kind: DownloadKind::Web,
-                phase: phase.to_string(),
-                url: url.to_string(),
-                path: path.to_string(),
-                bytes,
-                total,
-                error: error.to_string(),
-            },
-        );
+        let id = private_id(key);
+        if phase == "done" && !path.is_empty() {
+            state
+                .transfers
+                .inner
+                .lock()
+                .private_files
+                .insert(id, PathBuf::from(path));
+        }
+        let event = DownloadEvent {
+            id,
+            kind: DownloadKind::Web,
+            phase: phase.to_string(),
+            url: url.to_string(),
+            path: path.to_string(),
+            bytes,
+            total,
+            error: error.to_string(),
+        };
+        // Пузырь загрузок — во всплывающем окне, и оно слушает только свои
+        // события: без него прогресс приватной загрузки видела лишь кнопка.
+        let _ = app.emit_to(window, "download", event.clone());
+        let _ = app.emit_to(crate::popup::label_for(window).as_str(), "download", event);
         return;
     }
 
@@ -283,6 +296,21 @@ pub fn ask_target(app: &AppHandle, window: &str, key: u64, suggested: String) {
     });
 }
 
+/// Открыть скачанный файл или показать его в папке.
+fn reveal_or_open(path: &std::path::Path, action: &str) -> anyhow::Result<()> {
+    if action == "open" {
+        anyhow::ensure!(path.is_file(), "файл удалён или перемещён");
+        tauri_plugin_opener::open_path(path, None::<&str>)?;
+    } else if path.exists() {
+        tauri_plugin_opener::reveal_item_in_dir(path)?;
+    } else if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
+        tauri_plugin_opener::open_path(dir, None::<&str>)?;
+    } else {
+        anyhow::bail!("файл удалён или перемещён");
+    }
+    Ok(())
+}
+
 /// Действие из списка загрузок.
 pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<()> {
     let state = app.state::<App>();
@@ -290,13 +318,26 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
     // нужно: её номер — это номер операции движка со знаком минус.
     if id < 0 {
         let key = (-id - 1) as u64;
-        anyhow::ensure!(
-            matches!(action, "cancel" | "pause" | "resume"),
-            "этой загрузки нет в списке"
-        );
-        let action = action.to_string();
-        return with_download(app, key, move |host| host.download_control(key, &action))
-            .map_err(anyhow::Error::msg)?;
+        if matches!(action, "cancel" | "pause" | "resume") {
+            let action = action.to_string();
+            return with_download(app, key, move |host| host.download_control(key, &action))
+                .map_err(anyhow::Error::msg)?;
+        }
+        let mut inner = state.transfers.inner.lock();
+        let path = match action {
+            "remove" => {
+                inner.private_files.remove(&id);
+                return Ok(());
+            }
+            "open" | "show" => inner
+                .private_files
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("этой загрузки нет в списке"))?,
+            other => anyhow::bail!("с загрузкой приватного окна так нельзя: {other}"),
+        };
+        drop(inner);
+        return reveal_or_open(&path, action);
     }
     let download = state
         .store
@@ -305,19 +346,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
     let path = PathBuf::from(&download.path);
 
     match action {
-        "open" => {
-            anyhow::ensure!(path.is_file(), "файл удалён или перемещён");
-            tauri_plugin_opener::open_path(&path, None::<&str>)?;
-        }
-        "show" => {
-            if path.exists() {
-                tauri_plugin_opener::reveal_item_in_dir(&path)?;
-            } else if let Some(dir) = path.parent().filter(|dir| dir.is_dir()) {
-                tauri_plugin_opener::open_path(dir, None::<&str>)?;
-            } else {
-                anyhow::bail!("файл удалён или перемещён");
-            }
-        }
+        "open" | "show" => reveal_or_open(&path, action)?,
         "cancel" if download.kind == DownloadKind::Media => {
             let job = state
                 .transfers

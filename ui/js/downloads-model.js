@@ -33,6 +33,11 @@ export async function loadDownloads() {
     const known = live.get(item.id);
     items.set(item.id, known && known.state === item.state ? { ...item, bytes: Math.max(item.bytes, known.bytes) } : item);
   }
+  // Загрузки приватного окна в базу не попадают (номер у них со знаком
+  // минус) — список из базы их не знает, но до закрытия окна они в нём есть.
+  for (const [id, item] of live) {
+    if (id < 0) items.set(id, item);
+  }
   notify(null);
 }
 
@@ -174,6 +179,21 @@ export function progressOf(item) {
   return item.total_bytes ? Math.min(1, item.bytes / item.total_bytes) : null;
 }
 
-export function control(id, action) {
-  return invoke("download_control", { id, action });
+/**
+ * «Очистить всё»: база забывает свои записи, а законченные загрузки
+ * приватного окна (их в базе нет) забывает сам список.
+ */
+export async function clearFinished() {
+  await invoke("downloads_clear");
+  let changed = false;
+  for (const [id, item] of items) {
+    if (id < 0 && !isActive(item)) changed = items.delete(id) || changed;
+  }
+  if (changed) notify(null);
+}
+
+export async function control(id, action) {
+  await invoke("download_control", { id, action });
+  // Записи в базе у приватной загрузки нет: из списка её убирает сам список.
+  if (id < 0 && action === "remove" && items.delete(id)) notify(null);
 }

@@ -12,6 +12,8 @@ anyhow.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# Значок сайта уходит в интерфейс data:-адресом (см. `Tab::wire_favicon`).
+base64 = "0.22"
 webview2-com.workspace = true
 windows-core.workspace = true
 windows = { workspace = true, features = [

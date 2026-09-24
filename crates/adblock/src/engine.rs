@@ -188,7 +188,7 @@ impl Guard {
     /// Косметика документа по адресу: что скрыть и какие скриптлеты запустить.
     /// Пусто, если фильтр выключен. Звать на навигацию, не на каждый запрос.
     pub fn cosmetics(&self, url: &str) -> Cosmetics {
-        if !**self.enabled.load() || self.is_exempt(url) {
+        if !self.filters(url) {
             return Cosmetics::default();
         }
         let resources = self.engine.load().url_cosmetic_resources(url);
@@ -214,6 +214,12 @@ impl Guard {
         &self.stats
     }
 
+    /// Фильтрует ли браузер запросы документа по этому адресу: блокировка
+    /// включена и сайт не в исключениях. Нет — запрос можно не разбирать вовсе.
+    pub fn filters(&self, document_url: &str) -> bool {
+        **self.enabled.load() && !self.is_exempt(document_url)
+    }
+
     /// Горячий путь. Никаких своих локов, никакого I/O, никакого логирования.
     ///
     /// `url` — запрашиваемый ресурс, `source_url` — документ вкладки (нужен
@@ -222,7 +228,7 @@ impl Guard {
     pub fn check(&self, url: &str, source_url: &str, kind: ResourceKind, method: &str) -> Decision {
         // Исключение сайта считается по документу вкладки: на выключенном сайте
         // проходят и его собственные запросы, и запросы встроенных в него фреймов.
-        if !**self.enabled.load() || self.is_exempt(source_url) {
+        if !self.filters(source_url) {
             return Decision::Allow;
         }
 
@@ -377,6 +383,7 @@ mod tests {
     fn disabled_guard_is_transparent() {
         let guard = guard_with("||ads.example.com^");
         guard.set_enabled(false);
+        assert!(!guard.filters("https://news.example/"));
         assert_eq!(
             guard.check(
                 "https://ads.example.com/banner.js",
@@ -428,6 +435,8 @@ mod tests {
         }
         assert!(guard.cosmetics("https://news.example/").is_empty());
         assert!(!guard.is_exempt("https://othernews.example/"));
+        assert!(!guard.filters("https://m.news.example/"));
+        assert!(guard.filters("https://othernews.example/"));
 
         guard.set_exempt_sites(Vec::new());
         assert_eq!(

@@ -6,6 +6,7 @@
 import { invoke } from "../bridge.js";
 import { dayLabel, el, fileIcon, hostOf, icon, iconButton } from "../dom.js";
 import {
+  clearFinished,
   control,
   displayName,
   downloads,
@@ -46,9 +47,7 @@ export function createDownloadsPage(root) {
   folder.append(icon("folder-open", 20), el("span", null, "Открыть папку"));
   folder.addEventListener("click", () => invoke("downloads_folder_open").catch((error) => hooks.toast(String(error))));
   const clear = el("button", "btn btn--ghost", "Очистить всё");
-  clear.addEventListener("click", async () => {
-    await invoke("downloads_clear").catch(() => {});
-  });
+  clear.addEventListener("click", () => clearFinished().catch(() => {}));
   header.append(folder, clear);
   main.append(header);
 
@@ -96,13 +95,21 @@ export function createDownloadsPage(root) {
     }
   };
 
-  const unsubscribe = onDownloads(() => requestAnimationFrame(render));
+  // Прогресс приходит от каждой загрузки несколько раз в секунду — рисуем раз в кадр.
+  let frame = 0;
+  const unsubscribe = onDownloads(() => {
+    frame ||= requestAnimationFrame(() => {
+      frame = 0;
+      render();
+    });
+  });
   initDownloads().then(render);
   render();
 
   return {
     destroy() {
       unsubscribe();
+      cancelAnimationFrame(frame);
     },
   };
 }

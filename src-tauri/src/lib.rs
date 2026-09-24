@@ -334,11 +334,18 @@ pub(crate) fn route_event(
             source,
             payload,
         } => {
+            // `postMessage` доступен любой странице, и разбирается он здесь, на
+            // главном потоке — том же, что рисует окна. Свои сообщения короткие
+            // (самое длинное — плитки новой вкладки), большие не разбираем вовсе.
+            if payload.len() > MAX_PAGE_MESSAGE {
+                return;
+            }
             // Фреймам доступен только менеджер паролей: новая вкладка и chrome
             // принимают сообщения лишь от документа вкладки.
             if passwords::handle_message(app, label, *id, *frame, source, payload)
                 || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)
+                || !for_interface(payload)
             {
                 return;
             }
@@ -372,7 +379,11 @@ pub(crate) fn route_event(
             // Ссылки на приложения прежней страницы больше никто не откроет.
             external::forget_tab(&app.state::<App>(), *id);
         }
-        TabEvent::Favicon { page, url, .. } => {
+        // Приватное окно закладкам значков не пишет, а отсутствие значка не
+        // стирает тот, что у закладки уже есть.
+        TabEvent::Favicon { page, url, .. }
+            if !url.is_empty() && !app.state::<App>().windows.is_private(label) =>
+        {
             // Запись в базу — не на главном потоке: событие приходит с него.
             let (app, page, url) = (app.clone(), page.clone(), url.clone());
             tauri::async_runtime::spawn_blocking(move || {
@@ -385,6 +396,28 @@ pub(crate) fn route_event(
         _ => {}
     }
     let _ = app.emit_to(label, "tab", &event);
+}
+
+/// Самое длинное сообщение страницы, которое браузер разбирает.
+#[cfg(windows)]
+const MAX_PAGE_MESSAGE: usize = 64 * 1024;
+
+/// Сообщение страницы, которое ждёт интерфейс окна (`handlePageMessage` в
+/// `ui/js/main.js`). Остальные туда не идут: страница, шлющая `postMessage` в
+/// цикле, иначе загружала бы интерфейс браузера событиями.
+#[cfg(windows)]
+fn for_interface(payload: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Message<'a> {
+        #[serde(borrow)]
+        evt: std::borrow::Cow<'a, str>,
+    }
+    serde_json::from_str::<Message>(payload).is_ok_and(|message| {
+        matches!(
+            message.evt.as_ref(),
+            "navigate" | "middle_click" | "media_found"
+        )
+    })
 }
 
 /// Движок WebView2 упал целиком: окна пусты и не отвечают, вернуть их можно
