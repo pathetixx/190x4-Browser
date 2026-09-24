@@ -15,6 +15,7 @@ import { setPageHidden } from "./layout.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
 import { pref } from "./prefs.js";
 import {
+  flush,
   groupBounds,
   insertTabAt,
   markClosed,
@@ -709,6 +710,8 @@ export function editGroup(groupId, anchor = null) {
   const members = groupTabs(groupId);
   if (!members.length) return;
   const group = members[0].group;
+  // Группу могли создать только что: её ярлык появится с перерисовкой.
+  flush();
   const target = anchor ?? strip.querySelector(`[data-group-pill="${groupId}"]`) ?? strip;
   openPopup("group", target, {
     width: 300,
@@ -1037,18 +1040,17 @@ export function renderTabs() {
   // место появлялось (окно развернули, вкладки закрыли).
   const visible = tabs.filter((tab) => !tab.group?.collapsed && !tab.closing).length;
   strip.parentElement.style.setProperty("--tab-count", String(visible + pills.size));
-  // Событий за кадр бывает много (загрузка, счётчик, звук) — мерить вкладки
-  // хватит один раз.
-  if (!measureFrame) {
-    measureFrame = requestAnimationFrame(() => {
-      measureFrame = 0;
-      updateNarrow();
-      revealActive();
-    });
-  }
 }
 
-let measureFrame = 0;
+/**
+ * Узкие вкладки и активная на виду — после всей перерисовки кадра: замер
+ * пересчитывает раскладку, и до записей остальных представлений он был бы
+ * напрасным.
+ */
+export function measureTabs() {
+  updateNarrow();
+  revealActive();
+}
 
 /**
  * Вкладок больше, чем помещается: строка прокручивается, а активная вкладка

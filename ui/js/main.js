@@ -21,13 +21,13 @@ import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.
 import { displayHost, displayUrl, el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
-import { initFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
+import { initFullscreen, isFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
-import { initLayout, syncDuring } from "./layout.js";
+import { initLayout, isPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
-import { initPanels, isLivePanel, isPanelOpen, openPanel, renderPanel, toggle } from "./panels.js";
-import { initPopups, onPopupAction, openPopup } from "./popups.js";
+import { initPanels, isPanelOpen, openPanel, refreshLivePanel, renderPanel, toggle } from "./panels.js";
+import { closePopup, initPopups, onPopupAction, openPopup, openPopupKey } from "./popups.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
 import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, upsertTab } from "./state.js";
@@ -42,6 +42,7 @@ import {
   INTERNAL,
   initTabs,
   isLeaving,
+  measureTabs,
   moveActive,
   open,
   openSleeping,
@@ -816,7 +817,8 @@ subscribe(() => {
   renderBarVisibility();
   renderInternal();
   scheduleSessionSave();
-  if (isLivePanel()) renderPanel();
+  refreshLivePanel();
+  measureTabs();
 });
 
 function renderNav() {
@@ -867,12 +869,19 @@ function setText(node, value) {
 }
 
 /**
- * Короткое сообщение. На встроенной странице и без строки состояния —
- * всплывающая плашка внизу, иначе — в строке состояния.
+ * Короткое сообщение. Есть строка состояния — в ней. Нет — плашкой внизу
+ * страницы: над сайтом это всплывающее окно без фокуса (HTML-плашку закрыла
+ * бы нативная страница, и сообщение «скачано» или «страница упала» никто бы не
+ * увидел), над встроенной страницей — обычная плашка.
  */
 function toast(text) {
   clearTimeout(toastTimer);
   const tab = activeTab();
+  const overPage = !pref("statusbar") && tab && !tab.internal && !isPageHidden();
+  if (overPage && isNative) {
+    popupToast(text);
+    return;
+  }
   if (tab?.internal || !pref("statusbar")) {
     let node = document.getElementById("toast");
     if (!node) {
@@ -896,17 +905,36 @@ function toast(text) {
   }, 4000);
 }
 
+/** Сообщение над страницей — всплывающим окном у нижнего края. */
+function popupToast(text) {
+  // Попап у окна один: открытое меню или пузырь сообщение не сменит.
+  if (openPopupKey() !== null && openPopupKey() !== "toast:") return;
+  const stage = document.getElementById("stage").getBoundingClientRect();
+  const width = Math.max(240, Math.min(560, stage.width - 48));
+  const anchor = { x: stage.left + (stage.width - width) / 2, y: stage.bottom - 72, width, height: 0 };
+  openPopup("toast", anchor, { width, payload: { text } }).catch(() => {});
+  toastTimer = setTimeout(() => {
+    toastTimer = 0;
+    if (openPopupKey() === "toast:") closePopup();
+  }, 4000);
+}
+
 /* ── Счётчики фильтра ──────────────────────────────────────── */
 
 async function pollStats() {
   // Свёрнутому или скрытому окну статистика не нужна: это лишний IPC каждую
-  // секунду на каждое открытое окно.
+  // секунду на каждое открытое окно. Не нужна она и тогда, когда её негде
+  // показать: строка состояния и боковая панель спрятаны, панель блокировки
+  // закрыта, окно во весь экран.
   if (document.hidden) return;
+  const shown = pref("statusbar") || pref("sidebar") || isPanelOpen("shield");
+  if (!shown || isFullscreen()) return;
   try {
     const snapshot = await invoke("adblock_stats");
     state.blockedTotal = snapshot.blocked;
     state.latencyMicros = snapshot.avg_micros;
     renderStatus();
+    refreshLivePanel();
   } catch {
     /* фильтр ещё не поднялся */
   }
@@ -919,6 +947,8 @@ setInterval(pollStats, 1000);
 invoke("services_state")
   .then((services) => {
     state.services = services;
+    renderToolbar();
+    renderOmnibox();
   })
   .catch(() => {});
 

@@ -660,6 +660,11 @@ svg {
   color: var(--text-hi);
 }
 
+.hint-bubble--toast {
+  text-align: start;
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+
 .hint-bubble__key {
   display: inline-block;
   margin-inline-start: 2px;

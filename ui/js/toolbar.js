@@ -61,7 +61,8 @@ export function initToolbar() {
 
 export function renderToolbar() {
   homeButton.hidden = !pref("show_home");
-  mediaButton.hidden = !(pref("ext_media_enabled") && pref("ext_media_pinned"));
+  // Без ключа сервиса загрузчик ничего не скачает — значку на панели не место.
+  mediaButton.hidden = !(state.services.media && pref("ext_media_enabled") && pref("ext_media_pinned"));
   renderDownloads(null);
 
   const tab = activeTab();

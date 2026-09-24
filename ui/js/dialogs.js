@@ -128,8 +128,10 @@ function later() {
 
 function show() {
   // Поверх другого попапа (меню, подсказки адресной строки) окно не встаёт:
-  // оно дождётся, пока тот закроется.
-  if (minimized || isPageHidden() || openPopupKey() !== null) return;
+  // оно дождётся, пока тот закроется. Сообщение над страницей ждать незачем —
+  // его окно страницы сменит.
+  const popup = openPopupKey();
+  if (minimized || isPageHidden() || (popup !== null && popup !== "toast:")) return;
   // Окно страницы встаёт над своей вкладкой, если она на экране: активной или
   // второй половиной разделённого экрана.
   const visible = [state.activeId, state.splitId].filter((id) => id !== null && !state.tabs.get(id)?.internal);

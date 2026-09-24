@@ -175,17 +175,17 @@ function buildRows(target, items, site) {
   }
 
   const source = target.source_url ?? "";
-  if ((target.kind === "video" || target.kind === "audio") && /^https?:/.test(source) && pref("ext_media_enabled")) {
+  const media = state.services.media && pref("ext_media_enabled");
+  if ((target.kind === "video" || target.kind === "audio") && /^https?:/.test(source) && media) {
     rows.unshift({ id: "media", label: "Скачать через загрузчик 190x4" }, { separator: true });
   }
 
   const selection = (target.selection ?? "").trim();
   if (selection && !target.editable) {
     const short = selection.length > 24 ? `${selection.slice(0, 24).trimEnd()}…` : selection;
-    const extra = [
-      { id: "search", label: `Найти «${short.replace(/\s+/g, " ")}»` },
-      { id: "translate", label: "Перевести выделенное" },
-    ];
+    const extra = [{ id: "search", label: `Найти «${short.replace(/\s+/g, " ")}»` }];
+    // Переводчик без ключа сервиса только сказал бы, что не настроен.
+    if (state.services.translate) extra.push({ id: "translate", label: "Перевести выделенное" });
     const copy = rows.findIndex((row) => row.name === "copy");
     rows.splice(copy >= 0 ? copy + 1 : 0, 0, ...extra);
   }

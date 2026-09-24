@@ -104,11 +104,12 @@ async function fitNow() {
       applied = await invoke("popup_resize", { height });
     } else {
       visible = true;
-      // Подсказки адресной строки и подсказка полноэкранного режима не
-      // забирают фокус: курсор остаётся в строке, Escape — у видео.
+      // Подсказки адресной строки, подсказка полноэкранного режима и
+      // сообщения над страницей не забирают фокус: курсор остаётся в строке,
+      // Escape — у видео, ввод — у страницы.
       applied = await invoke("popup_show", {
         height,
-        focus: !["suggest", "hint"].includes(current?.kind),
+        focus: !["suggest", "hint", "toast"].includes(current?.kind),
         seq: current?.seq ?? null,
       });
       root.querySelector("[autofocus]")?.focus();
@@ -231,6 +232,11 @@ const VIEWS = {
     root.append(node);
   },
 
+  /** Короткое сообщение над страницей, когда строки состояния нет. */
+  toast({ text = "" }) {
+    root.append(el("div", "hint-bubble hint-bubble--toast", String(text)));
+  },
+
   /** Пузырь загрузок под кнопкой на панели инструментов. */
   downloads() {
     const head = el("div", "panel-head");
@@ -273,10 +279,20 @@ const VIEWS = {
       for (const item of items) updateDownloadRow(rows.get(item.id), item);
     };
 
-    const off = model.onDownloads(() => requestAnimationFrame(draw));
+    // Прогресс приходит от каждой загрузки несколько раз в секунду — рисуем раз в кадр.
+    let frame = 0;
+    const off = model.onDownloads(() => {
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        draw();
+      });
+    });
     model.initDownloads().then(draw);
     draw();
-    return off;
+    return () => {
+      off();
+      cancelAnimationFrame(frame);
+    };
   },
 
   /** Пузырь обновления: версия, заметки к ней, установка с прогрессом. */

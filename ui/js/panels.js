@@ -61,6 +61,7 @@ function setPanel(name) {
 
 export async function renderPanel() {
   if (!current) return;
+  if (current === "shield") shieldShown = shieldSignature();
   const render = VIEWS[current];
   title.textContent = TITLES[current];
   const token = ++renderToken;
@@ -68,8 +69,29 @@ export async function renderPanel() {
   if (token === renderToken && current) body.replaceChildren(...nodes);
 }
 
-export function isLivePanel() {
-  return current === "shield";
+/** Что показывает панель блокировки: без перемен она не перестраивается. */
+let shieldShown = "";
+
+/**
+ * Панель блокировки живая: счётчики меняются, пока она открыта. Перерисовка
+ * интерфейса идёт на каждое событие любой вкладки, а панель собирается заново
+ * и спрашивает Rust о сайте — поэтому только когда её цифры сменились.
+ */
+export function refreshLivePanel() {
+  if (current === "shield" && shieldSignature() !== shieldShown) renderPanel();
+}
+
+function shieldSignature() {
+  const tab = activeTab();
+  return JSON.stringify([
+    tab?.id,
+    tab?.internal ? "" : tab?.url,
+    tab?.blocked ?? 0,
+    state.blockedTotal,
+    state.latencyMicros.toFixed(1),
+    state.adblockOn,
+    (pref("adblock_exempt_sites") ?? []).length,
+  ]);
 }
 
 export function isPanelOpen(name) {

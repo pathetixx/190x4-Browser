@@ -214,7 +214,7 @@ export function renderOmnibox() {
     tab ? state.passwordSites.has(tab.id) : false,
     state.passwordOffer?.tab ?? null,
     state.insecureHosts.size,
-    pref("translate_button"),
+    pref("translate_button") && state.services.translate,
   ]);
   syncStar(tab?.internal || isNewTabUrl(url) ? "" : url);
   if (signature === rendered) return;
@@ -267,7 +267,7 @@ export function renderOmnibox() {
   zoomValue.textContent = `${Math.round(zoom * 100)}%`;
 
   key.hidden = !(tab && (state.passwordSites.has(tab.id) || state.passwordOffer?.tab === tab.id));
-  translateButton.hidden = !pref("translate_button") || Boolean(tab?.internal);
+  translateButton.hidden = !(pref("translate_button") && state.services.translate) || Boolean(tab?.internal);
   star.hidden = Boolean(tab?.internal) || isNewTabUrl(url);
 }
 

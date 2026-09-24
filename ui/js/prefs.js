@@ -16,7 +16,7 @@ export const DEFAULTS = {
   home_page: "newtab",
   home_url: "",
   downloads_button: "auto",
-  statusbar: true,
+  statusbar: false,
   sidebar: false,
   startup: "restore",
   startup_pages: [],
