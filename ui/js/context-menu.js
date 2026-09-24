@@ -185,7 +185,9 @@ function buildRows(target, items, site) {
     const short = selection.length > 24 ? `${selection.slice(0, 24).trimEnd()}…` : selection;
     const extra = [{ id: "search", label: `Найти «${short.replace(/\s+/g, " ")}»` }];
     // Переводчик без ключа сервиса только сказал бы, что не настроен.
-    if (state.services.translate) extra.push({ id: "translate", label: "Перевести выделенное" });
+    if (state.services.translate && pref("ext_translate_enabled")) {
+      extra.push({ id: "translate", label: "Перевести выделенное", keys: "Ctrl+Shift+U" });
+    }
     const copy = rows.findIndex((row) => row.name === "copy");
     rows.splice(copy >= 0 ? copy + 1 : 0, 0, ...extra);
   }

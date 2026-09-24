@@ -22,7 +22,8 @@ import {
 } from "../dom.js";
 import * as model from "../downloads-model.js";
 import { ONCE, PERMISSIONS } from "../permissions.js";
-import { applyTheme, loadPrefs, onPref } from "../prefs.js";
+import { AUTO, LANGUAGES } from "../languages.js";
+import { applyTheme, loadPrefs, onPref, pref, setPref } from "../prefs.js";
 
 const root = document.getElementById("popup");
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
@@ -452,6 +453,11 @@ const VIEWS = {
   /** Расширение «Загрузчик видео 190x4». */
   media(payload) {
     return mediaView(payload);
+  },
+
+  /** Расширение «Переводчик 190x4»: любой текст, как в DeepL. */
+  translate(payload) {
+    return translatorView(payload);
   },
 
   /** «Сохранить пароль?» после входа на сайт. */
@@ -1370,6 +1376,264 @@ function mediaView({ url, services }) {
   model.initDownloads();
 
   return () => offMedia.then((off) => off?.());
+}
+
+/* ── Переводчик ────────────────────────────────────────────── */
+
+/**
+ * Черновик переводчика живёт, пока живёт окно попапа, — весь сеанс. Окно
+ * закрывается, как только уходит фокус (человек пошёл на страницу за
+ * следующим абзацем), и открытое снова продолжает с того же текста.
+ */
+const translator = { text: "", result: "", detected: null, error: null, busy: false, asked: "", token: 0, redraw: null };
+
+/** Пауза в наборе, после которой текст уходит переводиться сам. */
+const TRANSLATE_PAUSE_MS = 650;
+
+function translatorView({ text = "", services }) {
+  const max = Number(services?.translate_max) || 5000;
+  const source = () => (pref("translate_source") === AUTO || LANGUAGES.includes(pref("translate_source")) ? pref("translate_source") : AUTO);
+  const target = () => (LANGUAGES.includes(pref("translate_lang")) ? pref("translate_lang") : LANGUAGES[0]);
+
+  const head = el("div", "ext-head");
+  const logo = el("div", "ext-head__logo");
+  logo.append(icon("translate-filled", 20));
+  const name = el("div", "ext-head__name");
+  name.append(document.createTextNode("Переводчик"), el("small", null, "Расширение 190x4"));
+  head.append(
+    logo,
+    name,
+    iconButton("settings", "Настройки расширения", () => act("translate", "settings"), { size: 20, className: "btn btn--ghost btn--icon" })
+  );
+  root.append(head);
+
+  if (!services?.translate) {
+    const body = el("div", "translator__off");
+    body.append(el("div", "error-card", "Сервис перевода 190x4 не настроен на этом компьютере."));
+    root.append(body);
+    return null;
+  }
+
+  // ── Языки ──
+  const bar = el("div", "translator__langs");
+  const from = languageSelect([[AUTO, "Определить язык"], ...LANGUAGES.map((lang) => [lang, lang])], source(), "Язык оригинала");
+  const to = languageSelect(LANGUAGES.map((lang) => [lang, lang]), target(), "Язык перевода");
+  const swap = iconButton("swap-16", "Поменять языки местами", () => swapLanguages());
+  bar.append(from, swap, to);
+
+  // ── Оригинал ──
+  const input = el("textarea", "translator__input");
+  input.placeholder = "Введите или вставьте текст";
+  input.maxLength = max;
+  // Проверка орфографии подчёркивала бы весь текст не на языке системы.
+  input.spellcheck = false;
+  input.autofocus = true;
+  input.setAttribute("aria-label", "Текст для перевода");
+  const sourceFoot = el("div", "translator__foot");
+  const detectedNode = el("span", "translator__detected");
+  const counter = el("span", "translator__count");
+  const clear = iconButton("dismiss-16", "Очистить", () => {
+    input.value = "";
+    onInput();
+    input.focus();
+  });
+  sourceFoot.append(detectedNode, counter, clear);
+  const sourcePane = el("div", "translator__pane");
+  sourcePane.append(input, sourceFoot);
+
+  // ── Перевод ──
+  const output = el("div", "translator__output");
+  output.setAttribute("aria-live", "polite");
+  const resultFoot = el("div", "translator__foot");
+  const hint = el("span", "translator__hint", "Ctrl+Enter — перевести сразу");
+  const copy = textButton("Копировать", () => copyResult(), "btn btn--ghost btn--sm");
+  copy.prepend(icon("copy-16", 16));
+  resultFoot.append(hint, copy);
+  const resultPane = el("div", "translator__pane translator__pane--result");
+  resultPane.append(output, resultFoot);
+
+  root.append(bar, sourcePane, resultPane);
+
+  let timer = 0;
+  /** Что показано в поле перевода: окно подгоняется, только когда оно сменилось. */
+  let shown = null;
+  const draw = () => {
+    const length = input.value.length;
+    counter.textContent = `${length.toLocaleString("ru-RU")} / ${max.toLocaleString("ru-RU")}`;
+    counter.dataset.full = String(length >= max);
+    clear.hidden = !length;
+    detectedNode.textContent = source() === AUTO && translator.detected && translator.result ? `Определён: ${translator.detected}` : "";
+    const autoDetected = LANGUAGES.includes(translator.detected);
+    swap.disabled = source() === AUTO && !autoDetected;
+    swap.title = swap.disabled ? "Сначала переведите текст: язык оригинала ещё не определён" : "Поменять языки местами";
+
+    output.replaceChildren();
+    output.dataset.state = translator.error ? "error" : translator.busy && !translator.result ? "busy" : translator.result ? "done" : "empty";
+    if (translator.error) {
+      output.append(el("div", "error-card", translator.error));
+    } else if (translator.result) {
+      output.textContent = translator.result;
+    } else if (translator.busy) {
+      output.append(el("div", "spinner"));
+    } else {
+      output.append(el("span", "translator__placeholder", "Здесь появится перевод"));
+    }
+    output.dataset.stale = String(translator.busy && Boolean(translator.result));
+    copy.disabled = !translator.result || translator.busy;
+    const now = `${output.dataset.state}|${translator.error ?? ""}|${translator.result}`;
+    if (now !== shown) {
+      shown = now;
+      fit();
+    }
+  };
+  // Ответ может прийти, когда окно уже открыли заново: рисует его то окно,
+  // что сейчас на экране.
+  translator.redraw = draw;
+
+  /** Что уже переводили: тот же текст на ту же пару языков не отправляется снова. */
+  const request = () => [input.value.trim(), source(), target()].join("\u0000");
+
+  async function run() {
+    clearTimeout(timer);
+    const text = input.value.trim();
+    if (!text) return;
+    const asked = request();
+    if (asked === translator.asked && (translator.result || translator.busy)) return;
+    translator.asked = asked;
+    const token = ++translator.token;
+    translator.busy = true;
+    translator.error = null;
+    draw();
+    try {
+      const answer = await invoke("translate_text", {
+        text,
+        sourceLang: source(),
+        targetLang: target(),
+      });
+      if (token !== translator.token) return;
+      translator.result = String(answer?.result ?? "");
+      translator.detected = answer?.detected ?? null;
+    } catch (error) {
+      if (token !== translator.token) return;
+      translator.error = String(error?.message ?? error);
+      translator.asked = "";
+    } finally {
+      if (token === translator.token) {
+        translator.busy = false;
+        translator.redraw?.();
+      }
+    }
+  }
+
+  function onInput() {
+    translator.text = input.value;
+    clearTimeout(timer);
+    if (!input.value.trim()) {
+      // Стёрли всё — перевод прежнего текста больше не нужен.
+      translator.token += 1;
+      Object.assign(translator, { result: "", detected: null, error: null, busy: false, asked: "" });
+      draw();
+      return;
+    }
+    timer = setTimeout(run, TRANSLATE_PAUSE_MS);
+    draw();
+  }
+
+  async function swapLanguages() {
+    const detected = LANGUAGES.includes(translator.detected) ? translator.detected : null;
+    const nextTarget = source() === AUTO ? detected : source();
+    if (!nextTarget) return;
+    const nextSource = target();
+    // Перевод становится оригиналом, как в DeepL: так проверяют перевод обратно.
+    if (translator.result) {
+      input.value = translator.result.slice(0, max);
+      translator.text = input.value;
+    }
+    Object.assign(translator, { result: "", detected: null, error: null, asked: "" });
+    from.value = nextSource;
+    to.value = nextTarget;
+    await Promise.all([setPref("translate_source", nextSource), setPref("translate_lang", nextTarget)]).catch(() => {});
+    draw();
+    run();
+  }
+
+  async function copyResult() {
+    if (!translator.result) return;
+    const done = () => {
+      copy.lastChild.textContent = "Скопировано";
+      setTimeout(() => (copy.lastChild.textContent = "Копировать"), 1500);
+    };
+    try {
+      await navigator.clipboard.writeText(translator.result);
+      done();
+    } catch {
+      // Буфер обмена без разрешения недоступен — копируем выделением.
+      const range = document.createRange();
+      range.selectNodeContents(output);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (document.execCommand("copy")) done();
+      selection.removeAllRanges();
+    }
+  }
+
+  for (const select of [from, to]) {
+    select.addEventListener("change", async () => {
+      const isFrom = select === from;
+      const other = isFrom ? to : from;
+      const previous = isFrom ? source() : target();
+      const saves = [setPref(isFrom ? "translate_source" : "translate_lang", select.value)];
+      // Один язык с двух сторон — второй встаёт на место прежнего, как в DeepL.
+      if (select.value === other.value) {
+        other.value = previous !== AUTO ? previous : LANGUAGES.find((lang) => lang !== select.value);
+        saves.push(setPref(isFrom ? "translate_lang" : "translate_source", other.value));
+      }
+      await Promise.all(saves).catch(() => {});
+      translator.detected = null;
+      draw();
+      run();
+    });
+  }
+  input.addEventListener("input", onInput);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      translator.asked = "";
+      run();
+    }
+  });
+
+  // Выделенный на странице текст (меню страницы) — сразу в перевод, иначе
+  // продолжаем черновик.
+  const incoming = String(text ?? "").trim().slice(0, max);
+  if (incoming && incoming !== translator.text.trim()) {
+    translator.text = incoming;
+    translator.token += 1;
+    Object.assign(translator, { result: "", detected: null, error: null, busy: false, asked: "" });
+  }
+  input.value = translator.text;
+  input.setSelectionRange(input.value.length, input.value.length);
+  draw();
+  if (input.value.trim()) run();
+
+  return () => {
+    clearTimeout(timer);
+    if (translator.redraw === draw) translator.redraw = null;
+  };
+}
+
+function languageSelect(options, value, label) {
+  const select = el("select", "field translator__lang");
+  select.setAttribute("aria-label", label);
+  select.title = label;
+  for (const [id, text] of options) {
+    const option = el("option", null, text);
+    option.value = id;
+    select.append(option);
+  }
+  select.value = value;
+  return select;
 }
 
 /* ── Демо для ревью вёрстки без Rust ───────────────────────── */

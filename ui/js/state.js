@@ -34,7 +34,6 @@ export const state = {
   /// Доступность сервисов 190x4: без ключей интерфейс не должен обещать того,
   /// чего не будет.
   services: { translate: false, media: false },
-  translate: { text: "", result: "", detected: null, busy: false, error: null },
   /// Сайты с сохранёнными паролями: вкладка → { origin, accounts }.
   passwordSites: new Map(),
   /// Масштаб, который помнит сайт: хост → множитель.

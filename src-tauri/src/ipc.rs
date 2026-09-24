@@ -509,6 +509,27 @@ pub async fn tab_history(app: AppHandle, id: u32) -> Result<Value, String> {
     .map_err(text)?
 }
 
+/// Текст, выделенный на странице вкладки, — переводчику по Ctrl+Shift+U.
+#[tauri::command]
+pub async fn tab_selection(app: AppHandle, id: u32) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_tab(&app, id, move |host| {
+            host.with_tab(TabId(id), |tab| {
+                tab.selection(move |text| {
+                    let _ = tx.send(text);
+                })
+            })
+        })?
+        .ok_or_else(|| "вкладка ещё не готова".to_string())?
+        .map_err(text)?;
+        rx.recv_timeout(ENGINE_TIMEOUT)
+            .map_err(|_| "страница не ответила".to_string())
+    })
+    .await
+    .map_err(text)?
+}
+
 /// Перейти к записи истории вкладки из меню «Назад» или «Вперёд».
 #[tauri::command]
 pub fn tab_history_go(app: AppHandle, id: u32, entry: i64) -> Result<(), String> {
@@ -1957,7 +1978,8 @@ fn today() -> String {
 
 use browser190x4_services::{MediaInfo, Translation};
 
-/// Перевести текст через релей 190x4.
+/// Перевести текст через релей 190x4. `source_lang` — язык оригинала, без него
+/// (или `auto`) его определяет модель.
 ///
 /// Ключ модели живёт на сервере и в браузер не попадает — клиент знает только
 /// свой ключ доступа к релею, да и тот лежит в профиле, а не в коде.
@@ -1966,10 +1988,15 @@ pub async fn translate_text(
     state: State<'_, App>,
     text: String,
     target_lang: String,
+    source_lang: Option<String>,
 ) -> Result<Translation, String> {
     state
         .services
-        .translate(&text, &target_lang)
+        .translate(
+            &text,
+            source_lang.as_deref().unwrap_or("auto"),
+            &target_lang,
+        )
         .await
         .map_err(self::text)
 }
@@ -2152,6 +2179,7 @@ pub fn services_state(state: State<'_, App>) -> Value {
     let config = state.services.config();
     serde_json::json!({
         "translate": config.translate_enabled(),
+        "translate_max": browser190x4_services::TRANSLATE_MAX_TEXT,
         "media": config.media_enabled(),
     })
 }

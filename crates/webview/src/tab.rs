@@ -1089,6 +1089,7 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
         (true, true, false, 0x54) => "ctrl+shift+t",           // вернуть закрытую вкладку
         (true, true, false, 0x52) => "ctrl+shift+r",           // обновить без кэша
         (true, true, false, 0x44) => "ctrl+shift+d",           // загрузчик видео
+        (true, true, false, 0x55) => "ctrl+shift+u",           // переводчик
         (true, true, false, 0x42) => "ctrl+shift+b",           // панель закладок
         (true, true, false, 0x4F) => "ctrl+shift+o",           // диспетчер закладок
         (true, true, false, VK_DELETE) => "ctrl+shift+delete",
@@ -1787,6 +1788,28 @@ impl Tab {
             self.core.CallDevToolsProtocolMethod(
                 &HSTRING::from("Page.getNavigationHistory"),
                 &HSTRING::from("{}"),
+                &handler,
+            )
+        }
+    }
+
+    /// Текст, выделенный в документе вкладки (фреймы не в счёт), — для
+    /// переводчика по Ctrl+Shift+U. `done` получает пустую строку, если ничего
+    /// не выделено или скрипт не выполнился. Текст приходит от страницы: это
+    /// только данные для перевода.
+    pub fn selection(&self, done: impl FnOnce(String) + 'static) -> windows_core::Result<()> {
+        let handler =
+            webview2_com::ExecuteScriptCompletedHandler::create(Box::new(move |code, json| {
+                let text = code
+                    .ok()
+                    .and_then(|()| serde_json::from_str::<String>(&json).ok())
+                    .unwrap_or_default();
+                done(text);
+                Ok(())
+            }));
+        unsafe {
+            self.core.ExecuteScript(
+                windows_core::h!("String(getSelection() ?? '').slice(0, 10000)"),
                 &handler,
             )
         }

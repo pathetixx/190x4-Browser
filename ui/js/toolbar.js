@@ -21,6 +21,7 @@ import {
   openHistoryPage,
   openMediaExtension,
   openSettings,
+  openTranslator,
   tabAction,
 } from "./actions.js";
 
@@ -29,6 +30,7 @@ const RING = 81.68;
 const downloadsButton = document.getElementById("downloads-btn");
 const ring = document.getElementById("downloads-ring");
 const mediaButton = document.getElementById("ext-media");
+const translateButton = document.getElementById("ext-translate");
 const mediaBadge = document.getElementById("ext-media-badge");
 const homeButton = document.getElementById("nav-home");
 
@@ -47,6 +49,7 @@ export function initToolbar() {
 
   downloadsButton.addEventListener("click", () => openDownloadsBubble());
   mediaButton.addEventListener("click", () => openMediaExtension());
+  translateButton.addEventListener("click", () => openTranslator());
   document.getElementById("open-menu").addEventListener("click", (event) => showMainMenu(event.currentTarget));
 
   onDownloads((event) => {
@@ -61,8 +64,9 @@ export function initToolbar() {
 
 export function renderToolbar() {
   homeButton.hidden = !pref("show_home");
-  // Без ключа сервиса загрузчик ничего не скачает — значку на панели не место.
+  // Без ключа сервиса расширение ничего не сделает — значку на панели не место.
   mediaButton.hidden = !(state.services.media && pref("ext_media_enabled") && pref("ext_media_pinned"));
+  translateButton.hidden = !(state.services.translate && pref("ext_translate_enabled") && pref("ext_translate_pinned"));
   renderDownloads(null);
 
   const tab = activeTab();

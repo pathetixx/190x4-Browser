@@ -620,6 +620,134 @@ svg {
   }
 }
 
+/* ── Расширение: переводчик ────────────────────────────────── */
+
+/* Два поля, как в DeepL: оригинал сверху, перевод снизу. Высота полей
+   постоянная — окно не прыгает, пока печатают; длинный перевод прокручивается. */
+.popup--translate {
+  --translator-pane: 124px;
+}
+
+.translator__off {
+  padding: 12px 12px 2px;
+}
+
+.translator__langs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 8px;
+}
+
+.translator__lang {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+.translator__pane {
+  display: flex;
+  flex-direction: column;
+  margin: 0 12px;
+  border: 1px solid var(--line-2);
+  border-bottom-color: var(--line-3);
+  background: var(--ink-0);
+  transition: border-color 0.12s var(--ease-out), box-shadow 0.12s var(--ease-out);
+}
+
+.translator__pane:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: inset 0 -1px 0 var(--accent-bright), 0 0 0 3px var(--accent-soft);
+}
+
+/* Перевод — готовый результат: подложка темнее и кромка акцента слева. */
+.translator__pane--result {
+  margin: 8px 12px 12px;
+  border-color: var(--line-1);
+  background: var(--overlay-2);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+
+.translator__input,
+.translator__output {
+  padding: 10px 12px 4px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-hi);
+  user-select: text;
+}
+
+.translator__input {
+  display: block;
+  width: 100%;
+  height: var(--translator-pane);
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+}
+
+.translator__input::placeholder,
+.translator__placeholder {
+  color: var(--text-faint);
+}
+
+.translator__output {
+  min-height: var(--translator-pane);
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Старый перевод, пока идёт новый. */
+.translator__output[data-stale="true"] {
+  opacity: 0.5;
+}
+
+.translator__output .error-card {
+  margin: 0;
+}
+
+.translator__output .spinner {
+  margin: 38px auto 0;
+}
+
+.translator__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 4px 3px 12px;
+  font-size: 11.5px;
+  color: var(--text-lo);
+}
+
+.translator__detected,
+.translator__hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.translator__detected {
+  color: var(--accent-bright);
+}
+
+.translator__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.translator__count[data-full="true"] {
+  color: var(--err);
+}
+
 /* ── Обновление ────────────────────────────────────────────── */
 
 .update-notes {

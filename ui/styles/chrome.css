@@ -253,8 +253,8 @@ svg {
   transform: skewX(-20deg);
 }
 
-/* Разделитель отделяет значок расширения: без него он висел бы один. */
-.iconbtn--ext[hidden] + .toolbar__sep {
+/* Разделитель отделяет значки расширений: без них он висел бы один. */
+.toolbar__group:not(:has(.iconbtn--ext:not([hidden]))) .toolbar__sep {
   display: none;
 }
 

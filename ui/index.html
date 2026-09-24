@@ -92,9 +92,6 @@
               <svg width="16" height="16"><use href="./assets/icons.svg#i-shield-16" /></svg>
               <span id="omni-shield-count">0</span>
             </button>
-            <button class="omni__btn" id="omni-translate" title="Перевести выделенное">
-              <svg width="16" height="16"><use href="./assets/icons.svg#i-translate-16" /></svg>
-            </button>
             <button class="omni__btn" id="omni-star" title="Добавить в закладки (Ctrl+D)" aria-pressed="false">
               <svg width="16" height="16" class="when-off"><use href="./assets/icons.svg#i-star-16" /></svg>
               <svg width="16" height="16" class="when-on"><use href="./assets/icons.svg#i-star-16-filled" /></svg>
@@ -108,7 +105,10 @@
             <svg width="16" height="16" aria-hidden="true"><use href="./assets/icons.svg#i-private-16" /></svg>
             <span>Приватное</span>
           </span>
-          <button class="iconbtn iconbtn--ext" id="ext-media" title="Загрузчик видео 190x4 (Ctrl+Shift+D)" aria-label="Загрузчик видео">
+          <button class="iconbtn iconbtn--ext" id="ext-translate" title="Переводчик 190x4 (Ctrl+Shift+U)" aria-label="Переводчик" hidden>
+            <svg width="20" height="20"><use href="./assets/icons.svg#i-translate" /></svg>
+          </button>
+          <button class="iconbtn iconbtn--ext" id="ext-media" title="Загрузчик видео 190x4 (Ctrl+Shift+D)" aria-label="Загрузчик видео" hidden>
             <svg width="20" height="20"><use href="./assets/icons.svg#i-video" /></svg>
             <span class="iconbtn__badge" id="ext-media-badge" hidden></span>
           </button>
@@ -182,10 +182,6 @@
         <button class="rail__btn" data-panel="history" title="История (Ctrl+H)" aria-pressed="false">
           <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-history" /></svg>
           <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-history-filled" /></svg>
-        </button>
-        <button class="rail__btn" data-panel="translate" title="Переводчик" aria-pressed="false">
-          <svg width="20" height="20" class="when-off"><use href="./assets/icons.svg#i-translate" /></svg>
-          <svg width="20" height="20" class="when-on"><use href="./assets/icons.svg#i-translate-filled" /></svg>
         </button>
         <span class="rail__spacer"></span>
         <button class="rail__btn" id="rail-settings" title="Настройки" aria-pressed="false">

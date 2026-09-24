@@ -185,7 +185,7 @@ export async function invoke(command, args = {}) {
     case "downloads_list":
       return DOWNLOADS;
     case "services_state":
-      return { translate: true, media: true };
+      return { translate: true, translate_max: 5000, media: true };
     case "launch_take":
     case "launch_adopt_take":
       return [];
@@ -221,7 +221,10 @@ export async function invoke(command, args = {}) {
     case "about_info":
       return { version: "0.1.0", webview: "131.0.2903.70", profile: "C:\\Users\\me\\AppData\\Local\\190x4 Browser" };
     case "translate_text":
-      return { result: "Перевод приходит с сервера 190x4.", detected: "English" };
+      return {
+        result: "WebView2 использует один процесс браузера для всех вебвью, созданных из одного окружения.",
+        detected: args.sourceLang && args.sourceLang !== "auto" ? args.sourceLang : "English",
+      };
     case "media_probe":
       return {
         title: "Big Buck Bunny 60fps 4K — Official Blender Foundation Short Film",
@@ -352,6 +355,11 @@ export function popupDemo(kind) {
       return { folder: 6, title: "Работа" };
     case "media":
       return { url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", services: { media: true } };
+    case "translate":
+      return {
+        text: "WebView2 reuses one browser process for every webview created from the same environment.",
+        services: { translate: true, translate_max: 5000 },
+      };
     case "password":
       return { tab: 1, origin: "https://github.com", username: "pathetixx", update: false };
     case "accounts":

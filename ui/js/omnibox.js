@@ -26,7 +26,6 @@ const star = document.getElementById("omni-star");
 const key = document.getElementById("omni-key");
 const zoomChip = document.getElementById("omni-zoom");
 const zoomValue = document.getElementById("omni-zoom-value");
-const translateButton = document.getElementById("omni-translate");
 const popupsChip = document.getElementById("omni-popups");
 const popupsCount = document.getElementById("omni-popups-count");
 const suggest = document.getElementById("suggest");
@@ -124,7 +123,6 @@ export function initOmnibox() {
 
   star.addEventListener("click", bookmarkCurrent);
   shield.addEventListener("click", () => hooks.togglePanel("shield"));
-  translateButton.addEventListener("click", () => hooks.togglePanel("translate"));
   key.addEventListener("click", openAccounts);
   site.addEventListener("click", openSiteInfo);
   popupsChip.addEventListener("click", openBlockedPopups);
@@ -214,7 +212,6 @@ export function renderOmnibox() {
     tab ? state.passwordSites.has(tab.id) : false,
     state.passwordOffer?.tab ?? null,
     state.insecureHosts.size,
-    pref("translate_button") && state.services.translate,
   ]);
   syncStar(tab?.internal || isNewTabUrl(url) ? "" : url);
   if (signature === rendered) return;
@@ -267,7 +264,6 @@ export function renderOmnibox() {
   zoomValue.textContent = `${Math.round(zoom * 100)}%`;
 
   key.hidden = !(tab && (state.passwordSites.has(tab.id) || state.passwordOffer?.tab === tab.id));
-  translateButton.hidden = !(pref("translate_button") && state.services.translate) || Boolean(tab?.internal);
   star.hidden = Boolean(tab?.internal) || isNewTabUrl(url);
 }
 

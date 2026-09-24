@@ -194,6 +194,20 @@ export async function openMediaExtension(explicitUrl = null) {
   });
 }
 
+/**
+ * Расширение «Переводчик 190x4»: окно под значком на панели, куда вставляют
+ * любой текст. `text` — выделенное на странице, оно переводится сразу.
+ */
+export async function openTranslator(text = "") {
+  const pinned = document.getElementById("ext-translate");
+  const anchor = pinned && !pinned.hidden ? pinned : document.getElementById("open-menu");
+  await openPopup("translate", anchor, {
+    width: 440,
+    align: "end",
+    payload: { text: typeof text === "string" ? text : "", services: state.services },
+  });
+}
+
 export function openDownloadsBubble() {
   const button = document.getElementById("downloads-btn");
   button.hidden = false;

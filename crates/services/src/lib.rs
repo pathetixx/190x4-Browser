@@ -20,7 +20,7 @@ mod translate;
 
 pub use config::ServicesConfig;
 pub use media::{MediaFormat, MediaInfo, MediaProgress};
-pub use translate::Translation;
+pub use translate::{Translation, MAX_TEXT as TRANSLATE_MAX_TEXT};
 
 use std::time::Duration;
 

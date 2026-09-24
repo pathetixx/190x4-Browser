@@ -22,6 +22,7 @@ import {
   textButton,
 } from "../dom.js";
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
+import { LANGUAGES } from "../languages.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
 import { PERMISSIONS } from "../permissions.js";
@@ -52,7 +53,6 @@ const ENGINES = [
 /** Сайты, которым разрешено открывать приложения без вопроса (`src-tauri/src/external.rs`). */
 const EXTERNAL_APPS = "external_apps_allowed";
 
-const LANGUAGES = ["Русский", "English", "Deutsch", "Français", "Español", "Italiano", "Português", "Türkçe", "Українська", "Polski", "中文", "日本語", "한국어"];
 
 export function createSettingsPage(root, { section, onSection }) {
   let current = SECTIONS.some((s) => s.id === section) ? section : "appearance";
@@ -413,7 +413,7 @@ const BUILDERS = {
           switchSetting(
             "sidebar",
             "Боковая панель",
-            "Кнопки блокировки рекламы, закладок, истории и переводчика слева от страницы"
+            "Кнопки блокировки рекламы, закладок и истории слева от страницы"
           ),
           switchSetting("statusbar", "Строка состояния", "Состояние страницы, число блокировок и вкладок внизу окна"),
         ],
@@ -923,19 +923,17 @@ const BUILDERS = {
   },
 
   languages() {
-    const status = state.services.translate ? "подключён" : "не настроен";
     return [
       group(
         [
           setting(
             "Язык перевода",
-            "На этот язык переводится выделенный текст",
+            "На этот язык переводчик 190x4 переводит текст, пока в его окне не выбран другой",
             select(
               "translate_lang",
               LANGUAGES.map((name) => [name, name])
             )
           ),
-          switchSetting("translate_button", "Кнопка перевода в адресной строке", `Сервис перевода 190x4 ${status}`),
         ],
         { title: "Перевод" }
       ),
@@ -943,14 +941,31 @@ const BUILDERS = {
   },
 
   extensions() {
-    const mediaReady = state.services.media;
-    const translateReady = state.services.translate;
+    const ready = (on) => (on ? "подключён" : "не настроен");
     return [
       group(
         [
           setting(
+            "Переводчик 190x4",
+            `Переводит любой текст: вставьте его в окно расширения или выделите на странице и нажмите Ctrl+Shift+U. Сервис ${ready(state.services.translate)}.`,
+            toggle("ext_translate_enabled"),
+            { iconId: "translate" }
+          ),
+          switchSetting(
+            "ext_translate_pinned",
+            "Показывать значок на панели инструментов",
+            "Без значка переводчик открывается сочетанием Ctrl+Shift+U и из меню выделенного текста"
+          ),
+        ],
+        { title: "Установленные расширения" }
+      ),
+      // Каждое расширение — своей группой: иначе строка «Показывать значок»
+      // второго читалась бы как настройка первого.
+      group(
+        [
+          setting(
             "Загрузчик видео 190x4",
-            `Скачивает видео и звук с YouTube, VK, Rutube и других сайтов через сервер 190x4. Ctrl+Shift+D. Сервис ${mediaReady ? "подключён" : "не настроен"}.`,
+            `Скачивает видео и звук с YouTube, VK, Rutube и других сайтов через сервер 190x4. Ctrl+Shift+D. Сервис ${ready(state.services.media)}.`,
             toggle("ext_media_enabled"),
             { iconId: "video" }
           ),
@@ -959,19 +974,7 @@ const BUILDERS = {
             "Показывать значок на панели инструментов",
             "Без значка загрузчик открывается сочетанием Ctrl+Shift+D и из меню видео на странице"
           ),
-        ],
-        { title: "Установленные расширения" }
-      ),
-      group(
-        [
-          setting(
-            "Переводчик 190x4",
-            `Переводит выделенный текст из контекстного меню страницы. Сервис ${translateReady ? "подключён" : "не настроен"}.`,
-            toggle("translate_button"),
-            { iconId: "translate" }
-          ),
-        ],
-        { title: "Встроенные" }
+        ]
       ),
     ];
   },

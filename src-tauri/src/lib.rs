@@ -160,6 +160,7 @@ pub fn run() {
             ipc::tab_suspend,
             ipc::tab_history,
             ipc::tab_history_go,
+            ipc::tab_selection,
             ipc::app_quit,
             ipc::chrome_focus,
             ipc::adblock_stats,

@@ -12,8 +12,8 @@
 открытие ссылок и файлов из других программ (браузер по умолчанию), видео на
 весь экран и F11, блокировка всплывающих окон, поиск по странице, командная
 палитра, своё меню страницы, свои страницы ошибок, новая
-вкладка с плитками сайтов, погодой и монитором ресурсов браузера, перевод
-выделенного и расширение «Загрузчик видео» на сервисах 190x4. Сборка и тесты
+вкладка с плитками сайтов, погодой и монитором ресурсов браузера, расширения
+«Переводчик» и «Загрузчик видео» на сервисах 190x4. Сборка и тесты
 идут на Windows-машине разработчика.
 
 Замеры, на которых держатся решения, — в
@@ -43,10 +43,10 @@ python3 -m http.server 8777 --directory ui
 ```
 
 Дальше `http://127.0.0.1:8777/index.html`. Параметры для ревью вёрстки:
-`?demo=palette|find|settings|downloads|history-page|shield|bookmarks|history|translate`,
+`?demo=palette|find|settings|downloads|history-page|shield|bookmarks|history`,
 `&section=passwords` — раздел настроек, `?motion=off` — без анимаций (нужно для
 детерминированных скриншотов). Всплывающее окно отдельно:
-`popup.html?kind=menu|downloads|bookmark|bookmark-folder|group|media|password|accounts|site`.
+`popup.html?kind=menu|downloads|bookmark|bookmark-folder|group|media|translate|password|accounts|site`.
 
 ## Сервисы
 

@@ -11,6 +11,7 @@ import {
   openHistoryPage,
   openMediaExtension,
   openSettings,
+  openTranslator,
   tabAction,
   toggleBookmarksBar,
   zoom,
@@ -26,7 +27,7 @@ import { renderInternal } from "./internal/pages.js";
 import { initLayout, isPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
-import { initPanels, isPanelOpen, openPanel, refreshLivePanel, renderPanel, toggle } from "./panels.js";
+import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
 import { closePopup, initPopups, onPopupAction, openPopup, openPopupKey } from "./popups.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
@@ -119,7 +120,7 @@ initToolbar();
 initBookmarksBar();
 initDownloads();
 initUpdates();
-initContextMenu({ translate: translateText });
+initContextMenu({ translate: openTranslator });
 initDialogs();
 initFullscreen();
 
@@ -174,7 +175,15 @@ initPalette([
     run: () => openSettings("bookmarks"),
   },
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
-  { group: "Браузер", title: "Переводчик", icon: "translate", keywords: "перевод translate", run: () => openPanel("translate") },
+  {
+    group: "Браузер",
+    title: "Переводчик",
+    icon: "translate",
+    keys: "Ctrl+Shift+U",
+    keywords: "перевод translate deepl",
+    run: () => translateSelection(),
+    when: () => state.services.translate && pref("ext_translate_enabled"),
+  },
   { group: "Браузер", title: "Удалить данные о работе в браузере", icon: "broom", keys: "Ctrl+Shift+Del", run: () => openSettings("privacy") },
   { group: "Браузер", title: "Настройки", icon: "settings", run: () => openSettings() },
   { group: "Браузер", title: "Браузер по умолчанию", icon: "globe", keywords: "default основной", run: () => openSettings("default") },
@@ -529,23 +538,16 @@ function handlePageMessage({ id, source, payload }) {
 
 /* ── Переводчик ────────────────────────────────────────────── */
 
-async function translateText(text) {
-  const tr = state.translate;
-  Object.assign(tr, { text, result: "", detected: null, error: null, busy: true });
-
-  if (!isPanelOpen("translate")) openPanel("translate");
-  else renderPanel();
-
-  try {
-    const answer = await invoke("translate_text", { text, targetLang: pref("translate_lang") });
-    tr.result = answer.result;
-    tr.detected = answer.detected;
-  } catch (error) {
-    tr.error = String(error?.message ?? error);
-  } finally {
-    tr.busy = false;
-    renderPanel();
-  }
+/**
+ * Ctrl+Shift+U: переводчик, а в нём — текст, выделенный на странице, как в
+ * DeepL. Ничего не выделено — окно продолжает прежний черновик.
+ */
+async function translateSelection() {
+  if (!pref("ext_translate_enabled")) return;
+  const tab = activeTab();
+  const web = tab && !tab.internal && !tab.sleeping && !isNewTabUrl(tab.url);
+  const text = web ? await invoke("tab_selection", { id: tab.id }).catch(() => "") : "";
+  openTranslator(typeof text === "string" ? text : "").catch(() => {});
 }
 
 /* ── Пароли ────────────────────────────────────────────────── */
@@ -590,6 +592,9 @@ onPopupAction("site", ({ action }) => {
   if (action === "reload") tabAction("reload");
 });
 onPopupAction("media", ({ action }) => {
+  if (action === "settings") openSettings("extensions");
+});
+onPopupAction("translate", ({ action }) => {
   if (action === "settings") openSettings("extensions");
 });
 
@@ -724,6 +729,9 @@ function runShortcut(combo) {
       return true;
     case "ctrl+shift+d":
       openMediaExtension();
+      return true;
+    case "ctrl+shift+u":
+      translateSelection();
       return true;
     case "ctrl+r":
     case "f5":
@@ -948,7 +956,6 @@ invoke("services_state")
   .then((services) => {
     state.services = services;
     renderToolbar();
-    renderOmnibox();
   })
   .catch(() => {});
 
@@ -1081,7 +1088,7 @@ if (!isNative) {
   const mock = await import("./mock.js");
   mock.paintStage();
 
-  // ?demo=palette|find|settings|downloads|shield|bookmarks|history|translate
+  // ?demo=palette|find|settings|downloads|shield|bookmarks|history
   // ?section=passwords — раздел настроек; ?motion=off — без анимаций.
   const params = new URLSearchParams(location.search);
   if (params.get("motion") === "off") document.documentElement.dataset.motion = "off";

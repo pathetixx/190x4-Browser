@@ -1,5 +1,5 @@
 /**
- * Боковые панели: блокировка рекламы, закладки, история, переводчик.
+ * Боковые панели: блокировка рекламы, закладки, история.
  * Каждая отжимает страницу, а не накрывает её — нативную поверхность нельзя
  * прикрыть полупрозрачным слоем.
  */
@@ -7,7 +7,7 @@
 import { invoke } from "./bridge.js";
 import { clock, dayLabel, el, favicon, hostOf, icon, plural } from "./dom.js";
 import { syncDuring } from "./layout.js";
-import { pref, setPref } from "./prefs.js";
+import { pref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
 import { navigate, openHistoryPage, openSettings } from "./actions.js";
 
@@ -20,7 +20,6 @@ const TITLES = {
   shield: "Блокировка рекламы",
   bookmarks: "Закладки",
   history: "История",
-  translate: "Переводчик",
 };
 
 let current = null;
@@ -274,56 +273,6 @@ const VIEWS = {
     clear.append(icon("broom", 20), textBlock("Удалить данные о работе в браузере", "История, файлы cookie, кэш"));
     clear.addEventListener("click", () => openSettings("privacy"));
     out.push(clear);
-    return out;
-  },
-
-  translate() {
-    const out = [];
-    const tr = state.translate;
-
-    if (!state.services.translate) {
-      out.push(el("div", "pempty", "Переводчик недоступен: сервис 190x4 не настроен"));
-      return out;
-    }
-
-    const langCard = el("div", "pcard");
-    langCard.append(el("div", "pcard__kicker", "Язык перевода"));
-    const chips = el("div", "chips");
-    for (const name of ["Русский", "English", "Deutsch", "Français", "Español", "Türkçe", "中文"]) {
-      const chip = el("button", "chip", name);
-      chip.dataset.active = String(pref("translate_lang") === name);
-      chip.addEventListener("click", async () => {
-        await setPref("translate_lang", name);
-        renderPanel();
-      });
-      chips.append(chip);
-    }
-    langCard.append(chips);
-    out.push(langCard);
-
-    if (tr.busy) {
-      out.push(el("div", "pempty", "Переводим…"));
-      return out;
-    }
-    if (tr.error) {
-      const error = el("div", "pcard");
-      error.append(el("div", "pcard__kicker", "Не получилось"), el("div", "quote", tr.error));
-      out.push(error);
-      return out;
-    }
-    if (!tr.result) {
-      out.push(el("div", "pempty", "Выделите текст на странице и выберите «Перевести выделенное» в контекстном меню"));
-      return out;
-    }
-
-    const source = el("div", "pcard");
-    source.append(
-      el("div", "pcard__kicker", tr.detected ? `Оригинал · ${tr.detected}` : "Оригинал"),
-      el("div", "quote", tr.text)
-    );
-    const result = el("div", "pcard");
-    result.append(el("div", "pcard__kicker", `Перевод · ${pref("translate_lang")}`), el("div", "quote quote--accent", tr.result));
-    out.push(source, result);
     return out;
   },
 };
