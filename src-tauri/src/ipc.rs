@@ -368,8 +368,8 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
         "close_asked" => windows::close_asked(&app, window.label()).map_err(text),
         // Видео на весь экран и F11: окно занимает экран целиком, интерфейс
         // прячет сам chrome.
-        "fullscreen" => window.set_fullscreen(true).map_err(text),
-        "unfullscreen" => window.set_fullscreen(false).map_err(text),
+        "fullscreen" => windows::set_fullscreen(&app, window.label(), true).map_err(text),
+        "unfullscreen" => windows::set_fullscreen(&app, window.label(), false).map_err(text),
         other => Err(format!("неизвестное действие окна {other}")),
     }
 }

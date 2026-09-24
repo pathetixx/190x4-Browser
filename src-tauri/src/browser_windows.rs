@@ -160,7 +160,18 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
         return;
     };
     let maximized = window.is_maximized().unwrap_or(false);
-    if window.is_minimized().unwrap_or(false) {
+    // Свёрнутое и развёрнутое во весь экран окно своего размера не имеет: размер
+    // экрана, запомненный как размер окна, открыл бы его в следующий раз на весь
+    // монитор, но не развёрнутым. Так же и с мигом между развёрнутым окном и
+    // полным экраном: окно закрыли бы из видео — и оно вернулось бы не
+    // развёрнутым.
+    if window.is_minimized().unwrap_or(false)
+        || window.is_fullscreen().unwrap_or(false)
+        || FULLSCREEN_FROM_MAXIMIZED
+            .lock()
+            .iter()
+            .any(|other| other == label)
+    {
         return;
     }
     // У развёрнутого окна запоминаем прежний размер: иначе «свернуть в окно»
@@ -535,6 +546,7 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
 fn closing(app: &AppHandle, label: &str) {
     remember_geometry(app, label);
     save_geometry(app);
+    take_mark(&FULLSCREEN_FROM_MAXIMIZED, label);
     let state = app.state::<App>();
     let tabs = state.sessions.lock().remove(label).unwrap_or_default();
     let Some(session) = state.windows.session(label) else {
@@ -552,6 +564,84 @@ fn closing(app: &AppHandle, label: &str) {
         tracing::warn!(%err, "сессия окна не записана");
     }
 }
+
+/// Окна, которые ушли во весь экран развёрнутыми: после выхода — развернуть.
+static FULLSCREEN_FROM_MAXIMIZED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Окно во весь экран (видео, F11) и обратно.
+///
+/// Развёрнутое окно сначала перестаёт быть развёрнутым. tao у окна без рамки,
+/// пока оно развёрнуто, сжимает клиентскую область до рабочей области монитора
+/// (`WM_NCCALCSIZE`, чтобы не закрывать панель задач) — и во весь экран такое
+/// окно оставалось без полосы высотой с панель задач: снизу чёрная кромка
+/// окна, видео 16:9 — с полями по бокам. После выхода окно разворачивается
+/// снова. Анимацию Windows на это время выключаем: иначе между развёрнутым
+/// окном и полным экраном мелькал бы обычный размер.
+///
+/// Всё — на главном потоке одним заходом: там вызовы окна выполняются сразу и
+/// по порядку.
+pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(label) else {
+        return Ok(());
+    };
+    let label = label.to_string();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = (|| -> tauri::Result<()> {
+            if on {
+                if window.is_fullscreen()? {
+                    return Ok(());
+                }
+                window_transitions(&window, false);
+                if window.is_maximized()? {
+                    FULLSCREEN_FROM_MAXIMIZED.lock().push(label.clone());
+                    window.unmaximize()?;
+                }
+                window.set_fullscreen(true)
+            } else {
+                // Отметка снимается, когда окно уже развёрнуто: размер, который
+                // оно проходит по дороге, не запоминается.
+                let restore = FULLSCREEN_FROM_MAXIMIZED.lock().contains(&label);
+                window.set_fullscreen(false)?;
+                if restore {
+                    window.maximize()?;
+                }
+                take_mark(&FULLSCREEN_FROM_MAXIMIZED, &label);
+                // Анимация возвращается, когда окно уже встало на место.
+                let main = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let _ = handle.run_on_main_thread(move || window_transitions(&main, true));
+                });
+                Ok(())
+            }
+        })();
+        if let Err(err) = result {
+            tracing::warn!(%err, on, "полноэкранный режим не переключён");
+        }
+    })
+}
+
+/// Анимации Windows при смене размера окна (разворот, восстановление).
+#[cfg(windows)]
+fn window_transitions(window: &tauri::WebviewWindow, enabled: bool) {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+    use windows_core::BOOL;
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let disabled = BOOL::from(!enabled);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TRANSITIONS_FORCEDISABLED,
+            std::ptr::from_ref(&disabled).cast(),
+            std::mem::size_of_val(&disabled) as u32,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn window_transitions(_window: &tauri::WebviewWindow, _enabled: bool) {}
 
 /// Окна, которые закрывают, несмотря на идущие загрузки: человек подтвердил.
 static CLOSING_ANYWAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
