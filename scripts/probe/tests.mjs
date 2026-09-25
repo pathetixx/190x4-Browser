@@ -116,6 +116,71 @@ if (want("fullscreen")) {
   page.close();
 }
 
+// Развёрнутое и обычное окно после полного экрана стоят там же, где стояли.
+if (want("fullscreen-place")) {
+  await openTab(`${T}fs.html?place`);
+  await sleep(1500);
+  const page = await tabTarget("fs.html?place");
+  const place = () =>
+    ui(`const w = window.__TAURI__.window.getCurrentWindow();
+      const [p, s, ip, is, max] = await Promise.all([w.outerPosition(), w.outerSize(), w.innerPosition(), w.innerSize(), w.isMaximized()]);
+      return { outer: [p.x, p.y, s.width, s.height], inner: [ip.x, ip.y, is.width, is.height], max };`);
+  for (const maximized of [true, false]) {
+    await invoke("window_command", { action: maximized ? "maximize" : "unmaximize" });
+    await sleep(1000);
+    const before = await place();
+    await page.evaluate(`document.documentElement.requestFullscreen().then(() => true)`, { gesture: true });
+    await sleep(1500);
+    const during = await place();
+    const view = await page.evaluate(`[innerWidth * devicePixelRatio, innerHeight * devicePixelRatio].map(Math.round)`);
+    check(
+      view[0] === during.inner[2] && view[1] === during.inner[3],
+      `${maximized ? "развёрнутое" : "обычное"} окно во весь экран: страница размером с окно`,
+      `страница ${view.join("×")}, окно ${during.inner[2]}×${during.inner[3]}`
+    );
+    await page.evaluate(`document.exitFullscreen().then(() => true)`);
+    await sleep(1500);
+    const after = await place();
+    check(
+      JSON.stringify(after) === JSON.stringify(before),
+      `${maximized ? "развёрнутое" : "обычное"} окно вернулось на место после полного экрана`,
+      `до ${JSON.stringify(before)} · во весь экран ${JSON.stringify(during)} · после ${JSON.stringify(after)}`
+    );
+  }
+  page.close();
+}
+
+// Смайлы BetterTTV и FrankerFaceZ: что браузер присылает странице Twitch и
+// что оказывается в чате. Канал — второй аргумент после имени сценария.
+if (want("twitch")) {
+  const channel = process.argv[3] ?? "ohnepixel";
+  await openTab(`${T}opener.html?twitch`);
+  await sleep(1500);
+  const page = await tabTarget("opener.html?twitch");
+  await page.send("Page.enable");
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `window.__x4probe = [];
+      const hook = () => window.chrome && window.chrome.webview && window.chrome.webview.addEventListener("message", (e) =>
+        window.__x4probe.push([e.data && e.data.cmd, e.data && e.data.channel, e.data && Array.isArray(e.data.emotes) ? e.data.emotes.length : null, e.data && e.data.emotes === true]));
+      if (!hook()) document.addEventListener("DOMContentLoaded", hook, { once: true });`,
+  });
+  await page.send("Page.navigate", { url: `https://www.twitch.tv/${channel}` });
+  await sleep(25000);
+  const seen = await page.evaluate(`JSON.stringify({
+    messages: window.__x4probe,
+    fragments: document.querySelectorAll(".text-fragment").length,
+    marked: document.querySelectorAll("[data-x4-emotes]").length,
+    emotes: document.querySelectorAll(".x4-emote img").length,
+    loaded: [...document.querySelectorAll(".x4-emote img")].filter((i) => i.complete && i.naturalWidth > 0).length,
+    chat: Boolean(document.querySelector(".chat-scrollable-area__message-container, .video-chat__message-list-wrapper")),
+  })`);
+  const result = JSON.parse(seen);
+  check(result.messages.some(([cmd]) => cmd === "twitch_emotes"), "браузер прислал странице смайлы", JSON.stringify(result.messages));
+  check(result.chat && result.marked > 0, "скрипт видит чат и сообщения", `сообщений ${result.fragments}, просмотрено ${result.marked}`);
+  check(result.loaded > 0, "в чате есть картинки смайлов", `${result.emotes} смайлов, загружено ${result.loaded}`);
+  page.close();
+}
+
 if (want("omnibox")) {
   await openTab(`${T}opener.html?omni`);
   await sleep(1200);

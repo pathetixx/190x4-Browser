@@ -7,11 +7,13 @@
  * страница окажется не там, где её нарисовал интерфейс.
  */
 
-import { invokeQuiet } from "./bridge.js";
+import { invoke, invokeQuiet } from "./bridge.js";
 
 let stage = null;
 let last = "";
 let animating = 0;
+let retryTimer = 0;
+let retries = 0;
 
 export function initLayout(stageElement) {
   stage = stageElement;
@@ -24,6 +26,15 @@ export function initLayout(stageElement) {
 }
 
 export function sync() {
+  send(false);
+}
+
+/**
+ * `force` — отправить, даже если прямоугольник тот же, что ушёл последним:
+ * в конце перехода (полный экран, панель) страница должна стоять по итоговому
+ * прямоугольнику, что бы ни случилось с промежуточными.
+ */
+function send(force) {
   if (!stage) return;
   const rect = stage.getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
@@ -31,16 +42,28 @@ export function sync() {
   // Одинаковый прямоугольник шлём один раз: SetBounds на каждый кадр
   // ресайза заметно дёргает композитор страницы.
   const key = `${rect.x}|${rect.y}|${rect.width}|${rect.height}|${scale}`;
-  if (key === last) return;
+  if (key === last && !force) return;
   last = key;
 
-  invokeQuiet("layout_set", {
+  invoke("layout_set", {
     x: rect.x,
     y: rect.y,
     width: rect.width,
     height: rect.height,
     scale,
-  });
+  }).then(
+    () => {
+      retries = 0;
+    },
+    () => {
+      // Хост вкладок был занят (вызов движка внутри вложенного цикла
+      // сообщений) — прямоугольник не дошёл, и страница осталась бы прежнего
+      // размера. Пробуем снова.
+      if (last === key) last = "";
+      clearTimeout(retryTimer);
+      if (retries++ < 20) retryTimer = setTimeout(sync, 60);
+    }
+  );
 }
 
 /**
@@ -53,8 +76,9 @@ export function syncDuring(durationMs = 320) {
   if (animating) cancelAnimationFrame(animating);
 
   const step = () => {
-    sync();
-    animating = performance.now() < until ? requestAnimationFrame(step) : 0;
+    const done = performance.now() >= until;
+    send(done);
+    animating = done ? 0 : requestAnimationFrame(step);
   };
   animating = requestAnimationFrame(step);
 }
