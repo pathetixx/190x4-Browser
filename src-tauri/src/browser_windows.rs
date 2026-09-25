@@ -162,16 +162,8 @@ pub fn remember_geometry(app: &AppHandle, label: &str) {
     let maximized = window.is_maximized().unwrap_or(false);
     // Свёрнутое и развёрнутое во весь экран окно своего размера не имеет: размер
     // экрана, запомненный как размер окна, открыл бы его в следующий раз на весь
-    // монитор, но не развёрнутым. Так же и с мигом между развёрнутым окном и
-    // полным экраном: окно закрыли бы из видео — и оно вернулось бы не
-    // развёрнутым.
-    if window.is_minimized().unwrap_or(false)
-        || window.is_fullscreen().unwrap_or(false)
-        || FULLSCREEN_FROM_MAXIMIZED
-            .lock()
-            .iter()
-            .any(|other| other == label)
-    {
+    // монитор, но не развёрнутым.
+    if window.is_minimized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
         return;
     }
     // У развёрнутого окна запоминаем прежний размер: иначе «свернуть в окно»
@@ -328,6 +320,7 @@ fn create_window(app: &AppHandle, kind: WindowKind, opening: Opening) -> tauri::
     #[cfg(windows)]
     {
         crate::apply_window_icon(&window);
+        fullscreen_frame::install(&window);
         accept_files(app, &window);
         let handle = app.clone();
         let sink_label = label.clone();
@@ -546,7 +539,10 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
 fn closing(app: &AppHandle, label: &str) {
     remember_geometry(app, label);
     save_geometry(app);
-    take_mark(&FULLSCREEN_FROM_MAXIMIZED, label);
+    // Номер окна Windows отдаст следующему — отметка ему достаться не должна.
+    if let Some(window) = app.get_webview_window(label) {
+        fullscreen_frame::mark(&window, false);
+    }
     let state = app.state::<App>();
     let tabs = state.sessions.lock().remove(label).unwrap_or_default();
     let Some(session) = state.windows.session(label) else {
@@ -565,55 +561,34 @@ fn closing(app: &AppHandle, label: &str) {
     }
 }
 
-/// Окна, которые ушли во весь экран развёрнутыми: после выхода — развернуть.
-static FULLSCREEN_FROM_MAXIMIZED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
 /// Окно во весь экран (видео, F11) и обратно.
 ///
-/// Развёрнутое окно сначала перестаёт быть развёрнутым. tao у окна без рамки,
-/// пока оно развёрнуто, сжимает клиентскую область до рабочей области монитора
-/// (`WM_NCCALCSIZE`, чтобы не закрывать панель задач) — и во весь экран такое
-/// окно оставалось без полосы высотой с панель задач: снизу чёрная кромка
-/// окна, видео 16:9 — с полями по бокам. После выхода окно разворачивается
-/// снова. Анимацию Windows на это время выключаем: иначе между развёрнутым
-/// окном и полным экраном мелькал бы обычный размер.
-///
-/// Всё — на главном потоке одним заходом: там вызовы окна выполняются сразу и
-/// по порядку.
+/// Развёрнутое окно так и остаётся развёрнутым: tao у окна без рамки, пока оно
+/// развёрнуто, сжимает клиентскую область до рабочей области монитора
+/// (`WM_NCCALCSIZE`, чтобы не закрывать панель задач), и во весь экран снизу
+/// оставалась бы полоса высотой с панель задач. Эту поправку на время полного
+/// экрана снимает свой обработчик окна ([`fullscreen_frame`]), и окно встаёт на
+/// весь монитор одним шагом, без промежуточного обычного размера. При выходе tao
+/// возвращает окну прежнее место, развёрнутое — тоже одним шагом.
 pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(label) else {
         return Ok(());
     };
-    let label = label.to_string();
-    let handle = app.clone();
     app.run_on_main_thread(move || {
         let result = (|| -> tauri::Result<()> {
+            if window.is_fullscreen()? == on {
+                return Ok(());
+            }
+            // Отметка — до того, как tao начнёт двигать окно: рамку оно
+            // пересчитывает уже по дороге. Снимается после: возвращаясь на
+            // место, развёрнутое окно снова оставляет панель задач открытой.
             if on {
-                if window.is_fullscreen()? {
-                    return Ok(());
-                }
-                window_transitions(&window, false);
-                if window.is_maximized()? {
-                    FULLSCREEN_FROM_MAXIMIZED.lock().push(label.clone());
-                    window.unmaximize()?;
-                }
+                fullscreen_frame::mark(&window, true);
                 window.set_fullscreen(true)
             } else {
-                // Отметка снимается, когда окно уже развёрнуто: размер, который
-                // оно проходит по дороге, не запоминается.
-                let restore = FULLSCREEN_FROM_MAXIMIZED.lock().contains(&label);
-                window.set_fullscreen(false)?;
-                if restore {
-                    window.maximize()?;
-                }
-                take_mark(&FULLSCREEN_FROM_MAXIMIZED, &label);
-                // Анимация возвращается, когда окно уже встало на место.
-                let main = window.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let _ = handle.run_on_main_thread(move || window_transitions(&main, true));
-                });
-                Ok(())
+                let result = window.set_fullscreen(false);
+                fullscreen_frame::mark(&window, false);
+                result
             }
         })();
         if let Err(err) = result {
@@ -622,26 +597,66 @@ pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<(
     })
 }
 
-/// Анимации Windows при смене размера окна (разворот, восстановление).
+/// Рамка окна во весь экран: клиентская область — весь монитор.
+///
+/// Обработчик ставится поверх обработчика tao (`SetWindowSubclass` вызывает
+/// последний поставленный первым) и перехватывает только `WM_NCCALCSIZE` окна
+/// с отметкой: предложенный прямоугольник окна остаётся клиентской областью
+/// целиком. Остальные сообщения и окна без отметки идут в tao как есть.
 #[cfg(windows)]
-fn window_transitions(window: &tauri::WebviewWindow, enabled: bool) {
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
-    use windows_core::BOOL;
+mod fullscreen_frame {
+    use parking_lot::Mutex;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::WM_NCCALCSIZE;
 
-    let Ok(hwnd) = window.hwnd() else { return };
-    let disabled = BOOL::from(!enabled);
-    unsafe {
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_TRANSITIONS_FORCEDISABLED,
-            std::ptr::from_ref(&disabled).cast(),
-            std::mem::size_of_val(&disabled) as u32,
-        );
+    const SUBCLASS_ID: usize = 0x1904;
+
+    /// Окна во весь экран — по HWND. Их одно-два, список короче любого множества.
+    static MARKED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+    /// Поставить обработчик окну браузера. Один раз при создании окна.
+    pub fn install(window: &tauri::WebviewWindow) {
+        let Ok(hwnd) = window.hwnd() else { return };
+        let installed = unsafe { SetWindowSubclass(hwnd, Some(procedure), SUBCLASS_ID, 0) };
+        if !installed.as_bool() {
+            tracing::warn!("обработчик полноэкранной рамки не поставлен");
+        }
+    }
+
+    pub fn mark(window: &tauri::WebviewWindow, on: bool) {
+        let Ok(hwnd) = window.hwnd() else { return };
+        let key = hwnd.0 as isize;
+        let mut marked = MARKED.lock();
+        marked.retain(|other| *other != key);
+        if on {
+            marked.push(key);
+        }
+    }
+
+    unsafe extern "system" fn procedure(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        // При `wparam` = TRUE в `lparam` лежит NCCALCSIZE_PARAMS, и его первый
+        // прямоугольник — будущее место окна. Вернуть 0, не трогая его, —
+        // значит «клиентская область совпадает с окном».
+        if message == WM_NCCALCSIZE && wparam.0 != 0 && MARKED.lock().contains(&(hwnd.0 as isize)) {
+            return LRESULT(0);
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
     }
 }
 
 #[cfg(not(windows))]
-fn window_transitions(_window: &tauri::WebviewWindow, _enabled: bool) {}
+mod fullscreen_frame {
+    pub fn install(_window: &tauri::WebviewWindow) {}
+    pub fn mark(_window: &tauri::WebviewWindow, _on: bool) {}
+}
 
 /// Окна, которые закрывают, несмотря на идущие загрузки: человек подтвердил.
 static CLOSING_ANYWAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
