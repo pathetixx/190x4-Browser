@@ -70,21 +70,25 @@ static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
 /// документе и фрейме; настройки подставляются вместо `__X4_DRM__`.
 const DRM_SCRIPT: &str = include_str!("inject/drm.js");
 
-/// Настройки Widevine для скрипта, JSON: `{"widevine": bool, "sites": [...]}`.
-/// Общие на все окна: новые вкладки берут их при создании, открытые — через
+/// Настройки защищённого видео для скрипта, JSON:
+/// `{"widevine": bool, "playready": bool, "sites": [...]}`. Общие на все окна:
+/// новые вкладки берут их при создании, открытые — через
 /// [`crate::TabHost::apply_drm`].
 static DRM_CONFIG: parking_lot::RwLock<String> = parking_lot::RwLock::new(String::new());
 
-/// Widevine включён вообще и выключен для этих сайтов (домены с поддоменами).
-pub fn set_drm_config(widevine: bool, sites: &[String]) {
-    let config = serde_json::json!({ "widevine": widevine, "sites": sites }).to_string();
+/// Widevine включён вообще и выключен для этих сайтов (домены с поддоменами);
+/// `playready` — показывать сайтам PlayReady и там, где Widevine есть.
+pub fn set_drm_config(widevine: bool, playready: bool, sites: &[String]) {
+    let config =
+        serde_json::json!({ "widevine": widevine, "playready": playready, "sites": sites })
+            .to_string();
     *DRM_CONFIG.write() = config;
 }
 
 fn drm_script() -> String {
     let config = DRM_CONFIG.read();
     let config = if config.is_empty() {
-        r#"{"widevine":true,"sites":[]}"#
+        r#"{"widevine":true,"playready":false,"sites":[]}"#
     } else {
         config.as_str()
     };
@@ -2580,11 +2584,12 @@ mod tests {
 
     #[test]
     fn drm_script_gets_its_settings() {
-        set_drm_config(false, &["onlyfans.com".to_string()]);
+        set_drm_config(false, true, &["onlyfans.com".to_string()]);
         let script = drm_script();
         assert!(!script.contains("__X4_DRM__"));
         assert!(script.contains(r#""sites":["onlyfans.com"]"#));
         assert!(script.contains(r#""widevine":false"#));
+        assert!(script.contains(r#""playready":true"#));
     }
 
     /// Движок обрезает скрипт на нулевом символе, прочие управляющие символы в

@@ -1,17 +1,18 @@
-//! Защищённое видео (DRM): Widevine для сайтов и что делать, когда видео не
-//! пошло.
+//! Защищённое видео (DRM): какой модуль защиты видят сайты и что делать, когда
+//! видео не пошло.
 //!
-//! В движке два модуля защиты: Widevine от Google и PlayReady от Microsoft.
-//! Движок для сайтов — Edge, и сайт сам выбирает, каким модулем брать лицензию.
-//! Бывает, что Widevine лицензию не получает (сервер лицензий не верит
-//! встроенному движку) — тогда видео грузится, но стоит на нуле. Тот же сайт с
-//! PlayReady играет.
+//! В движке два модуля защиты: Widevine от Google и PlayReady от Microsoft, и
+//! сайт сам выбирает, каким брать лицензию. PlayReady во встроенном движке
+//! работает хуже: видео стоит на нуле, идёт в худшем качестве или с
+//! артефактами. Поэтому, как в Chrome, сайтам по умолчанию виден только
+//! Widevine; PlayReady — только там, где Widevine выключен (`drm_widevine`,
+//! `drm_widevine_off_sites`), или везде, если это разрешено (`drm_playready`).
 //!
 //! Скрипт страницы (`crates/webview/src/inject/drm.js`) замечает, на каком шаге
-//! видео застряло, и сообщает сюда. Если застрял Widevine, браузер выключает его
-//! для этого сайта (`drm_widevine_off_sites`) и загружает страницу заново —
-//! сайт берёт PlayReady. Иначе — говорит человеку, что случилось. Widevine можно
-//! выключить и совсем (`drm_widevine`).
+//! видео застряло, и сообщает сюда. Если застрял Widevine или сайт спрашивал
+//! только спрятанный PlayReady, браузер переключает сайт на PlayReady
+//! (`drm_widevine_off_sites`) и загружает страницу заново. Иначе — говорит
+//! человеку, что случилось.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -34,6 +35,9 @@ enum PageEvent {
         /// Widevine на этой странице уже был спрятан.
         #[serde(default)]
         hidden: bool,
+        /// Какие модули спрашивала страница.
+        #[serde(default)]
+        asked: Vec<String>,
     },
 }
 
@@ -45,6 +49,7 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
         stage,
         detail,
         hidden,
+        asked,
     }) = serde_json::from_str::<PageEvent>(payload)
     else {
         return false;
@@ -66,6 +71,13 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
             return;
         };
         tracing::warn!(%site, %system, %stage, %detail, hidden, "защищённое видео не пошло");
+        // Сайт спрашивал только PlayReady, а он спрятан: для движка это то же,
+        // что застрявший Widevine.
+        let (system, stage) = if system == "none" && asked.iter().any(|name| name == "playready") {
+            ("widevine".to_string(), "playready-only".to_string())
+        } else {
+            (system, stage)
+        };
         on_problem(&app, &label, tab, &site, &system, &stage, hidden);
     });
     true
@@ -139,7 +151,9 @@ fn reason(stage: &str) -> &'static str {
         "no-license" => "сайт так и не выдал лицензию",
         "no-keys" => "ключи к видео не подошли",
         "keys" => "модуль защиты не принял ключи",
+        "request" => "модуль защиты не принял запрос ключа",
         "no-request" | "no-keys-system" => "плеер не запросил ключ",
+        "playready-only" => "сайт работает только с PlayReady",
         "media" => "видео не расшифровалось",
         _ => "видео не расшифровывается",
     }
@@ -156,7 +170,8 @@ pub fn off_sites(store: &Store) -> Vec<String> {
     }
 }
 
-/// Настройки Widevine — движку для новых вкладок и открытым вкладкам всех окон.
+/// Настройки защищённого видео — движку для новых вкладок и открытым вкладкам
+/// всех окон.
 pub fn apply(app: &AppHandle) {
     let state = app.state::<App>();
     init(&state.store);
@@ -165,10 +180,11 @@ pub fn apply(app: &AppHandle) {
     }
 }
 
-/// Настройки Widevine для вкладок, которые ещё откроются.
+/// Настройки защищённого видео для вкладок, которые ещё откроются.
 pub fn init(store: &Store) {
     browser190x4_webview::tab::set_drm_config(
         store.setting_bool("drm_widevine", true),
+        store.setting_bool("drm_playready", false),
         &off_sites(store),
     );
 }
