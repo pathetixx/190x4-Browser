@@ -58,6 +58,11 @@ export const DEFAULTS = {
   zoom_sites: {},
   smartscreen: true,
   media_autoplay: false,
+  // Защищённое видео: Widevine вообще, переход на PlayReady, если Widevine не
+  // справился, и сайты, где он уже выключен. Те же ключи читает src-tauri/src/drm.rs.
+  drm_widevine: true,
+  drm_fallback: true,
+  drm_widevine_off_sites: [],
   tabs_sleep: "60",
 };
 

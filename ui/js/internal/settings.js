@@ -884,9 +884,41 @@ const BUILDERS = {
       { title: "Безопасность" }
     );
 
+    // Сайты без Widevine браузер добавляет сам, когда видео через него не
+    // пошло (src-tauri/src/drm.rs); здесь их можно вернуть.
+    const drmSites = pref("drm_widevine_off_sites") ?? [];
+    const drmGroup = group(
+      [
+        switchSetting(
+          "drm_widevine",
+          "Воспроизводить защищённое видео через Widevine",
+          "Модуль защиты Google, по которому кинотеатры и платные сервисы выдают лицензию на видео. Без него сайты, которые это умеют, берут PlayReady от Microsoft. Действует со следующей загрузки страницы"
+        ),
+        switchSetting(
+          "drm_fallback",
+          "Переключать сайт на PlayReady, если Widevine не справился",
+          "Защищённое видео загрузилось, но не начинает играть — браузер выключает Widevine для этого сайта и открывает страницу заново"
+        ),
+        ...drmSites.map((site) =>
+          setting(
+            site,
+            "Widevine выключен — сайт берёт PlayReady",
+            iconButton("delete-16", "Вернуть сайту Widevine", () =>
+              setPref(
+                "drm_widevine_off_sites",
+                drmSites.filter((entry) => entry !== site)
+              )
+            )
+          )
+        ),
+      ],
+      { title: "Защищённое видео (DRM)" }
+    );
+
     return [
       group([clear], { title: "Данные браузера" }),
       safetyGroup,
+      drmGroup,
       permissionsGroup,
       popupsGroup,
       appsGroup,

@@ -473,6 +473,10 @@ function markInsecure(host) {
   renderOmnibox();
 }
 listen("insecure-host", (host) => markInsecure(host));
+// Сообщение браузера о вкладке (защищённое видео не пошло): только если она на экране.
+listen("notice", ({ id, text }) => {
+  if (id === state.activeId && typeof text === "string") toast(text);
+});
 
 /** Один ли это документ: сравниваем адрес без якоря. */
 function sameDocument(a, b) {

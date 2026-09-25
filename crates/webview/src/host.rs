@@ -915,6 +915,14 @@ impl TabHost {
         }
     }
 
+    /// Новые настройки защищённого видео (`tab::set_drm_config`) — всем вкладкам
+    /// окна. Страницы получают их со следующей загрузки.
+    pub fn apply_drm(&self) {
+        for tab in self.inner.borrow().tabs.values() {
+            tab.apply_drm();
+        }
+    }
+
     /// Сколько загрузок оборвёт закрытие этого окна.
     pub fn active_downloads(&self) -> usize {
         self.inner.borrow().downloads.active()

@@ -60,6 +60,32 @@ static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Защищённое видео (EME): прячет Widevine от сайтов, где он выключен, и
+/// сообщает браузеру, что видео не пошло (`src-tauri/src/drm.rs`). В каждом
+/// документе и фрейме; настройки подставляются вместо `__X4_DRM__`.
+const DRM_SCRIPT: &str = include_str!("inject/drm.js");
+
+/// Настройки Widevine для скрипта, JSON: `{"widevine": bool, "sites": [...]}`.
+/// Общие на все окна: новые вкладки берут их при создании, открытые — через
+/// [`crate::TabHost::apply_drm`].
+static DRM_CONFIG: parking_lot::RwLock<String> = parking_lot::RwLock::new(String::new());
+
+/// Widevine включён вообще и выключен для этих сайтов (домены с поддоменами).
+pub fn set_drm_config(widevine: bool, sites: &[String]) {
+    let config = serde_json::json!({ "widevine": widevine, "sites": sites }).to_string();
+    *DRM_CONFIG.write() = config;
+}
+
+fn drm_script() -> String {
+    let config = DRM_CONFIG.read();
+    let config = if config.is_empty() {
+        r#"{"widevine":true,"sites":[]}"#
+    } else {
+        config.as_str()
+    };
+    engine_script(DRM_SCRIPT).replace("__X4_DRM__", config)
+}
+
 fn engine_script(source: &str) -> String {
     source
         .lines()
@@ -413,6 +439,17 @@ pub struct Tab {
     favicon: Rc<RefCell<String>>,
     /// Вкладка приватного окна: её значок интерфейс не может брать по адресу.
     private: bool,
+    /// Встроенный скрипт защищённого видео: при смене настроек его снимают и
+    /// встраивают заново.
+    drm_script: Rc<RefCell<DrmSlot>>,
+}
+
+/// Скрипт защищённого видео во вкладке: его номер у движка и номер
+/// встраивания. Ответ движка о прежнем встраивании нового не перепишет.
+#[derive(Default)]
+struct DrmSlot {
+    id: Option<String>,
+    generation: u64,
 }
 
 /// Цвет страниц браузера (новая вкладка) под тему, `[r, g, b]`. Им же
@@ -1127,7 +1164,12 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
 }
 
 /// Скрипты, которые движок вставляет в каждый документ до его собственных.
-fn inject_scripts(core: &ICoreWebView2, ready: Rc<ScriptsReady>) -> windows_core::Result<()> {
+fn inject_scripts(
+    core: &ICoreWebView2,
+    ready: Rc<ScriptsReady>,
+    drm: Rc<RefCell<DrmSlot>>,
+) -> windows_core::Result<()> {
+    add_drm_script(core, drm)?;
     unsafe {
         for (name, script) in SITE_ENGINE.iter() {
             let name = *name;
@@ -1151,6 +1193,43 @@ fn inject_scripts(core: &ICoreWebView2, ready: Rc<ScriptsReady>) -> windows_core
                         tracing::warn!(%err, "скрипт паролей не встроен");
                     }
                     ready.finish();
+                    Ok(())
+                },
+            )),
+        )
+    }
+}
+
+/// Встроить скрипт защищённого видео с текущими настройками и запомнить его
+/// номер. Прежний скрипт вкладки снимается.
+fn add_drm_script(core: &ICoreWebView2, slot: Rc<RefCell<DrmSlot>>) -> windows_core::Result<()> {
+    let (previous, generation) = {
+        let mut slot = slot.borrow_mut();
+        slot.generation += 1;
+        (slot.id.take(), slot.generation)
+    };
+    if let Some(id) = previous {
+        unsafe { core.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id))? };
+    }
+    let current = slot.clone();
+    let owner = core.clone();
+    unsafe {
+        core.AddScriptToExecuteOnDocumentCreated(
+            &HSTRING::from(drm_script()),
+            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                move |code, id| {
+                    if let Err(err) = code {
+                        tracing::warn!(%err, "скрипт защищённого видео не встроен");
+                        return Ok(());
+                    }
+                    // Пока встраивали, настройки сменились ещё раз: этот скрипт
+                    // уже устарел, его место займёт следующий.
+                    let mut slot = current.borrow_mut();
+                    if slot.generation != generation {
+                        let _ = owner.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                        return Ok(());
+                    }
+                    slot.id = Some(id);
                     Ok(())
                 },
             )),
@@ -1236,7 +1315,8 @@ impl Tab {
         }
 
         configure(&core, true)?;
-        inject_scripts(&core, scripts.clone())?;
+        let drm_script = Rc::new(RefCell::new(DrmSlot::default()));
+        inject_scripts(&core, scripts.clone(), drm_script.clone())?;
         filter::install(
             &core,
             env,
@@ -1280,6 +1360,7 @@ impl Tab {
             cert: Rc::new(CertState::default()),
             favicon: Rc::default(),
             private,
+            drm_script,
         };
         tab.wire_events(sink.clone(), popups)?;
         tab.wire_certificates();
@@ -1754,6 +1835,19 @@ impl Tab {
         if let Err(err) = configure(&self.core, true) {
             tracing::debug!(%err, "SmartScreen вкладки не переключён");
         }
+    }
+
+    /// Скрипт защищённого видео с новыми настройками (`set_drm_config`).
+    /// Действует со следующей загрузки страницы.
+    pub(crate) fn apply_drm(&self) {
+        if let Err(err) = add_drm_script(&self.core, self.drm_script.clone()) {
+            tracing::debug!(%err, "скрипт защищённого видео не обновлён");
+        }
+    }
+
+    /// Адрес документа вкладки.
+    pub fn url(&self) -> String {
+        self.source.borrow().clone()
     }
 
     /// Усыпить вкладку в фоне, как спящие вкладки Edge: страница замирает
@@ -2400,14 +2494,24 @@ mod tests {
         assert!(engine_script(PASSWORDS_SCRIPT).contains("password_submit"));
     }
 
+    #[test]
+    fn drm_script_gets_its_settings() {
+        set_drm_config(false, &["onlyfans.com".to_string()]);
+        let script = drm_script();
+        assert!(!script.contains("__X4_DRM__"));
+        assert!(script.contains(r#""sites":["onlyfans.com"]"#));
+        assert!(script.contains(r#""widevine":false"#));
+    }
+
     /// Движок обрезает скрипт на нулевом символе, прочие управляющие символы в
     /// тексте тоже не нужны — в строках для них есть `\u` и `\n`. Проверяется
     /// то, что уходит в движок: перевод строки Windows (`\r\n` после checkout с
     /// autocrlf) `engine_script` уже убирает.
     #[test]
     fn password_script_has_no_control_characters() {
-        for script in
-            std::iter::once(PASSWORDS_SCRIPT).chain(SITE_SCRIPTS.map(|(_, script)| script))
+        for script in [PASSWORDS_SCRIPT, DRM_SCRIPT]
+            .into_iter()
+            .chain(SITE_SCRIPTS.map(|(_, script)| script))
         {
             let bad = engine_script(script)
                 .char_indices()

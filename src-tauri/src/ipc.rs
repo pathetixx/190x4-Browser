@@ -1014,6 +1014,7 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
                 let _ = with_host(app, &label, |host| host.apply_reputation());
             }
         }
+        "drm_widevine" | "drm_widevine_off_sites" => crate::drm::apply(app),
         "search_engine" => {
             *state.engine.write() = state
                 .store

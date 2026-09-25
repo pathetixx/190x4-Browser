@@ -12,6 +12,7 @@
 mod autoscroll;
 mod browser_windows;
 mod default_browser;
+mod drm;
 mod external;
 mod filters;
 mod hello;
@@ -92,6 +93,8 @@ pub fn run() {
     init_browser_args(&store);
     #[cfg(windows)]
     browser190x4_webview::tab::set_reputation_checking(store.setting_bool("smartscreen", true));
+    #[cfg(windows)]
+    drm::init(&store);
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
@@ -344,11 +347,13 @@ pub(crate) fn route_event(
             if payload.len() > MAX_PAGE_MESSAGE {
                 return;
             }
-            // Фреймам доступны только менеджер паролей и SponsorBlock (плеер
-            // YouTube, встроенный в чужую страницу): новая вкладка и chrome
-            // принимают сообщения лишь от документа вкладки.
+            // Фреймам доступны только менеджер паролей, SponsorBlock (плеер
+            // YouTube, встроенный в чужую страницу) и защищённое видео (плеер
+            // кинотеатра во фрейме): новая вкладка и chrome принимают
+            // сообщения лишь от документа вкладки.
             if passwords::handle_message(app, label, *id, *frame, source, payload)
                 || sponsorblock::handle_message(app, *id, *frame, source, payload)
+                || drm::handle_message(app, label, *id, source, payload)
                 || autoscroll::handle_message(app, *id, *frame, source, payload)
                 || frame.is_some()
                 || newtab::handle_message(app, *id, source, payload)

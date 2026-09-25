@@ -546,6 +546,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "browser190x4-adblock",
+ "parking_lot",
  "serde",
  "serde_json",
  "tracing",
