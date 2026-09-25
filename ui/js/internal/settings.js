@@ -57,7 +57,6 @@ const SECTIONS = [
   { id: "privacy", title: "Конфиденциальность и безопасность", nav: "Конфиденциальность", icon: "lock-shield" },
   { id: "downloads", title: "Загрузки", icon: "download" },
   { id: "performance", title: "Производительность", icon: "gauge" },
-  { id: "languages", title: "Языки", icon: "language" },
   { id: "extensions", title: "Расширения", icon: "puzzle" },
   { id: "about", title: "О браузере 190x4", icon: "info" },
 ];
@@ -941,24 +940,6 @@ const BUILDERS = {
     ];
   },
 
-  languages() {
-    return [
-      group(
-        [
-          setting(
-            "Язык перевода",
-            "На этот язык переводчик 190x4 переводит текст, пока в его окне не выбран другой",
-            select(
-              "translate_lang",
-              LANGUAGES.map((name) => [name, name])
-            )
-          ),
-        ],
-        { title: "Перевод" }
-      ),
-    ];
-  },
-
   extensions() {
     const ready = (on) => (on ? "подключён" : "не настроен");
     return [
@@ -974,6 +955,14 @@ const BUILDERS = {
             "ext_translate_pinned",
             "Показывать значок на панели инструментов",
             "Без значка переводчик открывается сочетанием Ctrl+Shift+U и из меню выделенного текста"
+          ),
+          setting(
+            "Язык перевода",
+            "На этот язык переводчик переводит текст, пока в его окне не выбран другой",
+            select(
+              "translate_lang",
+              LANGUAGES.map((name) => [name, name])
+            )
           ),
         ],
         { title: "Установленные расширения" }
