@@ -213,6 +213,7 @@ const PINNED_BUTTONS = {
   translate: "ext-translate",
   media: "ext-media",
   sponsorblock: "ext-sponsorblock",
+  twitch: "ext-twitch",
   autoscroll: "ext-autoscroll",
 };
 

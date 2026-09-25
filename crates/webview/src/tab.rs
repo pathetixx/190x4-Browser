@@ -48,10 +48,13 @@ static PASSWORDS_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(PASSW
 /// * SponsorBlock в плеере YouTube сообщает номер видео и пропускает сегменты,
 ///   которые пришлёт браузер (`src-tauri/src/sponsorblock.rs`);
 /// * автопролистывание в Shorts, Reels и TikTok спрашивает, листать ли дальше
-///   доигравший ролик (`src-tauri/src/autoscroll.rs`).
-const SITE_SCRIPTS: [(&str, &str); 2] = [
+///   доигравший ролик (`src-tauri/src/autoscroll.rs`);
+/// * расширение Twitch собирает бонусы баллов канала и рисует в чате смайлы
+///   BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`).
+const SITE_SCRIPTS: [(&str, &str); 3] = [
     ("SponsorBlock", include_str!("inject/sponsorblock.js")),
     ("автопролистывания", include_str!("inject/autoscroll.js")),
+    ("Twitch", include_str!("inject/twitch.js")),
 ];
 static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
     SITE_SCRIPTS
@@ -217,6 +220,13 @@ pub enum TabEvent {
         frame: Option<u32>,
         source: String,
         payload: String,
+    },
+    /// Запрос страницы ждёт ответа браузера (плейлист Twitch). Ответ —
+    /// [`Tab::answer_intercept`] с тем же номером, и прийти он должен всегда.
+    Intercept {
+        id: u32,
+        token: u64,
+        url: String,
     },
     /// Иконка сайта сменилась. `page` — адрес страницы, к которой она относится.
     Favicon {
@@ -442,6 +452,8 @@ pub struct Tab {
     /// Встроенный скрипт защищённого видео: при смене настроек его снимают и
     /// встраивают заново.
     drm_script: Rc<RefCell<DrmSlot>>,
+    /// Запросы страницы, которые ждут ответа браузера (`filter::Intercepts`).
+    intercepts: Rc<filter::Intercepts>,
 }
 
 /// Скрипт защищённого видео во вкладке: его номер у движка и номер
@@ -1296,7 +1308,9 @@ impl Tab {
             let gate = announced.clone();
             let route = route.clone();
             Rc::new(move |event: TabEvent| {
-                if gate.get() || matches!(event, TabEvent::Message { .. }) {
+                // Перехваченный запрос ждёт ответа и у прогретой вкладки.
+                let waits = matches!(event, TabEvent::Message { .. } | TabEvent::Intercept { .. });
+                if gate.get() || waits {
                     // Хост берётся на каждое событие: вкладку могли унести в
                     // другое окно. Заём не держим — обработчик мог бы её унести.
                     let target = route.borrow().clone();
@@ -1317,6 +1331,7 @@ impl Tab {
         configure(&core, true)?;
         let drm_script = Rc::new(RefCell::new(DrmSlot::default()));
         inject_scripts(&core, scripts.clone(), drm_script.clone())?;
+        let intercepts = filter::Intercepts::new(env);
         filter::install(
             &core,
             env,
@@ -1324,6 +1339,7 @@ impl Tab {
             source.clone(),
             id.0,
             sink.clone(),
+            intercepts.clone(),
         )?;
         filter::install_cosmetics(&core, guard)?;
         wire_accelerators(id, &controller, &core, fullscreen.clone(), sink.clone())?;
@@ -1361,6 +1377,7 @@ impl Tab {
             favicon: Rc::default(),
             private,
             drm_script,
+            intercepts,
         };
         tab.wire_events(sink.clone(), popups)?;
         tab.wire_certificates();
@@ -1845,9 +1862,10 @@ impl Tab {
         }
     }
 
-    /// Адрес документа вкладки.
-    pub fn url(&self) -> String {
-        self.source.borrow().clone()
+    /// Ответ браузера на перехваченный запрос ([`TabEvent::Intercept`]):
+    /// `None` — пусть запрос уходит в сеть как был.
+    pub fn answer_intercept(&self, token: u64, reply: Option<filter::InterceptReply>) {
+        self.intercepts.answer(token, reply);
     }
 
     /// Усыпить вкладку в фоне, как спящие вкладки Edge: страница замирает

@@ -56,7 +56,7 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
     // Адрес вкладки и настройки — не на главном потоке, куда пришло сообщение.
     tauri::async_runtime::spawn_blocking(move || {
         let url = crate::state::with_tab(&app, tab, move |host| {
-            host.with_tab(browser190x4_webview::TabId(tab), |view| view.url())
+            host.with_tab(browser190x4_webview::TabId(tab), |view| view.source_url())
         });
         let Some(site) = url
             .ok()

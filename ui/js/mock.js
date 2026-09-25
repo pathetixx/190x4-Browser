@@ -357,6 +357,8 @@ export function popupDemo(kind) {
       return { services: { translate: true, media: false } };
     case "extension":
       return { kind: "extensions", payload: { services: { translate: true, media: true }, open: "sponsorblock" } };
+    case "extension-twitch":
+      return { kind: "extensions", payload: { services: { translate: true, media: true }, open: "twitch" } };
     case "media":
       return { url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", services: { media: true } };
     case "translate":

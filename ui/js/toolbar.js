@@ -36,6 +36,7 @@ const mediaButton = document.getElementById("ext-media");
 const translateButton = document.getElementById("ext-translate");
 const autoscrollButton = document.getElementById("ext-autoscroll");
 const sponsorblockButton = document.getElementById("ext-sponsorblock");
+const twitchButton = document.getElementById("ext-twitch");
 const mediaBadge = document.getElementById("ext-media-badge");
 const homeButton = document.getElementById("nav-home");
 
@@ -57,6 +58,7 @@ export function initToolbar() {
   translateButton.addEventListener("click", () => openTranslator());
   autoscrollButton.addEventListener("click", () => toggleAutoscroll());
   sponsorblockButton.addEventListener("click", () => openExtensions("sponsorblock"));
+  twitchButton.addEventListener("click", () => openExtensions("twitch"));
   document.getElementById("ext-menu").addEventListener("click", () => openExtensions());
   onPopupAction("extensions", ({ action }) => {
     if (action === "manage") openSettings("extensions");
@@ -81,15 +83,16 @@ export function renderToolbar() {
   mediaButton.hidden = !(state.services.media && pref("ext_media_enabled") && pref("ext_media_pinned"));
   translateButton.hidden = !(state.services.translate && pref("ext_translate_enabled") && pref("ext_translate_pinned"));
   renderAutoscroll();
-  // SponsorBlock — только на YouTube: в другом месте его значку нечего настраивать.
+  // SponsorBlock — только на YouTube, Twitch — только на Twitch: в другом
+  // месте их значкам нечего настраивать.
   const tab = activeTab();
+  const url = tab && !tab.internal ? (tab.url ?? "") : "";
   sponsorblockButton.hidden = !(
     pref("ext_sponsorblock_enabled") &&
     pref("ext_sponsorblock_pinned") &&
-    tab &&
-    !tab.internal &&
-    isYouTube(tab.url ?? "")
+    onSite(url, "youtube.com")
   );
+  twitchButton.hidden = !(pref("ext_twitch_enabled") && pref("ext_twitch_pinned") && onSite(url, "twitch.tv"));
   renderDownloads(null);
 
   const busy = summary().active > 0;
@@ -112,10 +115,11 @@ function renderAutoscroll() {
     : "Автопролистывание выключено — включить: доигравший ролик сменится следующим";
 }
 
-function isYouTube(url) {
+/** Адрес — https-страница этого домена или его поддомена. */
+function onSite(url, domain) {
   try {
     const { protocol, hostname } = new URL(url);
-    return protocol === "https:" && (hostname === "youtube.com" || hostname.endsWith(".youtube.com"));
+    return protocol === "https:" && (hostname === domain || hostname.endsWith(`.${domain}`));
   } catch {
     return false;
   }

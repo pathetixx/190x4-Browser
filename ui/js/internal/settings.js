@@ -343,6 +343,14 @@ function field(value = "", { placeholder = "", type = "text", mono = false } = {
   return input;
 }
 
+/** Строка настройки: сохраняется, когда её закончили править (Enter или уход из поля). */
+function textField({ key, placeholder = "" }) {
+  const input = field(pref(key) ?? "", { placeholder, mono: true });
+  input.dataset.focusKey = `pref:${key}`;
+  input.addEventListener("change", () => setPref(key, input.value.trim()));
+  return input;
+}
+
 function label(text) {
   return el("label", "label", text);
 }
@@ -965,11 +973,11 @@ const BUILDERS = {
       const rows = [
         setting(extension.name, hint, toggle(extension.enabled), { iconId: extension.icon }),
         switchSetting(extension.pinned, "Показывать значок на панели инструментов", extension.pinHint),
-        ...extension.settings.map((item) =>
-          item.type === "switch"
-            ? switchSetting(item.key, item.label, item.hint)
-            : setting(item.label, item.hint, select(item.key, item.options))
-        ),
+        ...extension.settings.map((item) => {
+          if (item.type === "switch") return switchSetting(item.key, item.label, item.hint);
+          if (item.type === "text") return setting(item.label, item.hint, textField(item));
+          return setting(item.label, item.hint, select(item.key, item.options));
+        }),
       ];
       return group(rows, index === 0 ? { title: "Установленные расширения" } : {});
     });

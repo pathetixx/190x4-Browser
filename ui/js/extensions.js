@@ -2,10 +2,10 @@
  * Расширения браузера — одно описание на все места, где они видны: меню
  * «Расширения» на панели инструментов, закреплённые значки и раздел настроек.
  * Ключи — те же, что читает Rust (`src-tauri/src/sponsorblock.rs`,
- * `autoscroll.rs`), умолчания — в `prefs.js`.
+ * `autoscroll.rs`, `twitch.rs`), умолчания — в `prefs.js`.
  *
- * `settings` — настройки расширения: переключатели (`switch`) и списки
- * (`select`). `service` — сервис 190x4, без которого расширение ничего не
+ * `settings` — настройки расширения: переключатели (`switch`), списки
+ * (`select`) и строки (`text`). `service` — сервис 190x4, без которого расширение ничего не
  * сделает. `open` — у расширения есть своё окно, и так называется кнопка,
  * которая его открывает.
  */
@@ -83,6 +83,56 @@ export const EXTENSIONS = [
       { type: "switch", key: "autoscroll_youtube", label: "YouTube Shorts", hint: "youtube.com/shorts" },
       { type: "switch", key: "autoscroll_instagram", label: "Reels в Instagram", hint: "instagram.com/reels" },
       { type: "switch", key: "autoscroll_tiktok", label: "TikTok", hint: "tiktok.com" },
+    ],
+  },
+  {
+    id: "twitch",
+    name: "Twitch",
+    icon: "stream",
+    summary:
+      "Лучшее качество трансляций там, где Twitch его режет (из России — выше 720p), бонусы баллов канала сами и смайлы BetterTTV и FrankerFaceZ в чате.",
+    note: "Ради качества плейлист трансляции браузер берёт через сервер за пределами России (по умолчанию — прокси ReYohoho); само видео идёт с серверов Twitch напрямую.",
+    enabled: "ext_twitch_enabled",
+    pinned: "ext_twitch_pinned",
+    pinHint: "Значок появляется на Twitch и открывает эти настройки",
+    settings: [
+      {
+        type: "switch",
+        key: "twitch_quality",
+        label: "Лучшее качество трансляций",
+        hint: "Сервер не ответил — трансляция играет в том качестве, что даёт Twitch",
+      },
+      {
+        type: "switch",
+        key: "twitch_points",
+        label: "Собирать бонусы баллов канала",
+        hint: "Кнопку «Получить бонус» браузер нажимает сам, как только она появилась",
+      },
+      {
+        type: "switch",
+        key: "twitch_bttv",
+        label: "Смайлы BetterTTV",
+        hint: "Коды смайлов в сообщениях чата становятся картинками — общие и смайлы канала",
+      },
+      {
+        type: "switch",
+        key: "twitch_ffz",
+        label: "Смайлы FrankerFaceZ",
+        hint: "То же для смайлов FrankerFaceZ",
+      },
+      {
+        type: "switch",
+        key: "twitch_proxy_token",
+        label: "Передавать серверу вход в Twitch",
+        hint: "Нужно для 1440p и чтобы вместо трансляции не показывалась рекламная заставка. Токен даёт серверу доступ к вашему аккаунту — включайте, только если доверяете ему",
+      },
+      {
+        type: "text",
+        key: "twitch_proxy",
+        label: "Свой сервер плейлистов",
+        hint: "Адрес, к которому браузер приписывает адрес плейлиста, — как у ReYohoho. Пусто — серверы ReYohoho",
+        placeholder: "https://…/",
+      },
     ],
   },
   {

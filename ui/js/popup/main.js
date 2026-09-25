@@ -1745,7 +1745,9 @@ function extensionDetail(extension, services, onBack) {
     switchRow("Значок на панели инструментов", extension.pinHint, extension.pinned)
   );
   for (const item of extension.settings) {
-    body.append(item.type === "switch" ? switchRow(item.label, item.hint, item.key) : selectRow(item));
+    if (item.type === "switch") body.append(switchRow(item.label, item.hint, item.key));
+    else if (item.type === "text") body.append(textRow(item));
+    else body.append(selectRow(item));
   }
   paint();
   root.append(head, body, actions);
@@ -1789,6 +1791,21 @@ function selectRow({ key, label, hint, options }) {
   select.value = String(pref(key));
   select.addEventListener("change", () => setPref(key, select.value).catch(() => {}));
   row.append(settingText(label, hint), select);
+  return row;
+}
+
+/** Строка настройки под подписью: адрес в строку рядом с подписью не влезет. */
+function textRow({ key, label, hint, placeholder = "" }) {
+  const row = el("div", "exts__setting exts__setting--stack");
+  const input = el("input", "field field--mono");
+  input.type = "text";
+  input.value = String(pref(key) ?? "");
+  input.placeholder = placeholder;
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", label);
+  input.addEventListener("change", () => setPref(key, input.value.trim()).catch(() => {}));
+  row.append(settingText(label, hint), input);
   return row;
 }
 

@@ -35,6 +35,7 @@ pub mod tab;
 
 pub use dialogs::{DialogAction, DialogAnswer, DialogRequest, PermissionSetting};
 pub use downloads::DownloadPolicy;
+pub use filter::InterceptReply;
 pub use host::{EngineProcess, Layout, TabBrief, TabHost, TabId, PAGES_HOST};
 pub use message::{ChromeEvent, TabCommand};
 pub use tab::Tab;

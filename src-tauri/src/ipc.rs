@@ -1015,6 +1015,8 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
             }
         }
         "drm_widevine" | "drm_widevine_off_sites" => crate::drm::apply(app),
+        "ext_twitch_enabled" | "twitch_quality" | "twitch_points" | "twitch_bttv"
+        | "twitch_ffz" | "twitch_proxy_token" => crate::twitch::apply(app),
         "search_engine" => {
             *state.engine.write() = state
                 .store

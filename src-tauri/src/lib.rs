@@ -28,6 +28,7 @@ mod sponsorblock;
 mod state;
 mod suggest;
 mod transfers;
+mod twitch;
 mod updates;
 mod vault;
 mod watchdog;
@@ -95,6 +96,8 @@ pub fn run() {
     browser190x4_webview::tab::set_reputation_checking(store.setting_bool("smartscreen", true));
     #[cfg(windows)]
     drm::init(&store);
+    #[cfg(windows)]
+    twitch::init(&store);
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
@@ -135,6 +138,7 @@ pub fn run() {
         .manage(updates::Updates::default())
         .manage(newtab::NewTab::default())
         .manage(sponsorblock::SponsorBlock::default())
+        .manage(twitch::Twitch::default())
         .manage(launched)
         .invoke_handler(tauri::generate_handler![
             ipc::tab_open,
@@ -356,11 +360,17 @@ pub(crate) fn route_event(
                 || drm::handle_message(app, label, *id, source, payload)
                 || autoscroll::handle_message(app, *id, *frame, source, payload)
                 || frame.is_some()
+                || twitch::handle_message(app, *id, source, payload)
                 || newtab::handle_message(app, *id, source, payload)
                 || !for_interface(payload)
             {
                 return;
             }
+        }
+        // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
+        TabEvent::Intercept { id, token, url } => {
+            twitch::intercept(app, *id, *token, url.clone());
+            return;
         }
         // Ссылку на приложение открывает браузер: спросить или открыть сразу.
         TabEvent::Dialog {

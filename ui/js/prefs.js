@@ -53,6 +53,16 @@ export const DEFAULTS = {
   autoscroll_youtube: true,
   autoscroll_instagram: true,
   autoscroll_tiktok: true,
+  // Twitch: лучшее качество через сервер плейлистов, бонусы баллов канала и
+  // смайлы BTTV и FFZ. Те же ключи читает src-tauri/src/twitch.rs.
+  ext_twitch_enabled: true,
+  ext_twitch_pinned: false,
+  twitch_quality: true,
+  twitch_points: true,
+  twitch_bttv: true,
+  twitch_ffz: true,
+  twitch_proxy_token: false,
+  twitch_proxy: "",
   ext_media_enabled: true,
   ext_media_pinned: true,
   updates_auto: true,

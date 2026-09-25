@@ -172,6 +172,9 @@ ICONS = {
     + path("M10 6.75v6.5M7.75 11 10 13.25 12.25 11"),
     # Пропустить сегмент (SponsorBlock): треугольник «играть» и черта конца.
     "skip": path("M4.75 4.75v10.5L12.25 10z") + path("M15.25 4.75v10.5"),
+    # Трансляция: окно чата со срезанным углом и хвостиком, в нём две риски
+    # эфира — значок расширения Twitch.
+    "stream": path("M3.25 3.25h13.5v8.5l-3.5 3.5h-3.5l-2.5 2v-2h-4z") + path("M8.75 6.75v3.75M12.75 6.75v3.75"),
     "shield": path(SHIELD_SHAPE),
     "shield-filled": fill(SHIELD_SHAPE, 0.3) + path(SHIELD_SHAPE),
     "favorites": path(FAVORITES_STAR) + path("M13.5 7.5h3M13 11h3.5M4 15.5h12.5"),

@@ -7,13 +7,16 @@
 //! Ни логов, ни каналов, ни аллокаций строк сверх необходимого.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use browser190x4_adblock::{document_host, document_script, Decision, Guard, ResourceKind};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
+    ICoreWebView2, ICoreWebView2Deferral, ICoreWebView2Environment,
+    ICoreWebView2WebResourceRequestedEventArgs, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
@@ -118,14 +121,104 @@ impl Counter {
     }
 }
 
+/// Отвечать ли браузеру на запросы плейлистов Twitch (расширение Twitch,
+/// «лучшее качество»). Общее на все вкладки, меняется из настроек.
+static TWITCH_PLAYLISTS: AtomicBool = AtomicBool::new(false);
+
+/// Включить или выключить перехват плейлистов Twitch — сразу для всех вкладок.
+pub fn set_twitch_playlists(on: bool) {
+    TWITCH_PLAYLISTS.store(on, Ordering::Relaxed);
+}
+
+/// Главный плейлист трансляции Twitch: по нему плеер выбирает качество.
+/// Записи и клипы — другие адреса, их браузер не трогает.
+fn is_twitch_playlist(url: &str) -> bool {
+    url.strip_prefix("https://usher.ttvnw.net/api/")
+        .map(|rest| rest.strip_prefix("v2/").unwrap_or(rest))
+        .is_some_and(|rest| rest.starts_with("channel/hls/"))
+}
+
+/// Ответ браузера на перехваченный запрос.
+#[derive(Debug, Clone)]
+pub struct InterceptReply {
+    pub status: i32,
+    pub reason: String,
+    /// Заголовки ответа строками `Имя: значение`, через `\r\n`.
+    pub headers: String,
+    pub body: Vec<u8>,
+}
+
+/// Запросы вкладки, которые ждут ответа браузера: движок держит их под
+/// отсрочкой, пока не придёт [`Intercepts::answer`]. Ответ приходит всегда —
+/// хотя бы «пусть идёт как шёл», иначе запрос висел бы до закрытия вкладки.
+pub(crate) struct Intercepts {
+    env: ICoreWebView2Environment,
+    next: Cell<u64>,
+    pending: RefCell<
+        HashMap<
+            u64,
+            (
+                ICoreWebView2WebResourceRequestedEventArgs,
+                ICoreWebView2Deferral,
+            ),
+        >,
+    >,
+}
+
+impl Intercepts {
+    pub(crate) fn new(env: &ICoreWebView2Environment) -> Rc<Self> {
+        Rc::new(Self {
+            env: env.clone(),
+            next: Cell::new(0),
+            pending: RefCell::default(),
+        })
+    }
+
+    fn hold(
+        &self,
+        args: ICoreWebView2WebResourceRequestedEventArgs,
+        deferral: ICoreWebView2Deferral,
+    ) -> u64 {
+        let token = self.next.get().wrapping_add(1);
+        self.next.set(token);
+        self.pending.borrow_mut().insert(token, (args, deferral));
+        token
+    }
+
+    /// Ответить на запрос: `None` — запрос уходит в сеть как был.
+    pub(crate) fn answer(&self, token: u64, reply: Option<InterceptReply>) {
+        let Some((args, deferral)) = self.pending.borrow_mut().remove(&token) else {
+            return;
+        };
+        if let Some(reply) = reply {
+            let applied = unsafe {
+                self.env
+                    .CreateWebResourceResponse(
+                        crate::stream::from_bytes(&reply.body).as_ref(),
+                        reply.status,
+                        &HSTRING::from(reply.reason.as_str()),
+                        &HSTRING::from(reply.headers.as_str()),
+                    )
+                    .and_then(|response| args.SetResponse(&response))
+            };
+            if let Err(err) = applied {
+                tracing::debug!(%err, "ответ браузера на запрос не записан");
+            }
+        }
+        // Страница могла уйти, пока ждали: движок тогда отсрочку уже не ждёт.
+        let _ = unsafe { deferral.Complete() };
+    }
+}
+
 /// Навесить фильтр на вкладку. Возвращает токен для `remove_WebResourceRequested`.
-pub fn install(
+pub(crate) fn install(
     core: &ICoreWebView2,
     env: &ICoreWebView2Environment,
     guard: Arc<Guard>,
     source: SourceUrl,
     id: u32,
     sink: EventSink,
+    intercepts: Rc<Intercepts>,
 ) -> windows_core::Result<i64> {
     let env = env.clone();
     let mut token = 0i64;
@@ -162,6 +255,14 @@ pub fn install(
                     && url.as_str() == source.borrow().as_str();
                 if main_frame {
                     counter.reset(id, &sink);
+                }
+                // Плейлист Twitch берёт браузер (src-tauri/src/twitch.rs): запрос
+                // ждёт под отсрочкой, пока не придёт ответ или «пусть идёт».
+                if TWITCH_PLAYLISTS.load(Ordering::Relaxed) && is_twitch_playlist(&url) {
+                    let deferral = args.GetDeferral()?;
+                    let token = intercepts.hold(args.clone(), deferral);
+                    sink(TabEvent::Intercept { id, token, url });
+                    return Ok(());
                 }
                 // Блокировка выключена или сайт в исключениях — дальше смотреть
                 // нечего, а счётчик новой страницы уже обнулён.
@@ -282,4 +383,26 @@ pub fn install_cosmetics(core: &ICoreWebView2, guard: Arc<Guard>) -> windows_cor
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_twitch_playlist;
+
+    #[test]
+    fn only_live_twitch_playlists_are_taken() {
+        assert!(is_twitch_playlist(
+            "https://usher.ttvnw.net/api/v2/channel/hls/ohnepixel.m3u8?acmb=1"
+        ));
+        assert!(is_twitch_playlist(
+            "https://usher.ttvnw.net/api/channel/hls/x.m3u8"
+        ));
+        assert!(!is_twitch_playlist("https://usher.ttvnw.net/vod/123.m3u8"));
+        assert!(!is_twitch_playlist(
+            "https://usher.ttvnw.net.evil.example/api/channel/hls/x.m3u8"
+        ));
+        assert!(!is_twitch_playlist(
+            "http://usher.ttvnw.net/api/channel/hls/x.m3u8"
+        ));
+    }
 }
