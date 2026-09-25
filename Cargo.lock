@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4-adblock"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adblock",
  "anyhow",
@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4-services"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4-spike"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "browser190x4-adblock",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4-store"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "csv",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "browser190x4-webview"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
