@@ -53,9 +53,12 @@ const ENGINES = [
 /** Сайты, которым разрешено открывать приложения без вопроса (`src-tauri/src/external.rs`). */
 const EXTERNAL_APPS = "external_apps_allowed";
 
+/** Открыт ли список сохранённых паролей. Закрывается при каждом входе в раздел. */
+let passwordsShown = false;
 
 export function createSettingsPage(root, { section, onSection }) {
   let current = SECTIONS.some((s) => s.id === section) ? section : "appearance";
+  passwordsShown = false;
   let query = "";
 
   const page = el("div", "page");
@@ -103,6 +106,7 @@ export function createSettingsPage(root, { section, onSection }) {
   const views = createViews();
 
   function show(id) {
+    if (id !== current) passwordsShown = false;
     current = SECTIONS.some((s) => s.id === id) ? id : "appearance";
     render();
     root.scrollTop = 0;
@@ -571,9 +575,34 @@ const BUILDERS = {
     const filterInput = field("", { placeholder: "Поиск паролей", type: "search" });
     filterInput.style.width = "200px";
 
-    const saved = group([list], {
+    // Список скрыт, пока его не откроют: сайты и логины не должны быть на
+    // экране от одного перехода в раздел.
+    const reveal = el("button", "setting setting--action");
+    reveal.type = "button";
+    const revealTile = el("div", "setting__icon");
+    revealTile.append(icon("key", 20));
+    const revealText = el("div", "setting__text");
+    const revealHint = el("div", "setting__hint", "Сайты и логины скрыты");
+    revealText.append(el("div", "setting__label", "Показать сохранённые пароли"), revealHint);
+    reveal.append(revealTile, revealText, icon("eye-16", 16, "setting__chevron"));
+    const hide = button(
+      "Скрыть",
+      () => {
+        passwordsShown = false;
+        filterInput.value = "";
+        draw();
+      },
+      { iconId: "eye-off-16", kind: "btn btn--ghost" }
+    );
+    reveal.addEventListener("click", () => {
+      passwordsShown = true;
+      draw();
+      filterInput.focus({ preventScroll: true });
+    });
+
+    const saved = group([reveal, list], {
       title: "Сохранённые пароли",
-      actions: [filterInput, button("Добавить", () => editPassword(null), { iconId: "add-16" })],
+      actions: [filterInput, hide, button("Добавить", () => editPassword(null), { iconId: "add-16" })],
     });
     const notice = el("div", "notice");
     notice.append(
@@ -609,8 +638,16 @@ const BUILDERS = {
     const neverGroup = group([never], { title: "Сайты, для которых пароли не сохраняются" });
     out.push(neverGroup);
 
-    let entries = [];
+    let entries = null;
     const draw = () => {
+      // Прятать нечего, пока паролей нет.
+      const open = passwordsShown || entries?.length === 0;
+      reveal.hidden = open;
+      list.hidden = !open;
+      filterInput.hidden = !open || !entries?.length;
+      hide.hidden = !passwordsShown || !entries?.length;
+      if (entries?.length) revealHint.textContent = `${entries.length} ${plural(entries.length, "пароль", "пароля", "паролей")} · сайты и логины скрыты`;
+      if (!open || !entries) return;
       const needle = filterInput.value.trim().toLowerCase();
       const visible = entries.filter(
         (entry) => !needle || entry.origin.toLowerCase().includes(needle) || entry.username.toLowerCase().includes(needle)
@@ -623,13 +660,18 @@ const BUILDERS = {
       for (const entry of visible) list.append(passwordRow(entry));
     };
     filterInput.addEventListener("input", draw);
+    draw();
 
     invoke("passwords_list")
       .then((items) => {
         entries = items;
         draw();
       })
-      .catch(() => list.replaceChildren(el("div", "empty", "Пароли недоступны")));
+      .catch(() => {
+        reveal.hidden = true;
+        list.hidden = false;
+        list.replaceChildren(el("div", "empty", "Пароли недоступны"));
+      });
 
     invoke("password_never_list")
       .then((sites) => {
