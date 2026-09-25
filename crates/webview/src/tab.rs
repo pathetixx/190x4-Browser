@@ -12,7 +12,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2ContextMenuRequestedEventArgs, ICoreWebView2ContextMenuTarget,
     ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2Find,
     ICoreWebView2Frame, ICoreWebView2Frame2, ICoreWebView2Frame5, ICoreWebView2Frame7,
-    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2_15, ICoreWebView2_4,
+    ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings2, ICoreWebView2_15,
+    ICoreWebView2_4,
 };
 use webview2_com::{
     take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
@@ -30,6 +31,7 @@ use crate::dialogs::{self, DialogAction, DialogAnswer, DialogRequest, Dialogs};
 use crate::downloads::{self, SharedDownloads};
 use crate::filter::{self, SourceUrl};
 use crate::host::TabId;
+use crate::identity::{self, Identity};
 
 /// Менеджер паролей на стороне страницы: сообщает о формах входа и
 /// отправленных логинах. Решения принимает Rust — см. `src-tauri/src/passwords.rs`.
@@ -454,6 +456,48 @@ pub struct Tab {
     drm_script: Rc<RefCell<DrmSlot>>,
     /// Запросы страницы, которые ждут ответа браузера (`filter::Intercepts`).
     intercepts: Rc<filter::Intercepts>,
+    /// Кем вкладка представляется сайтам сейчас (`identity`) и при какой
+    /// версии настроек это поставлено; `None` — движок как есть.
+    identity: IdentitySlot,
+}
+
+type IdentitySlot = Rc<Cell<Option<(Identity, u64)>>>;
+
+/// Поставить вкладке вид для адреса (`identity::for_url`), если он другой.
+/// Команда протокола отладки асинхронная, но движок выполняет её раньше
+/// следующей навигации: обе идут в процесс движка по порядку.
+fn apply_identity(core: &ICoreWebView2, slot: &IdentitySlot, url: &str) {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+
+    let identity = identity::for_url(url);
+    let wanted = Some((identity, identity::generation()));
+    if slot.get() == wanted {
+        return;
+    }
+    // Подмены не было, и нужен Edge — движок и так Edge.
+    if slot.get().is_none() && identity == Identity::Edge {
+        slot.set(wanted);
+        return;
+    }
+    let Some(params) = identity::override_params(identity) else {
+        return;
+    };
+    slot.set(wanted);
+    let sent = unsafe {
+        core.CallDevToolsProtocolMethod(
+            &HSTRING::from("Emulation.setUserAgentOverride"),
+            &HSTRING::from(params),
+            &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|code, _| {
+                if let Err(err) = code {
+                    tracing::warn!(%err, "вид браузера для сайта не поставлен");
+                }
+                Ok(())
+            })),
+        )
+    };
+    if let Err(err) = sent {
+        tracing::warn!(%err, "вид браузера для сайта не поставлен");
+    }
 }
 
 /// Скрипт защищённого видео во вкладке: его номер у движка и номер
@@ -1329,6 +1373,16 @@ impl Tab {
         }
 
         configure(&core, true)?;
+        // Строка браузера движка — до всякой подмены: из неё собирается Chrome.
+        if let Ok(settings2) = unsafe { core.Settings()? }.cast::<ICoreWebView2Settings2>() {
+            let mut raw = PWSTR::null();
+            if unsafe { settings2.UserAgent(&mut raw) }.is_ok() {
+                identity::remember_engine_agent(&take_pwstr(raw));
+            }
+        }
+        // Вид для всех сайтов — до первой навигации: её адрес здесь ещё не известен.
+        let identity: IdentitySlot = Rc::new(Cell::new(None));
+        apply_identity(&core, &identity, "");
         let drm_script = Rc::new(RefCell::new(DrmSlot::default()));
         inject_scripts(&core, scripts.clone(), drm_script.clone())?;
         let intercepts = filter::Intercepts::new(env);
@@ -1378,6 +1432,7 @@ impl Tab {
             private,
             drm_script,
             intercepts,
+            identity,
         };
         tab.wire_events(sink.clone(), popups)?;
         tab.wire_certificates();
@@ -1477,6 +1532,8 @@ impl Tab {
             let controller = self.controller.clone();
             let page_color = self.page_color.clone();
             let cert = self.cert.clone();
+            let engine = self.core.clone();
+            let identity = self.identity.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -1491,6 +1548,9 @@ impl Tab {
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
+                    // Сайт представляется иначе, чем прежний, — подмена до того,
+                    // как его скрипты спросят, что за браузер.
+                    apply_identity(&engine, &identity, &url);
                     // Источник для third-party обновляем ровно здесь: до
                     // первого запроса ресурсов страницы.
                     *source.borrow_mut() = url.clone();
@@ -1860,6 +1920,12 @@ impl Tab {
         if let Err(err) = add_drm_script(&self.core, self.drm_script.clone()) {
             tracing::debug!(%err, "скрипт защищённого видео не обновлён");
         }
+    }
+
+    /// Вид для сайта вкладки по новым настройкам (`identity::set_identity`).
+    /// Сайт увидит его со следующей загрузки страницы.
+    pub(crate) fn apply_identity(&self) {
+        apply_identity(&self.core, &self.identity, &self.source.borrow());
     }
 
     /// Ответ браузера на перехваченный запрос ([`TabEvent::Intercept`]):

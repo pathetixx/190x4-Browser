@@ -610,6 +610,7 @@ const VIEWS = {
     } else {
       info("shield-16", "Блокировка рекламы выключена", "На всех сайтах — включается в настройках", "privacy");
     }
+    if (site) list.append(siteIdentityRow(site));
     info(
       "key-16",
       passwords ? `Сохранено паролей: ${passwords}` : "Паролей для сайта нет",
@@ -661,6 +662,43 @@ function siteBlockingRow({ url, site, blocked, blocking }) {
     }
   });
   row.append(slot, text, toggleNode);
+  return row;
+}
+
+const IDENTITIES = { edge: "Edge", chrome: "Chrome" };
+
+/** Строка «кем представляться сайту»: исключение хранится в настройках
+ *  (`identity_sites`), страница перезагружается уже с новым видом. */
+function siteIdentityRow(site) {
+  const row = el("div", "menu__item");
+  row.style.height = "auto";
+  row.style.padding = "8px 10px";
+  const slot = el("span", "menu__icon");
+  slot.append(icon("globe-16", 16));
+  const text = el("span", "menu__label");
+  text.style.whiteSpace = "normal";
+  const hint = el("div", null, "Для сайта и его поддоменов");
+  hint.style.cssText = "font-size:12px;color:var(--text-lo)";
+  text.append(el("div", null, "Представляться как"), hint);
+
+  const select = el("select", "field");
+  select.style.cssText = "width:148px;flex-shrink:0";
+  select.setAttribute("aria-label", "Представляться сайту");
+  const everywhere = IDENTITIES[pref("identity")] ?? IDENTITIES.edge;
+  for (const [value, label] of [["", `Как всем (${everywhere})`], ["edge", "Edge"], ["chrome", "Chrome"]]) {
+    const option = el("option", null, label);
+    option.value = value;
+    select.append(option);
+  }
+  select.value = (pref("identity_sites") ?? {})[site] ?? "";
+  select.addEventListener("change", async () => {
+    const sites = { ...(pref("identity_sites") ?? {}) };
+    if (select.value) sites[site] = select.value;
+    else delete sites[site];
+    await setPref("identity_sites", sites).catch(() => {});
+    act("site", "reload", {}, { keepOpen: true });
+  });
+  row.append(slot, text, select);
   return row;
 }
 

@@ -74,6 +74,10 @@ export const DEFAULTS = {
   drm_widevine: true,
   drm_fallback: true,
   drm_widevine_off_sites: [],
+  // Кем браузер представляется сайтам: edge (как есть) или chrome, и
+  // исключения по сайтам. Те же ключи читает src-tauri/src/identity.rs.
+  identity: "edge",
+  identity_sites: {},
   tabs_sleep: "60",
 };
 

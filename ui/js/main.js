@@ -972,6 +972,14 @@ invoke("services_state")
   })
   .catch(() => {});
 
+// Настоящие Client Hints движка: из них Rust собирает вид «Chrome» для сайтов
+// (настройка «Как браузер представляется сайтам»). Окно интерфейса — тот же
+// движок, что у вкладок.
+navigator.userAgentData
+  ?.getHighEntropyValues(["architecture", "bitness", "fullVersionList", "model", "platformVersion", "wow64"])
+  .then((hints) => invoke("engine_hints", { hints }))
+  .catch(() => {});
+
 // Ссылка из другой программы или файл, брошенный на окно: адреса ждут в
 // очереди Rust. До конца восстановления сессии их заберёт restoreSession.
 listen("launch", () => {

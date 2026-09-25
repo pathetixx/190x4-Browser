@@ -905,10 +905,41 @@ const BUILDERS = {
       { title: "Защищённое видео (DRM)" }
     );
 
+    // Исключения ставятся в сведениях о сайте (значок слева в адресной строке).
+    const identitySites = Object.entries(pref("identity_sites") ?? {});
+    const identityGroup = group(
+      [
+        setting(
+          "Для всех сайтов",
+          "Chrome — сайты видят Google Chrome: строку браузера и Client Hints, как у него. Полностью движок не скрыть: защищённое видео PlayReady бывает только у Edge, поэтому кинотеатры с ним могут открывать видео через Widevine. Действует со следующей загрузки страницы",
+          choices("identity", [
+            ["edge", "Edge", "Как есть"],
+            ["chrome", "Chrome", "Как Google Chrome"],
+          ])
+        ),
+        ...identitySites.map(([site, identity]) =>
+          setting(
+            site,
+            `Представляется как ${identity === "chrome" ? "Chrome" : "Edge"} — на сайте и его поддоменах`,
+            iconButton("delete-16", "Как для всех сайтов", () => {
+              const sites = { ...(pref("identity_sites") ?? {}) };
+              delete sites[site];
+              setPref("identity_sites", sites);
+            })
+          )
+        ),
+      ],
+      {
+        title: "Как браузер представляется сайтам",
+        hint: "Отдельному сайту — в сведениях о нём: значок слева в адресной строке",
+      }
+    );
+
     return [
       group([clear], { title: "Данные браузера" }),
       safetyGroup,
       drmGroup,
+      identityGroup,
       permissionsGroup,
       popupsGroup,
       appsGroup,

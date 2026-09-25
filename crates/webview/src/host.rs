@@ -923,6 +923,14 @@ impl TabHost {
         }
     }
 
+    /// Новый вид браузера для сайтов (`identity::set_identity`) — всем
+    /// вкладкам окна. Страницы видят его со следующей загрузки.
+    pub fn apply_identity(&self) {
+        for tab in self.inner.borrow().tabs.values() {
+            tab.apply_identity();
+        }
+    }
+
     /// Сколько загрузок оборвёт закрытие этого окна.
     pub fn active_downloads(&self) -> usize {
         self.inner.borrow().downloads.active()

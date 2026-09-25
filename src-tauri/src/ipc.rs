@@ -989,8 +989,16 @@ pub fn settings_set(
     Ok(())
 }
 
+/// Настоящие Client Hints движка — окно интерфейса присылает их при запуске:
+/// из них собирается вид Chrome для сайтов (`identity`).
+#[tauri::command(async)]
+pub fn engine_hints(app: AppHandle, hints: Value) {
+    crate::identity::set_engine_hints(&app, hints);
+}
+
 fn apply_setting(app: &AppHandle, state: &App, key: &str) {
     match key {
+        "identity" | "identity_sites" => crate::identity::apply(app),
         "download_dir" | "download_ask" => {
             let policy = download_policy(&state.store);
             // Папка загрузок общая на все окна, а политика живёт в каждом хосте.

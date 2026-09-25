@@ -16,6 +16,7 @@ mod drm;
 mod external;
 mod filters;
 mod hello;
+mod identity;
 mod import;
 pub mod ipc;
 mod launch;
@@ -98,6 +99,8 @@ pub fn run() {
     drm::init(&store);
     #[cfg(windows)]
     twitch::init(&store);
+    #[cfg(windows)]
+    identity::init(&store);
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
@@ -180,6 +183,7 @@ pub fn run() {
             ipc::adblock_site_set,
             ipc::settings_get,
             ipc::settings_set,
+            ipc::engine_hints,
             ipc::history_record,
             ipc::history_title,
             ipc::history_recent,
