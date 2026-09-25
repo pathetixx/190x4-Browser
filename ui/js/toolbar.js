@@ -6,7 +6,7 @@
 import { invoke } from "./bridge.js";
 import { displayUrl } from "./dom.js";
 import { onDownloads, summary } from "./downloads-model.js";
-import { openMenu } from "./popups.js";
+import { onPopupAction, openMenu } from "./popups.js";
 import { onPref, pref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
 import { endSplit, hasClosedTabs, open, reopenClosed, reopenLabel } from "./tabs.js";
@@ -21,6 +21,7 @@ import {
   openHistoryPage,
   openMediaExtension,
   openSettings,
+  openExtensions,
   openTranslator,
   tabAction,
   toggleAutoscroll,
@@ -34,6 +35,7 @@ const ring = document.getElementById("downloads-ring");
 const mediaButton = document.getElementById("ext-media");
 const translateButton = document.getElementById("ext-translate");
 const autoscrollButton = document.getElementById("ext-autoscroll");
+const sponsorblockButton = document.getElementById("ext-sponsorblock");
 const mediaBadge = document.getElementById("ext-media-badge");
 const homeButton = document.getElementById("nav-home");
 
@@ -54,6 +56,13 @@ export function initToolbar() {
   mediaButton.addEventListener("click", () => openMediaExtension());
   translateButton.addEventListener("click", () => openTranslator());
   autoscrollButton.addEventListener("click", () => toggleAutoscroll());
+  sponsorblockButton.addEventListener("click", () => openExtensions("sponsorblock"));
+  document.getElementById("ext-menu").addEventListener("click", () => openExtensions());
+  onPopupAction("extensions", ({ action }) => {
+    if (action === "manage") openSettings("extensions");
+    if (action === "open:translate") openTranslator().catch(() => {});
+    if (action === "open:media") openMediaExtension().catch(() => {});
+  });
   document.getElementById("open-menu").addEventListener("click", (event) => showMainMenu(event.currentTarget));
 
   onDownloads((event) => {
@@ -72,9 +81,17 @@ export function renderToolbar() {
   mediaButton.hidden = !(state.services.media && pref("ext_media_enabled") && pref("ext_media_pinned"));
   translateButton.hidden = !(state.services.translate && pref("ext_translate_enabled") && pref("ext_translate_pinned"));
   renderAutoscroll();
+  // SponsorBlock — только на YouTube: в другом месте его значку нечего настраивать.
+  const tab = activeTab();
+  sponsorblockButton.hidden = !(
+    pref("ext_sponsorblock_enabled") &&
+    pref("ext_sponsorblock_pinned") &&
+    tab &&
+    !tab.internal &&
+    isYouTube(tab.url ?? "")
+  );
   renderDownloads(null);
 
-  const tab = activeTab();
   const busy = summary().active > 0;
   mediaBadge.hidden = !(tab?.media || (busy && hasMediaJob()));
 }
@@ -93,6 +110,15 @@ function renderAutoscroll() {
   autoscrollButton.title = on
     ? "Автопролистывание включено — выключить"
     : "Автопролистывание выключено — включить: доигравший ролик сменится следующим";
+}
+
+function isYouTube(url) {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === "https:" && (hostname === "youtube.com" || hostname.endsWith(".youtube.com"));
+  } catch {
+    return false;
+  }
 }
 
 function hasMediaJob() {

@@ -353,6 +353,10 @@ export function popupDemo(kind) {
       };
     case "bookmark-folder":
       return { folder: 6, title: "Работа" };
+    case "extensions":
+      return { services: { translate: true, media: false } };
+    case "extension":
+      return { kind: "extensions", payload: { services: { translate: true, media: true }, open: "sponsorblock" } };
     case "media":
       return { url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", services: { media: true } };
     case "translate":

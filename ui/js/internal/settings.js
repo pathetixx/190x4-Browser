@@ -22,31 +22,13 @@ import {
   textButton,
 } from "../dom.js";
 import { applyTheme, onPref, pref, setPref } from "../prefs.js";
-import { LANGUAGES } from "../languages.js";
+import { EXTENSIONS, missingService } from "../extensions.js";
 import { state } from "../state.js";
 import { hooks, navigate } from "../actions.js";
 import { PERMISSIONS } from "../permissions.js";
 import { checkUpdates, installUpdate, onUpdate, update } from "../updates.js";
 
 /** Категории SponsorBlock: как их назвать и что в них бывает. */
-const SPONSORBLOCK_CATEGORIES = [
-  ["sponsor", "Спонсорская вставка", "Оплаченная реклама внутри видео"],
-  ["selfpromo", "Реклама автора", "Свой мерч, курсы, донаты, другие каналы"],
-  ["interaction", "Просьба подписаться", "«Подпишитесь, поставьте лайк, нажмите колокольчик»"],
-  ["intro", "Заставка", "Вступление без содержания"],
-  ["outro", "Концовка", "Титры, конечные заставки, прощание"],
-  ["preview", "Анонс", "Нарезка того, что будет дальше в видео или в прошлых выпусках"],
-  ["filler", "Отступление", "Шутки и сцены не по теме"],
-  ["music_offtopic", "Не музыка в клипе", "Разговоры и сценки в музыкальном видео"],
-];
-
-const SPONSORBLOCK_MODES = [
-  ["skip", "Пропускать"],
-  ["ask", "Спрашивать"],
-  ["show", "Отмечать на полосе"],
-  ["off", "Не трогать"],
-];
-
 const SECTIONS = [
   { id: "appearance", title: "Внешний вид", icon: "paint" },
   { id: "default", title: "Браузер по умолчанию", icon: "globe" },
@@ -973,77 +955,24 @@ const BUILDERS = {
   },
 
   extensions() {
-    const ready = (on) => (on ? "подключён" : "не настроен");
-    return [
-      group(
-        [
-          setting(
-            "Переводчик 190x4",
-            `Переводит любой текст: вставьте его в окно расширения или выделите на странице и нажмите Ctrl+Shift+U. Сервис ${ready(state.services.translate)}.`,
-            toggle("ext_translate_enabled"),
-            { iconId: "translate" }
-          ),
-          switchSetting(
-            "ext_translate_pinned",
-            "Показывать значок на панели инструментов",
-            "Без значка переводчик открывается сочетанием Ctrl+Shift+U и из меню выделенного текста"
-          ),
-          setting(
-            "Язык перевода",
-            "На этот язык переводчик переводит текст, пока в его окне не выбран другой",
-            select(
-              "translate_lang",
-              LANGUAGES.map((name) => [name, name])
-            )
-          ),
-        ],
-        { title: "Установленные расширения" }
-      ),
-      // Каждое расширение — своей группой: иначе строка «Показывать значок»
-      // второго читалась бы как настройка первого.
-      group([
-        setting(
-          "Автопролистывание",
-          "Доигравший ролик в YouTube Shorts, Reels в Instagram и TikTok сам сменяется следующим — лента листается так же, как стрелкой вниз. Пока вы пишете комментарий, лента стоит.",
-          toggle("ext_autoscroll_enabled"),
-          { iconId: "autoscroll" }
+    // Каждое расширение — своей группой: иначе строка «Показывать значок»
+    // второго читалась бы как настройка первого.
+    return EXTENSIONS.map((extension, index) => {
+      const service = extension.service
+        ? ` Сервис ${missingService(extension, state.services) ? "не настроен" : "подключён"}.`
+        : "";
+      const hint = [extension.summary, extension.note].filter(Boolean).join(" ") + service;
+      const rows = [
+        setting(extension.name, hint, toggle(extension.enabled), { iconId: extension.icon }),
+        switchSetting(extension.pinned, "Показывать значок на панели инструментов", extension.pinHint),
+        ...extension.settings.map((item) =>
+          item.type === "switch"
+            ? switchSetting(item.key, item.label, item.hint)
+            : setting(item.label, item.hint, select(item.key, item.options))
         ),
-        switchSetting(
-          "ext_autoscroll_pinned",
-          "Показывать кнопку на панели инструментов",
-          "Кнопка появляется только в этих лентах и одним щелчком включает или выключает пролистывание"
-        ),
-        switchSetting("autoscroll_youtube", "YouTube Shorts", "youtube.com/shorts"),
-        switchSetting("autoscroll_instagram", "Reels в Instagram", "instagram.com/reels"),
-        switchSetting("autoscroll_tiktok", "TikTok", "tiktok.com"),
-      ]),
-      group([
-        setting(
-          "SponsorBlock",
-          "Пропускает в видео YouTube спонсорские вставки, просьбы подписаться и другие сегменты, которые разметили зрители. Разметка — сообщество SponsorBlock (sponsor.ajay.app, CC BY-NC-SA 4.0); на сервер уходит не номер видео, а начало его хеша.",
-          toggle("ext_sponsorblock_enabled"),
-          { iconId: "skip" }
-        ),
-        ...SPONSORBLOCK_CATEGORIES.map(([category, label, hint]) =>
-          setting(label, hint, select(`sponsorblock_${category}`, SPONSORBLOCK_MODES))
-        ),
-      ]),
-      group(
-        [
-          setting(
-            "Загрузчик видео 190x4",
-            `Скачивает видео и звук с YouTube, VK, Rutube и других сайтов через сервер 190x4. Ctrl+Shift+D. Сервис ${ready(state.services.media)}.`,
-            toggle("ext_media_enabled"),
-            { iconId: "video" }
-          ),
-          switchSetting(
-            "ext_media_pinned",
-            "Показывать значок на панели инструментов",
-            "Без значка загрузчик открывается сочетанием Ctrl+Shift+D и из меню видео на странице"
-          ),
-        ]
-      ),
-    ];
+      ];
+      return group(rows, index === 0 ? { title: "Установленные расширения" } : {});
+    });
   },
 
   about() {

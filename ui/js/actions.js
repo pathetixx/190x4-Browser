@@ -208,6 +208,29 @@ export async function openTranslator(text = "") {
   });
 }
 
+/** Значок расширения на панели, если он сейчас виден. */
+const PINNED_BUTTONS = {
+  translate: "ext-translate",
+  media: "ext-media",
+  sponsorblock: "ext-sponsorblock",
+  autoscroll: "ext-autoscroll",
+};
+
+/**
+ * Меню «Расширения»: список с закреплением на панели, по щелчку — настройки
+ * расширения. `id` — открыть сразу настройки этого расширения; меню встаёт под
+ * его значком, если тот на панели, иначе — под кнопкой «Расширения».
+ */
+export async function openExtensions(id = null) {
+  const pinned = id ? document.getElementById(PINNED_BUTTONS[id] ?? "") : null;
+  const anchor = pinned && !pinned.hidden ? pinned : document.getElementById("ext-menu");
+  await openPopup("extensions", anchor, {
+    width: 360,
+    align: "end",
+    payload: { services: state.services, open: id },
+  });
+}
+
 /**
  * Лента коротких видео, которую листает расширение «Автопролистывание»: ключ
  * сайта в настройках или `null`. Так же решает скрипт ленты — адрес Shorts у

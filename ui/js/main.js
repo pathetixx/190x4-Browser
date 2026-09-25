@@ -10,6 +10,7 @@ import {
   openDownloadsPage,
   openHistoryPage,
   openMediaExtension,
+  openExtensions,
   openSettings,
   openTranslator,
   tabAction,
@@ -604,10 +605,10 @@ onPopupAction("site", ({ action }) => {
   if (action === "reload") tabAction("reload");
 });
 onPopupAction("media", ({ action }) => {
-  if (action === "settings") openSettings("extensions");
+  if (action === "settings") openExtensions("media").catch(() => {});
 });
 onPopupAction("translate", ({ action }) => {
-  if (action === "settings") openSettings("extensions");
+  if (action === "settings") openExtensions("translate").catch(() => {});
 });
 
 // Окно закрывают (крестик, Alt+F4, панель задач): сперва страницы — каждая

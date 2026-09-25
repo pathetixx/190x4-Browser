@@ -23,6 +23,7 @@ import {
 import * as model from "../downloads-model.js";
 import { ONCE, PERMISSIONS } from "../permissions.js";
 import { AUTO, LANGUAGES } from "../languages.js";
+import { EXTENSIONS, extensionById, missingService } from "../extensions.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "../prefs.js";
 
 const root = document.getElementById("popup");
@@ -209,6 +210,31 @@ const VIEWS = {
       list.append(row);
     }
     root.append(list);
+  },
+
+  /**
+   * Меню «Расширения»: список с закреплением на панели, по щелчку — настройки
+   * расширения. `open` — сразу настройки этого расширения (значок на панели,
+   * шестерёнка в окне переводчика).
+   */
+  extensions({ services = {}, open = null }) {
+    let detail = extensionById(open);
+    const draw = () => {
+      root.replaceChildren();
+      if (detail) {
+        extensionDetail(detail, services, () => {
+          detail = null;
+          draw();
+        });
+      } else {
+        extensionList(services, (extension) => {
+          detail = extension;
+          draw();
+        });
+      }
+      fit();
+    };
+    draw();
   },
 
   /** Подтверждение действия браузера: «Закрыть окно?», пока идут загрузки. */
@@ -1621,6 +1647,149 @@ function translatorView({ text = "", services }) {
     clearTimeout(timer);
     if (translator.redraw === draw) translator.redraw = null;
   };
+}
+
+/* ── Расширения ────────────────────────────────────────────── */
+
+function extensionState(extension, services) {
+  if (missingService(extension, services)) return "Сервис 190x4 не настроен";
+  if (!pref(extension.enabled)) return "Выключено";
+  return pref(extension.pinned) ? "Включено · значок на панели" : "Включено";
+}
+
+function extensionList(services, onOpen) {
+  const head = el("div", "exts__head");
+  head.append(
+    el("div", "exts__title", "Расширения"),
+    iconButton("settings", "Управление расширениями", () => act("extensions", "manage"), {
+      size: 20,
+      className: "btn btn--ghost btn--icon",
+    })
+  );
+  const list = el("div", "exts__list");
+  for (const extension of EXTENSIONS) {
+    const row = el("div", "exts__row");
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-label", `${extension.name}: настройки`);
+    const logo = el("div", "exts__logo");
+    logo.append(icon(extension.icon, 20));
+    const text = el("div", "exts__text");
+    const status = el("div", "exts__state", extensionState(extension, services));
+    text.append(el("div", "exts__name", extension.name), status);
+    const paint = () => {
+      row.dataset.off = String(!pref(extension.enabled) || missingService(extension, services));
+      status.textContent = extensionState(extension, services);
+    };
+    const pin = pinButton(extension, paint);
+    row.append(logo, text, pin, icon("chevron-right-16", 16, "exts__chevron"));
+    paint();
+    row.addEventListener("click", () => onOpen(extension));
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      onOpen(extension);
+    });
+    list.append(row);
+  }
+  root.append(head, list);
+}
+
+/** Закрепить значок расширения на панели инструментов или открепить. */
+function pinButton(extension, onChange) {
+  const button = el("button", "btn btn--ghost btn--icon btn--sm exts__pin");
+  button.type = "button";
+  const paint = () => {
+    const pinned = Boolean(pref(extension.pinned));
+    button.replaceChildren(icon(pinned ? "pin-16-filled" : "pin-16", 16));
+    button.title = pinned ? "Открепить от панели инструментов" : "Закрепить на панели инструментов";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", String(pinned));
+  };
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await setPref(extension.pinned, !pref(extension.pinned)).catch(() => {});
+    paint();
+    onChange();
+  });
+  paint();
+  return button;
+}
+
+function extensionDetail(extension, services, onBack) {
+  const head = el("div", "ext-head exts__detail-head");
+  const logo = el("div", "ext-head__logo");
+  logo.append(icon(extension.icon, 20));
+  const name = el("div", "ext-head__name");
+  name.append(document.createTextNode(extension.name), el("small", null, "Расширение 190x4"));
+  head.append(iconButton("back", "Все расширения", onBack, { size: 20, className: "btn btn--ghost btn--icon" }), logo, name);
+
+  const missing = missingService(extension, services);
+  const body = el("div", "exts__body scroll");
+  body.append(el("p", "exts__summary", [extension.summary, extension.note].filter(Boolean).join(" ")));
+  if (missing) body.append(el("div", "error-card", "Сервис 190x4 для этого расширения на этом компьютере не настроен."));
+
+  const actions = el("div", "exts__actions");
+  let openButton = null;
+  if (extension.open) {
+    openButton = textButton(extension.open, () => act("extensions", `open:${extension.id}`), "btn btn--primary");
+    actions.append(openButton);
+  }
+  actions.append(textButton("Все настройки", () => act("extensions", "manage"), "btn btn--ghost"));
+  const paint = () => {
+    if (openButton) openButton.disabled = missing || !pref(extension.enabled);
+  };
+
+  body.append(
+    switchRow("Включено", "", extension.enabled, paint),
+    switchRow("Значок на панели инструментов", extension.pinHint, extension.pinned)
+  );
+  for (const item of extension.settings) {
+    body.append(item.type === "switch" ? switchRow(item.label, item.hint, item.key) : selectRow(item));
+  }
+  paint();
+  root.append(head, body, actions);
+}
+
+function settingText(label, hint) {
+  const text = el("div", "exts__setting-text");
+  text.append(el("div", "exts__setting-label", label));
+  if (hint) text.append(el("div", "exts__setting-hint", hint));
+  return text;
+}
+
+function switchRow(label, hint, key, onChange) {
+  const row = el("div", "exts__setting");
+  const node = el("button", "switch");
+  node.type = "button";
+  node.setAttribute("role", "switch");
+  node.setAttribute("aria-label", label);
+  node.setAttribute("aria-checked", String(Boolean(pref(key))));
+  node.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const value = !pref(key);
+    node.setAttribute("aria-checked", String(value));
+    await setPref(key, value).catch(() => {});
+    onChange?.(value);
+  });
+  row.append(settingText(label, hint), node);
+  row.addEventListener("click", () => node.click());
+  return row;
+}
+
+function selectRow({ key, label, hint, options }) {
+  const row = el("div", "exts__setting");
+  const select = el("select", "field");
+  select.setAttribute("aria-label", label);
+  for (const [value, text] of options) {
+    const option = el("option", null, text);
+    option.value = value;
+    select.append(option);
+  }
+  select.value = String(pref(key));
+  select.addEventListener("change", () => setPref(key, select.value).catch(() => {}));
+  row.append(settingText(label, hint), select);
+  return row;
 }
 
 function languageSelect(options, value, label) {

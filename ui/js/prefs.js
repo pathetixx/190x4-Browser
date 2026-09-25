@@ -37,6 +37,7 @@ export const DEFAULTS = {
   // SponsorBlock: режим каждой категории — skip, ask, show или off. Те же
   // умолчания — в src-tauri/src/sponsorblock.rs (`CATEGORIES`).
   ext_sponsorblock_enabled: true,
+  ext_sponsorblock_pinned: false,
   sponsorblock_sponsor: "skip",
   sponsorblock_selfpromo: "show",
   sponsorblock_interaction: "show",

@@ -440,6 +440,140 @@ svg {
   color: var(--text-lo);
 }
 
+/* ── Меню «Расширения» ─────────────────────────────────────── */
+
+.exts__head {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.exts__title {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.exts__list {
+  padding: 4px;
+}
+
+.exts__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 6px 6px 6px 10px;
+  cursor: pointer;
+  outline: none;
+}
+
+/* Строка под курсором — как пункт меню: риска акцента и отсвет. */
+.exts__row:hover,
+.exts__row:focus-visible {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), var(--overlay-2) 70%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+
+.exts__logo {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  clip-path: var(--clip-btn);
+  background: linear-gradient(160deg, var(--accent-bright), var(--accent-deep));
+  color: #fff;
+}
+
+/* Выключенное или без сервиса — плитка гаснет. */
+.exts__row[data-off="true"] .exts__logo {
+  background: var(--overlay-2);
+  color: var(--text-lo);
+}
+
+.exts__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.exts__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.exts__state {
+  font-size: 11.5px;
+  color: var(--text-lo);
+}
+
+.exts__pin[aria-pressed="true"] {
+  color: var(--accent-bright);
+}
+
+.exts__chevron {
+  color: var(--text-faint);
+}
+
+.exts__detail-head {
+  padding-left: 4px;
+}
+
+.exts__body {
+  max-height: 460px;
+  overflow-y: auto;
+  padding: 12px 14px 4px;
+}
+
+.exts__summary {
+  margin: 0 0 10px;
+  color: var(--text-mid);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.exts__body .error-card {
+  margin-bottom: 10px;
+}
+
+.exts__setting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-1);
+  cursor: pointer;
+}
+
+.exts__setting-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.exts__setting-hint {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--text-lo);
+}
+
+.exts__setting .field {
+  width: 188px;
+  flex-shrink: 0;
+}
+
+.exts__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line-1);
+}
+
 /* ── Расширение: загрузчик видео ───────────────────────────── */
 
 .ext-head {
