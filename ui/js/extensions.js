@@ -90,7 +90,7 @@ export const EXTENSIONS = [
     name: "Twitch",
     icon: "stream",
     summary:
-      "Лучшее качество трансляций там, где Twitch его режет (из России — выше 720p), бонусы баллов канала сами и смайлы BetterTTV и FrankerFaceZ в чате.",
+      "Лучшее качество трансляций там, где Twitch его режет (из России — выше 720p), бонусы баллов канала сами и смайлы 7TV, BetterTTV и FrankerFaceZ в чате.",
     note: "Ради качества плейлист трансляции браузер берёт через сервер за пределами России (по умолчанию — прокси ReYohoho); само видео идёт с серверов Twitch напрямую.",
     enabled: "ext_twitch_enabled",
     pinned: "ext_twitch_pinned",
@@ -110,9 +110,15 @@ export const EXTENSIONS = [
       },
       {
         type: "switch",
+        key: "twitch_7tv",
+        label: "Смайлы 7TV",
+        hint: "Коды смайлов в сообщениях чата становятся картинками — общие и смайлы канала. Кнопка со смайликом под чатом показывает их все",
+      },
+      {
+        type: "switch",
         key: "twitch_bttv",
         label: "Смайлы BetterTTV",
-        hint: "Коды смайлов в сообщениях чата становятся картинками — общие и смайлы канала",
+        hint: "То же для смайлов BetterTTV",
       },
       {
         type: "switch",

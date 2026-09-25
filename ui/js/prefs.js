@@ -61,6 +61,7 @@ export const DEFAULTS = {
   twitch_points: true,
   twitch_bttv: true,
   twitch_ffz: true,
+  twitch_7tv: true,
   twitch_proxy_token: false,
   twitch_proxy: "",
   ext_media_enabled: true,

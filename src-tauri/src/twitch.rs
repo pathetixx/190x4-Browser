@@ -1,5 +1,5 @@
 //! Расширение Twitch: лучшее качество трансляций, бонусы баллов канала сами и
-//! смайлы BetterTTV и FrankerFaceZ в чате.
+//! смайлы 7TV, BetterTTV и FrankerFaceZ в чате.
 //!
 //! Качество. Twitch решает, какие качества дать, по стране зрителя — и в токене
 //! просмотра, и в главном плейлисте трансляции. Из России выше 720p он не даёт.
@@ -18,8 +18,8 @@
 //! без рекламной заставки и с 1440p.
 //!
 //! Смайлы и бонусы — скрипт страницы (`crates/webview/src/inject/twitch.js`).
-//! Списки смайлов браузер берёт у API BetterTTV (там же и смайлы FFZ) и
-//! отдаёт странице готовыми.
+//! Списки смайлов браузер берёт у API BetterTTV (там же и смайлы FFZ) и 7TV
+//! и отдаёт странице готовыми.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -59,8 +59,10 @@ const EMOTES_LIMIT: usize = 4000;
 /// «какой номер у канала».
 const TWITCH_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 
-/// Смайл для страницы: код, картинка 1x и 2x, откуда он.
+/// Смайл из набора: код, картинка 1x и 2x, откуда он.
 type Emote = (String, String, String, &'static str);
+/// Смайл для страницы: то же и чей он — `channel` или `global`.
+type PageEmote = (String, String, String, &'static str, &'static str);
 /// Наборы смайлов по ключу `поставщик:global` или `поставщик:<номер канала>`.
 type EmoteCache = HashMap<String, (Instant, Arc<Vec<Emote>>)>;
 /// Номера каналов по логину; `None` — такого канала нет.
@@ -158,21 +160,25 @@ async fn send_channel(app: &AppHandle, tab: u32, origin: &str, channel: Option<S
     let on = store.setting_bool("ext_twitch_enabled", true);
     let bttv = on && store.setting_bool("twitch_bttv", true);
     let ffz = on && store.setting_bool("twitch_ffz", true);
+    let seventv = on && store.setting_bool("twitch_7tv", true);
     let config = json!({
         "cmd": "twitch_config",
         "origin": origin,
+        "enabled": on,
         "points": on && store.setting_bool("twitch_points", true),
-        "emotes": bttv || ffz,
+        "emotes": bttv || ffz || seventv,
         "token": on && store.setting_bool("twitch_quality", true)
             && store.setting_bool("twitch_proxy_token", false),
     })
     .to_string();
     post(app, tab, config);
-    if !(bttv || ffz) {
+    let providers = Providers { bttv, ffz, seventv };
+    if !(bttv || ffz || seventv) {
         return;
     }
 
-    let emotes = emotes_for(app, channel.as_deref(), bttv, ffz).await;
+    let emotes = emotes_for(app, channel.as_deref(), providers).await;
+    tracing::debug!(tab, ?channel, count = emotes.len(), "смайлы Twitch");
     let message = json!({
         "cmd": "twitch_emotes",
         "origin": origin,
@@ -193,32 +199,41 @@ fn post(app: &AppHandle, tab: u32, message: String) {
     });
 }
 
-/// Смайлы чата: общие и канала, FFZ и BTTV. Смайл канала с тем же кодом
-/// перекрывает общий, BTTV — FFZ: страница берёт последний.
-async fn emotes_for(app: &AppHandle, channel: Option<&str>, bttv: bool, ffz: bool) -> Vec<Emote> {
+/// Какие сервисы смайлов включены.
+#[derive(Clone, Copy)]
+struct Providers {
+    bttv: bool,
+    ffz: bool,
+    seventv: bool,
+}
+
+/// Смайлы чата: общие и канала, FFZ, BTTV и 7TV. Смайл канала с тем же кодом
+/// перекрывает общий, 7TV — BTTV, BTTV — FFZ: страница берёт последний.
+async fn emotes_for(app: &AppHandle, channel: Option<&str>, on: Providers) -> Vec<PageEmote> {
     let id = match channel {
         Some(login) => channel_id(app, login).await,
         None => None,
     };
+    let scopes = std::iter::once("global".to_string()).chain(id);
     let mut keys = Vec::new();
-    if ffz {
-        keys.push("ffz:global".to_string());
-    }
-    if bttv {
-        keys.push("bttv:global".to_string());
-    }
-    if let Some(id) = &id {
-        if ffz {
-            keys.push(format!("ffz:{id}"));
-        }
-        if bttv {
-            keys.push(format!("bttv:{id}"));
+    for scope in scopes {
+        for (provider, enabled) in [("ffz", on.ffz), ("bttv", on.bttv), ("7tv", on.seventv)] {
+            if enabled {
+                keys.push(format!("{provider}:{scope}"));
+            }
         }
     }
     let mut out = Vec::new();
     for key in keys {
+        let scope = if key.ends_with(":global") {
+            "global"
+        } else {
+            "channel"
+        };
         match emote_set(app, &key).await {
-            Ok(set) => out.extend(set.iter().cloned()),
+            Ok(set) => out.extend(set.iter().map(|(code, one, two, provider)| {
+                (code.clone(), one.clone(), two.clone(), *provider, scope)
+            })),
             Err(err) => tracing::debug!(%err, key, "смайлы не получены"),
         }
     }
@@ -245,6 +260,8 @@ async fn emote_set(app: &AppHandle, key: &str) -> anyhow::Result<Arc<Vec<Emote>>
     let url = match (provider, scope) {
         ("bttv", "global") => "https://api.betterttv.net/3/cached/emotes/global".to_string(),
         ("bttv", id) => format!("https://api.betterttv.net/3/cached/users/twitch/{id}"),
+        ("7tv", "global") => "https://7tv.io/v3/emote-sets/global".to_string(),
+        ("7tv", id) => format!("https://7tv.io/v3/users/twitch/{id}"),
         ("ffz", "global") => {
             "https://api.betterttv.net/3/cached/frankerfacez/emotes/global".to_string()
         }
@@ -262,6 +279,8 @@ async fn emote_set(app: &AppHandle, key: &str) -> anyhow::Result<Arc<Vec<Emote>>
         Vec::new()
     } else if provider == "bttv" {
         parse_bttv(&body, scope == "global")?
+    } else if provider == "7tv" {
+        parse_7tv(&body, scope == "global")?
     } else {
         parse_ffz(&body)?
     });
@@ -340,6 +359,58 @@ fn parse_ffz(body: &str) -> anyhow::Result<Vec<Emote>> {
                 .filter(|url| valid_image(url))
                 .unwrap_or_else(|| one.clone());
             Some((emote.code, one, two, "FFZ"))
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct SevenTvEmote {
+    /// Код в чате: у канала он может отличаться от исходного названия смайла.
+    name: String,
+    /// 1 — смайл-наложение (zero-width): рисуется поверх соседнего, не рисуем.
+    #[serde(default)]
+    flags: u32,
+    data: SevenTvEmoteData,
+}
+
+#[derive(Deserialize)]
+struct SevenTvEmoteData {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct SevenTvSet {
+    #[serde(default)]
+    emotes: Option<Vec<SevenTvEmote>>,
+}
+
+#[derive(Deserialize)]
+struct SevenTvUser {
+    emote_set: Option<SevenTvSet>,
+}
+
+fn parse_7tv(body: &str, global: bool) -> anyhow::Result<Vec<Emote>> {
+    let set = if global {
+        Some(serde_json::from_str::<SevenTvSet>(body)?)
+    } else {
+        serde_json::from_str::<SevenTvUser>(body)?.emote_set
+    };
+    let emotes = set.and_then(|set| set.emotes).unwrap_or_default();
+    Ok(emotes
+        .into_iter()
+        .filter(|emote| emote.flags & 1 == 0 && valid_code(&emote.name))
+        .filter(|emote| {
+            (20..=32).contains(&emote.data.id.len())
+                && emote.data.id.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+        .map(|emote| {
+            let base = format!("https://cdn.7tv.app/emote/{}", emote.data.id);
+            (
+                emote.name,
+                format!("{base}/1x.webp"),
+                format!("{base}/2x.webp"),
+                "7TV",
+            )
         })
         .collect())
 }
@@ -612,6 +683,27 @@ mod tests {
         );
         assert!(twitch_origin("https://twitch.tv.evil.example/").is_none());
         assert!(twitch_origin("http://www.twitch.tv/").is_none());
+    }
+
+    #[test]
+    fn seventv_sets_are_parsed() {
+        let global = r#"{"id":"g","emotes":[
+            {"id":"01FCY771D800007PQ2DF3GDTN6","name":"RainTime","flags":1,"data":{"id":"01FCY771D800007PQ2DF3GDTN6","flags":256}},
+            {"id":"60ae958e229664e8667aea38","name":"EZ","flags":0,"data":{"id":"60ae958e229664e8667aea38","flags":0}},
+            {"id":"x","name":"Bad","flags":0,"data":{"id":"../../evil"}}]}"#;
+        let parsed = parse_7tv(global, true).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "EZ");
+        assert_eq!(
+            parsed[0].1,
+            "https://cdn.7tv.app/emote/60ae958e229664e8667aea38/1x.webp"
+        );
+
+        let channel = r#"{"id":"u","emote_set":{"emotes":[{"id":"01GK4EW2AG0004SH49XX2J74KJ","name":"peepoShy","flags":0,"data":{"id":"01GK4EW2AG0004SH49XX2J74KJ"}}]}}"#;
+        assert_eq!(parse_7tv(channel, false).unwrap()[0].0, "peepoShy");
+        assert!(parse_7tv(r#"{"id":"u","emote_set":null}"#, false)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

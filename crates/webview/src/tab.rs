@@ -52,7 +52,7 @@ static PASSWORDS_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(PASSW
 /// * автопролистывание в Shorts, Reels и TikTok спрашивает, листать ли дальше
 ///   доигравший ролик (`src-tauri/src/autoscroll.rs`);
 /// * расширение Twitch собирает бонусы баллов канала и рисует в чате смайлы
-///   BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`).
+///   7TV, BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`).
 const SITE_SCRIPTS: [(&str, &str); 3] = [
     ("SponsorBlock", include_str!("inject/sponsorblock.js")),
     ("автопролистывания", include_str!("inject/autoscroll.js")),
