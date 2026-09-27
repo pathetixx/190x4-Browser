@@ -30,6 +30,9 @@ const popupsChip = document.getElementById("omni-popups");
 const popupsCount = document.getElementById("omni-popups-count");
 const suggest = document.getElementById("suggest");
 
+/** Адреса без «//», которые открываются как есть, — тот же список, что `OPAQUE_SCHEMES` в Rust. */
+const OPAQUE = /^(mailto|tel|sms|callto|sip|magnet|webcal|xmpp|geo|bitcoin|news|blob):\S/i;
+
 let selected = 0;
 let rows = [];
 /// Строку выбрали стрелкой. Пока нет — Enter открывает набранный текст как
@@ -484,10 +487,14 @@ function buildRows(value, history, words) {
     return out;
   }
 
-  // Так же решает Rust (`normalize_url`): localhost и адреса с точкой — переход.
+  // Так же решает Rust (`normalize_url`): localhost и адреса с точкой — переход,
+  // почта и телефон со схемой (`mailto:`, `tel:`) — тоже, а «имя@mail.ru» без
+  // схемы — поиск.
+  const email = /^[^/?#\s]*@/.test(value);
   const looksLikeUrl =
+    OPAQUE.test(value) ||
     /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(value) ||
-    (!/\s/.test(value) && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value)));
+    (!/\s/.test(value) && !email && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value)));
   // Адрес дописан в строке — первая строка ведёт на него, как и Enter.
   const filled = inline?.typed === value ? inline : null;
   out.push(

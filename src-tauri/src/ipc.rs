@@ -602,19 +602,31 @@ fn normalize_url(input: &str, engine: &str) -> String {
     if dangerous {
         return format!("{}{}", search_prefix(engine), urlencode(trimmed));
     }
+    // Почта, телефон, магнет-ссылка — адреса без «//»: их открывает движок или
+    // приложение Windows. Иначе `mailto:x@mail.ru` ушёл бы на сайт mail.ru с
+    // логином «mailto» в адресе.
+    if opens_as_is(trimmed) {
+        return trimmed.to_string();
+    }
     // «как настроить https://…» — это вопрос, а не адрес: схема — только в
     // начале строки.
     let spaced = trimmed.contains(char::is_whitespace);
     if has_scheme(trimmed) || (trimmed.starts_with("about:") && !spaced) {
         return trimmed.to_string();
     }
+    // «имя@mail.ru» без схемы — адрес почты, а не сайт: его ищут, как в Chrome.
+    let email = trimmed
+        .split(['/', '?', '#'])
+        .next()
+        .is_some_and(|authority| authority.contains('@'));
     let looks_like_host = !spaced
+        && !email
         && trimmed.contains('.')
         && !trimmed.starts_with('.')
         && !trimmed.ends_with('.')
         && (names_a_site(trimmed) || is_local_address(trimmed));
     // localhost, localhost:5173, localhost/app — точки в них нет.
-    if looks_like_host || (!spaced && is_local_address(trimmed)) {
+    if looks_like_host || (!spaced && !email && is_local_address(trimmed)) {
         // Домашний роутер и сосед по локальной сети по https не отвечают:
         // туда идём по http, во внешний интернет — по https.
         let scheme = if is_local_address(trimmed) {
@@ -651,6 +663,23 @@ fn names_a_site(input: &str) -> bool {
         return true;
     }
     psl::suffix(host.as_bytes()).is_some_and(|suffix| suffix.is_known())
+}
+
+/// Схемы без «//», которые открываются как есть. Тот же список — в
+/// `buildRows` адресной строки (`ui/js/omnibox.js`).
+const OPAQUE_SCHEMES: [&str; 12] = [
+    "mailto", "tel", "sms", "callto", "sip", "magnet", "webcal", "xmpp", "geo", "bitcoin", "news",
+    "blob",
+];
+
+/// `mailto:…`, `tel:…`, `magnet:?…` — известная схема и сразу за ней адрес.
+fn opens_as_is(input: &str) -> bool {
+    input.split_once(':').is_some_and(|(scheme, rest)| {
+        OPAQUE_SCHEMES
+            .iter()
+            .any(|known| scheme.eq_ignore_ascii_case(known))
+            && rest.chars().next().is_some_and(|c| !c.is_whitespace())
+    })
 }
 
 /// Адрес со схемой в начале: `https://…`, `ftp://…`.
@@ -788,6 +817,36 @@ mod tests {
         assert_eq!(
             normalize_url("? habr.com", "duckduckgo"),
             "https://duckduckgo.com/?q=habr.com"
+        );
+    }
+
+    #[test]
+    fn mail_phone_and_magnet_open_as_is() {
+        for input in [
+            "mailto:user@mail.ru",
+            "MAILTO:user@mail.ru?subject=Привет",
+            "tel:+79991234567",
+            "magnet:?xt=urn:btih:abc&dn=file",
+        ] {
+            assert_eq!(normalize_url(input, "google"), input);
+        }
+        assert!(normalize_url("tel: как позвонить", "duckduckgo")
+            .starts_with("https://duckduckgo.com/?q="));
+    }
+
+    #[test]
+    fn email_address_is_searched_not_opened() {
+        assert_eq!(
+            normalize_url("user@mail.ru", "duckduckgo"),
+            "https://duckduckgo.com/?q=user%40mail.ru"
+        );
+        assert_eq!(
+            normalize_url("vk.com/@durov", "google"),
+            "https://vk.com/@durov"
+        );
+        assert_eq!(
+            normalize_url("https://user@example.com/", "google"),
+            "https://user@example.com/"
         );
     }
 
