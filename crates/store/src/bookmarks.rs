@@ -221,31 +221,6 @@ impl Store {
         })
     }
 
-    /// Снять звезду: убрать все закладки на этот адрес.
-    pub fn remove_bookmarks_by_url(&self, url: &str) -> anyhow::Result<()> {
-        self.with(|db| {
-            let tx = db.unchecked_transaction()?;
-            let parents: Vec<i64> = {
-                let mut stmt = tx.prepare(
-                    "SELECT DISTINCT parent_id FROM bookmark_nodes
-                     WHERE kind = 'url' AND url = ?1 AND parent_id IS NOT NULL",
-                )?;
-                let rows = stmt
-                    .query_map([url], |row| row.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                rows
-            };
-            tx.execute(
-                "DELETE FROM bookmark_nodes WHERE kind = 'url' AND url = ?1",
-                [url],
-            )?;
-            for parent in parents {
-                renumber(&tx, parent)?;
-            }
-            tx.commit()
-        })
-    }
-
     /// Импорт из HTML (формат Netscape — его экспортируют Chrome, Edge,
     /// Firefox, Яндекс).
     ///

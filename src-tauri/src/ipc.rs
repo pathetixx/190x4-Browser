@@ -270,17 +270,6 @@ pub fn tab_dialog(
     Ok(())
 }
 
-/// Отправить сообщение на страницу вкладки.
-#[tauri::command]
-pub fn tab_post(app: AppHandle, id: u32, payload: Value) -> Result<(), String> {
-    let json = payload.to_string();
-    with_tab(&app, id, move |host| {
-        host.with_tab(TabId(id), |tab| tab.post(&json))
-            .ok_or_else(|| "вкладка ещё не готова".to_string())?
-            .map_err(text)
-    })?
-}
-
 /// Заглушить вкладку или вернуть ей звук.
 #[tauri::command]
 pub fn tab_mute(app: AppHandle, id: u32, muted: bool) -> Result<(), String> {
@@ -1250,11 +1239,6 @@ pub fn history_forget(state: State<'_, App>, url: String) -> Result<(), String> 
     state.store.forget_history(&url).map_err(text)
 }
 
-#[tauri::command(async)]
-pub fn history_clear(state: State<'_, App>) -> Result<(), String> {
-    state.store.clear_history().map_err(text)
-}
-
 /// Сохранить раскладку вкладок. Chrome зовёт это с задержкой после изменений,
 /// чтобы серия открытий не превратилась в серию записей на диск.
 #[tauri::command(async)]
@@ -1401,17 +1385,6 @@ pub fn bookmark_move(
 #[tauri::command(async)]
 pub fn bookmark_remove(app: AppHandle, state: State<'_, App>, id: i64) -> Result<(), String> {
     state.store.remove_bookmark(id).map_err(text)?;
-    bookmarks_changed(&app);
-    Ok(())
-}
-
-#[tauri::command(async)]
-pub fn bookmark_remove_url(
-    app: AppHandle,
-    state: State<'_, App>,
-    url: String,
-) -> Result<(), String> {
-    state.store.remove_bookmarks_by_url(&url).map_err(text)?;
     bookmarks_changed(&app);
     Ok(())
 }
@@ -1673,29 +1646,6 @@ pub fn password_offer_answer(app: AppHandle, tab: u32, action: String) -> Result
 #[tauri::command(async)]
 pub fn password_fill(app: AppHandle, tab: u32, id: i64) -> Result<(), String> {
     passwords::fill(&app, tab, id).map_err(text)
-}
-
-#[derive(Serialize)]
-pub struct SiteAccount {
-    id: i64,
-    username: String,
-}
-
-#[tauri::command(async)]
-pub fn passwords_for_site(state: State<'_, App>, url: String) -> Result<Vec<SiteAccount>, String> {
-    let Some(origin) = passwords_csv::origin_of(&url) else {
-        return Ok(Vec::new());
-    };
-    Ok(state
-        .store
-        .password_secrets_for(&origin)
-        .map_err(text)?
-        .into_iter()
-        .map(|account| SiteAccount {
-            id: account.id,
-            username: account.username,
-        })
-        .collect())
 }
 
 /* ── Загрузки ───────────────────────────────────────────────────────────── */

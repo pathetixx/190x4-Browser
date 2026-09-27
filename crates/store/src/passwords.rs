@@ -201,11 +201,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn clear_passwords(&self) -> anyhow::Result<()> {
-        self.with(|db| db.execute("DELETE FROM passwords", []))?;
-        Ok(())
-    }
-
     /// Учётку только что использовали — поднимаем её наверх списка сайта.
     pub fn touch_password(&self, id: i64) -> anyhow::Result<()> {
         let now = crate::history::now_secs();

@@ -88,10 +88,6 @@ export async function reloadBookmarks() {
   document.dispatchEvent(new CustomEvent("bookmarks-changed"));
 }
 
-export function bookmarkNodes() {
-  return nodes;
-}
-
 function childrenOf(parent) {
   return nodes.filter((node) => node.parent_id === parent).sort((a, b) => a.position - b.position);
 }

@@ -192,10 +192,6 @@ export function activeTab() {
   return state.activeId === null ? null : state.tabs.get(state.activeId) ?? null;
 }
 
-export function splitTab() {
-  return state.splitId === null ? null : state.tabs.get(state.splitId) ?? null;
-}
-
 /**
  * Сделать вкладку активной. Вторая половина разделённого экрана становится
  * активной на своём месте, вкладка не из пары — на месте активной половины.

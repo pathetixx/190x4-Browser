@@ -117,9 +117,7 @@ pub fn run() {
         ));
     }
     builder
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(App {
             guard: guard.clone(),
@@ -153,7 +151,6 @@ pub fn run() {
             ipc::tab_split,
             ipc::tab_navigate,
             ipc::tab_action,
-            ipc::tab_post,
             ipc::tab_context_menu,
             ipc::tab_dialog,
             ipc::tab_mute,
@@ -191,7 +188,6 @@ pub fn run() {
             ipc::history_page,
             ipc::history_forget,
             ipc::history_forget_visit,
-            ipc::history_clear,
             ipc::history_clear_period,
             ipc::search_suggest,
             ipc::site_icon,
@@ -202,7 +198,6 @@ pub fn run() {
             ipc::bookmark_update,
             ipc::bookmark_move,
             ipc::bookmark_remove,
-            ipc::bookmark_remove_url,
             ipc::bookmarks_import,
             ipc::bookmarks_export,
             ipc::passwords_list,
@@ -216,7 +211,6 @@ pub fn run() {
             ipc::password_never_forget,
             ipc::password_offer_answer,
             ipc::password_fill,
-            ipc::passwords_for_site,
             ipc::session_save,
             ipc::session_restore,
             ipc::downloads_list,
