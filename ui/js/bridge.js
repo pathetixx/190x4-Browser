@@ -27,11 +27,39 @@ const chains = new Map();
 
 export async function invoke(command, args = {}) {
   if (!isNative) return mock.invoke(command, args);
-  if (!ORDERED.has(command)) return tauri.core.invoke(command, args);
+  if (!ORDERED.has(command)) return send(command, args);
   const previous = chains.get(command) ?? Promise.resolve();
-  const call = previous.catch(() => {}).then(() => tauri.core.invoke(command, args));
+  const call = previous.catch(() => {}).then(() => send(command, args));
   chains.set(command, call);
   return call;
+}
+
+/**
+ * Хост вкладок бывает занят: движок крутит вложенный цикл сообщений (полный
+ * экран, перенос вкладки), и команда в этот миг не выполняется вовсе — Rust
+ * отвечает «хост вкладок занят», ничего не сделав. Такую команду можно
+ * повторить. Без повтора закрытая вкладка жила бы дальше невидимой, а
+ * страница оставалась бы спрятанной под закрытой палитрой.
+ *
+ * Команды-состояния повторяются, только пока их не сменил новый вызов: иначе
+ * запоздавший повтор вернул бы прежнюю вкладку или прежнюю раскладку.
+ */
+const BUSY = "хост вкладок занят";
+const LATEST = new Set(["tab_activate", "tab_split", "overlay_set", "layout_set"]);
+const latest = new Map();
+
+async function send(command, args) {
+  const generation = (latest.get(command) ?? 0) + 1;
+  latest.set(command, generation);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await tauri.core.invoke(command, args);
+    } catch (error) {
+      const stale = LATEST.has(command) && latest.get(command) !== generation;
+      if (error !== BUSY || stale || attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }
 
 /**
