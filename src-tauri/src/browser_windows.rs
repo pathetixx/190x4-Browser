@@ -516,7 +516,10 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             closing(&handle, &label);
         }
         WindowEvent::Destroyed => {
-            state::remove_host(&label);
+            for tab in state::remove_host(&label) {
+                crate::passwords::forget_tab(&handle, tab);
+                crate::external::forget_tab(&handle.state::<App>(), tab);
+            }
             handle.state::<App>().windows.remove(&label);
             crate::popup::destroy(&handle, &label);
             // Последнее окно браузера закрыли: всплывающие окна сами приложение

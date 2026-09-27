@@ -66,11 +66,16 @@ pub fn install_host(label: &str, host: TabHost) {
     HOSTS.with(|cell| cell.borrow_mut().insert(label.to_string(), host));
 }
 
-/// Окно закрылось: его вкладки закрыл движок вместе с окном.
-pub fn remove_host(label: &str) {
-    HOSTS.with(|cell| {
-        cell.borrow_mut().remove(label);
-    });
+/// Окно закрылось: закрыть вебвью его вкладок (`TabHost::shutdown`).
+/// Возвращает номера закрытых вкладок.
+///
+/// Хост вынимается из реестра до закрытия: закрытие вебвью шлёт события, и
+/// их обработчики могут искать хосты.
+pub fn remove_host(label: &str) -> Vec<u32> {
+    let Some(host) = HOSTS.with(|cell| cell.borrow_mut().remove(label)) else {
+        return Vec::new();
+    };
+    host.shutdown().into_iter().map(|id| id.0).collect()
 }
 
 /// Сколько загрузок оборвёт закрытие окна. Зовётся из обработчика окна — он

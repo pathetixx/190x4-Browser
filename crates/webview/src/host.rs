@@ -222,6 +222,9 @@ struct HostState {
     windows: HashMap<TabId, HWND>,
     /// Сам хост — для отложенных действий (таймер не держит его живым).
     weak: Weak<RefCell<HostState>>,
+    /// Окно закрыто (`TabHost::shutdown`): вкладка, которую движок достроит
+    /// позже, закрывается сразу.
+    closed: bool,
 }
 
 /// Сколько прежняя вкладка остаётся на экране после переключения: новой
@@ -412,6 +415,7 @@ impl TabHost {
                 page_color: Rc::new(std::cell::Cell::new([8, 8, 10])),
                 windows: HashMap::new(),
                 weak: Weak::new(),
+                closed: false,
             })),
         };
         host.inner.borrow_mut().weak = Rc::downgrade(&host.inner);
@@ -557,9 +561,10 @@ impl TabHost {
 
                 let mut state = inner.borrow_mut();
                 let popup = popup.and_then(|token| state.popups.borrow_mut().remove(&token));
-                // Вкладку закрыли раньше, чем движок её достроил: закрываем и
-                // контроллер, иначе живая страница осталась бы без места в строке.
-                if !spare && !state.order.contains(&id) {
+                // Вкладку или всё окно закрыли раньше, чем движок её достроил:
+                // закрываем и контроллер, иначе живая страница осталась бы без
+                // места в строке.
+                if state.closed || (!spare && !state.order.contains(&id)) {
                     tracing::debug!(?id, "вкладку закрыли до готовности");
                     let _ = unsafe { controller.Close() };
                     if let Some(popup) = popup {
@@ -698,6 +703,47 @@ impl TabHost {
         Ok(state.active)
     }
 
+    /// Окно закрыли: закрыть вебвью всех его вкладок — открытых, прогретой и
+    /// тех, что докачивают загрузку. Возвращает номера закрытых вкладок.
+    ///
+    /// Сам движок вкладки окна не закрывает: обработчики событий держат ссылки
+    /// на свой вебвью, и без `Close` эта петля переживает окно. Страницы
+    /// закрытого окна жили бы невидимыми до выхода из браузера — с памятью,
+    /// процессором и звуком, а приватная сессия досталась бы следующему
+    /// приватному окну. Вкладку, которую движок ещё достраивает, закроет её
+    /// коллбек (`closed`).
+    pub fn shutdown(&self) -> Vec<TabId> {
+        let (tabs, popups) = {
+            let mut state = self.inner.borrow_mut();
+            state.closed = true;
+            state.order.clear();
+            state.active = None;
+            state.split = None;
+            state.spare = None;
+            state.windows.clear();
+            let tabs: Vec<(TabId, Tab)> = std::mem::take(&mut state.tabs)
+                .into_iter()
+                .chain(std::mem::take(&mut state.parked))
+                .collect();
+            let popups: Vec<_> = std::mem::take(&mut *state.popups.borrow_mut())
+                .into_values()
+                .collect();
+            (tabs, popups)
+        };
+        // Окна, которые ждали своей вкладки, уже никто не откроет.
+        for popup in popups {
+            popup.deny();
+        }
+        let mut closed = Vec::with_capacity(tabs.len());
+        for (id, tab) in tabs {
+            if let Err(err) = tab.close() {
+                tracing::debug!(?id, %err, "вкладка закрытого окна не закрылась");
+            }
+            closed.push(id);
+        }
+        closed
+    }
+
     /// Сделать вкладку активной.
     ///
     /// Вкладка может быть ещё в процессе создания — это не ошибка: намерение
@@ -743,10 +789,6 @@ impl TabHost {
         }
         state.apply_bounds()?;
         state.apply_visibility()
-    }
-
-    pub fn split_id(&self) -> Option<TabId> {
-        self.inner.borrow().split
     }
 
     /// Chrome сдвинул границы контента (открылась боковая панель, свернулась
@@ -1041,10 +1083,6 @@ impl TabHost {
             Ok(()) => take_pwstr(raw),
             Err(_) => String::new(),
         }
-    }
-
-    pub fn active_id(&self) -> Option<TabId> {
-        self.inner.borrow().active
     }
 
     /// Вкладки по порядку: адрес и заголовок документа — для монитора ресурсов.
