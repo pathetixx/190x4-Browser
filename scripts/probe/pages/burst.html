@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>burst</title>
+<p>Двенадцать запросов к рекламному домену одной пачкой — все их снимает фильтр.</p>
+<script>
+  for (let i = 0; i < 12; i++) {
+    fetch(`https://pagead2.googlesyndication.com/pagead/show_ads.js?burst=${i}`, { mode: "no-cors" }).catch(() => {});
+  }
+</script>
