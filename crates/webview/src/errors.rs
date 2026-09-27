@@ -178,9 +178,20 @@ document.title = data.title;
 }
 
 /// Скрипт, который рисует страницу ошибки в уже загруженном документе.
+///
+/// Только поверх страницы ошибки движка (`chrome-error://`). Неуспешной движок
+/// считает и навигацию, после которой на экране осталась прежняя страница
+/// (переход отменили, ссылка ушла в приложение), и ответ сайта 4xx со своим
+/// содержимым — их документ не наш, и заменять его нельзя.
 pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<String> {
     let (title, hint) = describe(status)?;
-    Some(page_script(title, url, hint, "", "null"))
+    Some(page_script(
+        title,
+        url,
+        hint,
+        r#"if (!location.href.startsWith("chrome-error://")) return;"#,
+        "null",
+    ))
 }
 
 /// Своя страница вместо страницы движка «Подключение не защищено».
@@ -256,7 +267,13 @@ mod tests {
         assert!(!cert.contains('\0'));
         let timeout = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
         assert!(timeout.contains("const proceed = null;"));
-        assert!(!timeout.contains("chrome-error://"));
+        assert!(!timeout.contains("certificateErrorPageController"));
+    }
+
+    #[test]
+    fn error_page_replaces_only_the_engine_page() {
+        let script = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
+        assert!(script.contains(r#"if (!location.href.startsWith("chrome-error://")) return;"#));
     }
 
     #[test]
