@@ -15,7 +15,11 @@ license.workspace = true
 # и `ArcSwap<Engine>` со сменой списков из фонового потока просто не соберётся
 # (в самом adblock на это есть тест `assert_engine_sync`). Ценой остаётся
 # `Mutex` вокруг regex-кэша — неконтендящийся, потому что читатель один.
-adblock = { version = "0.13", default-features = false, features = ["full-regex-handling", "embedded-domain-resolver"] }
+#
+# `css-validation` разбирает селекторы косметики: без неё процедурные правила
+# (`:has-text`, `:upward`, `:remove()`…) уходили в стиль как есть, браузер
+# отбрасывал их невалидными, и реклама ВК, Яндекса и Mail.ru оставалась.
+adblock = { version = "0.13", default-features = false, features = ["full-regex-handling", "embedded-domain-resolver", "css-validation"] }
 arc-swap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,20 +1,44 @@
-//! Косметика документа: стили скрытия и скриптлеты, которые встраиваются в
-//! страницу до её собственных скриптов.
+//! Косметика документа: стили скрытия, процедурные правила и скриптлеты,
+//! которые встраиваются в страницу до её собственных скриптов.
+
+use std::sync::LazyLock;
 
 /// Что сделать с документом.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Cosmetics {
     /// CSS-селекторы элементов, которые прячутся.
     pub hide: Vec<String>,
+    /// Правила `:style()`, которые выражаются чистым CSS: селектор и объявления.
+    pub styles: Vec<(String, String)>,
+    /// Процедурные правила (`:has-text`, `:upward`, `:remove()`…) — JSON движка;
+    /// их выполняет скрипт страницы.
+    pub procedural: Vec<String>,
+    /// Искать общие правила по классам и id страницы: у неё нет `$generichide`.
+    pub generic: bool,
     /// Скриптлеты вместе с зависимостями — готовый JavaScript.
     pub script: String,
 }
 
 impl Cosmetics {
     pub fn is_empty(&self) -> bool {
-        self.hide.is_empty() && self.script.trim().is_empty()
+        self.hide.is_empty()
+            && self.styles.is_empty()
+            && self.procedural.is_empty()
+            && !self.generic
+            && self.script.trim().is_empty()
     }
 }
+
+/// Исполнитель косметики на странице: стили, процедурные правила и сбор
+/// классов и id для общих правил. Без строк-комментариев — они нужны в
+/// исходнике, а не в каждом документе.
+static RUNTIME: LazyLock<String> = LazyLock::new(|| {
+    include_str!("cosmetic.js")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+});
 
 /// Хост адреса http(s) в нижнем регистре — с ним сверяется `location.hostname`.
 pub fn document_host(url: &str) -> Option<String> {
@@ -34,8 +58,9 @@ pub fn document_host(url: &str) -> Option<String> {
 ///
 /// Скрипт встраивается при создании документа во все его фреймы, а правила
 /// посчитаны для адреса вкладки — поэтому он сверяет хост. Стиль скрытия
-/// ставится, как только у документа появляется корневой элемент. Скриптлеты с
-/// нулевым символом не встраиваются: WebView2 обрезал бы на нём весь скрипт.
+/// ставится, как только у документа появляется корневой элемент, остальное
+/// делает исполнитель (`cosmetic.js`). Скриптлеты с нулевым символом не
+/// встраиваются: WebView2 обрезал бы на нём весь скрипт.
 pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
     if cosmetics.is_empty() {
         return None;
@@ -45,31 +70,34 @@ pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
     } else {
         cosmetics.script.as_str()
     };
-    let css: String = cosmetics
+    let mut css: String = cosmetics
         .hide
         .iter()
         .map(|selector| format!("{selector}{{display:none!important}}\n"))
         .collect();
+    for (selector, style) in &cosmetics.styles {
+        css.push_str(&format!("{selector}{{{style}}}\n"));
+    }
+    let procedural: Vec<serde_json::Value> = cosmetics
+        .procedural
+        .iter()
+        .filter_map(|filter| serde_json::from_str(filter).ok())
+        .collect();
+    let config = serde_json::json!({
+        "host": host,
+        "css": css,
+        "procedural": procedural,
+        "generic": cosmetics.generic,
+    })
+    .to_string();
     let host = serde_json::to_string(host).ok()?;
-    let css = serde_json::to_string(&css).ok()?;
+    let runtime = RUNTIME.replace("__X4_CONFIG__", &config);
     Some(format!(
         r#"(() => {{
 if (location.hostname !== {host}) return;
 {script}
-const hideCss190x4 = {css};
-if (!hideCss190x4) return;
-const hide190x4 = () => {{
-  const style = document.createElement("style");
-  style.textContent = hideCss190x4;
-  (document.head || document.documentElement).append(style);
-}};
-if (document.documentElement) hide190x4();
-else new MutationObserver((_, observer) => {{
-  if (!document.documentElement) return;
-  observer.disconnect();
-  hide190x4();
-}}).observe(document, {{ childList: true }});
 }})();
+{runtime}
 "#
     ))
 }
@@ -105,13 +133,32 @@ mod tests {
     fn script_checks_host_and_hides_selectors() {
         let cosmetics = Cosmetics {
             hide: vec![".promo".into()],
+            styles: vec![(".banner".into(), "height: 0".into())],
+            procedural: vec![
+                r#"{"selector":[{"type":"css-selector","arg":"div"},{"type":"has-text","arg":"Реклама"}]}"#.into(),
+            ],
+            generic: true,
             script: "mark();".into(),
         };
         let script = document_script("example.com", &cosmetics).unwrap();
         assert!(script.contains(r#"location.hostname !== "example.com""#));
         assert!(script.contains("mark();"));
-        assert!(script.contains(".promo{display:none!important}"));
+        assert!(script.contains(r#".promo{display:none!important}"#));
+        assert!(script.contains(r#".banner{height: 0}"#));
+        assert!(script.contains(r#""type":"has-text""#));
+        assert!(script.contains(r#""generic":true"#));
+        assert!(!script.contains("__X4_CONFIG__"));
         assert!(!script.contains('\0'));
+    }
+
+    #[test]
+    fn generic_rules_alone_need_a_script() {
+        let cosmetics = Cosmetics {
+            generic: true,
+            ..Cosmetics::default()
+        };
+        assert!(!cosmetics.is_empty());
+        assert!(document_script("example.com", &cosmetics).is_some());
     }
 
     #[test]
@@ -119,6 +166,7 @@ mod tests {
         let cosmetics = Cosmetics {
             hide: vec![".promo".into()],
             script: "bad(\"\0\");".into(),
+            ..Cosmetics::default()
         };
         let script = document_script("example.com", &cosmetics).unwrap();
         assert!(!script.contains("bad("));

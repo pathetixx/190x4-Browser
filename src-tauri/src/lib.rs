@@ -11,6 +11,7 @@
 
 mod autoscroll;
 mod browser_windows;
+mod cosmetic;
 mod default_browser;
 mod drm;
 mod external;
@@ -353,10 +354,11 @@ pub(crate) fn route_event(
                 return;
             }
             // Фреймам доступны только менеджер паролей, SponsorBlock (плеер
-            // YouTube, встроенный в чужую страницу) и защищённое видео (плеер
-            // кинотеатра во фрейме): новая вкладка и chrome принимают
-            // сообщения лишь от документа вкладки.
+            // YouTube, встроенный в чужую страницу), защищённое видео (плеер
+            // кинотеатра во фрейме) и косметика фреймов сайта: новая вкладка и
+            // chrome принимают сообщения лишь от документа вкладки.
             if passwords::handle_message(app, label, *id, *frame, source, payload)
+                || cosmetic::handle_message(app, *id, *frame, source, payload)
                 || sponsorblock::handle_message(app, *id, *frame, source, payload)
                 || drm::handle_message(app, label, *id, source, payload)
                 || autoscroll::handle_message(app, *id, *frame, source, payload)
@@ -861,6 +863,9 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
 /// Собранный движок фильтра и отпечаток набора списков, из которого он собран.
 const SNAPSHOT: &str = "engine.bin";
 const SNAPSHOT_KEY: &str = "engine.key";
+/// Как собран движок: сменился разбор правил (процедурная косметика) —
+/// снимок прежней сборки не годится, даже если версия браузера та же.
+const SNAPSHOT_FORMAT: &str = "cosmetics-2";
 
 /// Включённый список фильтров и файл, из которого он читается.
 struct ListFile {
@@ -875,7 +880,10 @@ struct ListFile {
 /// списки включены и какие файлы лежат на диске — размер и время записи.
 /// Сменилось что угодно — снимок устарел, списки собираются заново.
 fn snapshot_key(lists: &[ListFile]) -> String {
-    let mut lines = vec![env!("CARGO_PKG_VERSION").to_string()];
+    let mut lines = vec![
+        env!("CARGO_PKG_VERSION").to_string(),
+        SNAPSHOT_FORMAT.to_string(),
+    ];
     for list in lists {
         let stamp = match std::fs::metadata(&list.path) {
             Ok(meta) => {

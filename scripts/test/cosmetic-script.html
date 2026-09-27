@@ -1,0 +1,104 @@
+<!doctype html>
+<!--
+  Проверка исполнителя косметики (crates/adblock/src/cosmetic.js) без Windows и
+  без WebView2: настройки — вместо __X4_CONFIG__, мост — заглушка.
+
+    chromium --headless=new --virtual-time-budget=6000 --dump-dom \
+      file://$PWD/scripts/test/cosmetic-script.html | grep 'data-ok="true"'
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>cosmetic.js</title>
+    <script>
+      window.__sent = [];
+      window.__handlers = [];
+      window.chrome = window.chrome || {};
+      window.chrome.webview = {
+        postMessage(message) {
+          window.__sent.push(JSON.parse(JSON.stringify(message)));
+        },
+        addEventListener(type, handler) {
+          if (type === "message") window.__handlers.push(handler);
+        },
+      };
+      const css = (arg) => ({ type: "css-selector", arg });
+      var __X4_CONFIG__ = {
+        host: location.hostname,
+        css: ".promo{display:none!important}\n.banner{height:1px}\n",
+        generic: true,
+        procedural: [
+          { selector: [css("div.card"), { type: "has-text", arg: "Реклама" }] },
+          { selector: [css("span.label"), { type: "has-text", arg: "/^\\s*Промо\\s*$/" }, { type: "upward", arg: "2" }] },
+          { selector: [css("div.post"), { type: "has-text", arg: "спонсор" }, css(" > .body")], action: { type: "remove" } },
+          { selector: [css("div.box")], action: { type: "remove-attr", arg: "onclick" } },
+          { selector: [css("section.feed div"), { type: "min-text-length", arg: "20" }], action: { type: "style", arg: "outline: 2px solid red" } },
+          { selector: [css("a"), { type: "matches-attr", arg: 'data-kind="ad"' }] },
+          { selector: [{ type: "xpath", arg: "//p[contains(., 'партнёр')]" }] },
+          { selector: [css("div.late"), { type: "has-text", arg: "Реклама" }] },
+          { selector: [{ type: "matches-path", arg: "/nowhere-at-all/" }, css("div.card")] },
+        ],
+      };
+    </script>
+    <script src="../../crates/adblock/src/cosmetic.js"></script>
+  </head>
+  <body>
+    <div class="promo" id="promo">промо</div>
+    <div class="banner" id="banner">баннер</div>
+    <div class="card" id="ad-card">Реклама · купите</div>
+    <div class="card" id="news-card">Новости</div>
+    <div class="outer" id="outer"><div><span class="label">Промо</span></div></div>
+    <div class="post" id="post"><div class="body" id="post-body">от спонсор</div></div>
+    <div class="box" id="box" onclick="return 1">коробка</div>
+    <section class="feed"><div id="long">это достаточно длинный текст ленты</div><div id="short">коротко</div></section>
+    <a href="#" id="ad-link" data-kind="ad">ссылка</a>
+    <a href="#" id="plain-link" data-kind="news">ссылка</a>
+    <p id="partner">наш партнёр</p>
+    <div class="ad-banner" id="generic">общий баннер</div>
+    <pre id="out"></pre>
+    <script>
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+      const checks = {};
+
+      (async () => {
+        await wait(400);
+        checks.css_hide = !shown("promo") && shown("news-card");
+        checks.css_style = getComputedStyle(document.getElementById("banner")).height === "1px";
+        checks.has_text = !shown("ad-card");
+        checks.upward = !shown("outer");
+        checks.remove = !document.getElementById("post-body") && Boolean(document.getElementById("post"));
+        checks.remove_attr = !document.getElementById("box").hasAttribute("onclick");
+        checks.style = document.getElementById("long").style.outlineStyle === "solid" && !document.getElementById("short").style.outlineStyle;
+        checks.matches_attr = !shown("ad-link") && shown("plain-link");
+        checks.xpath = !shown("partner");
+        checks.path_mismatch = shown("news-card");
+
+        // Общие правила: страница сообщила свои классы, браузер ответил селектором.
+        const asked = __sent.filter((m) => m.evt === "cosmetic_ids");
+        checks.generic_asked = asked.some((m) => m.classes.includes("ad-banner") && m.ids.includes("generic"));
+        for (const handler of __handlers) {
+          handler({ data: { cmd: "cosmetic_css", origin: location.origin, selectors: [".ad-banner"] } });
+        }
+        await wait(50);
+        checks.generic_hidden = !shown("generic");
+
+        // Позже добавленный элемент: и процедурное правило, и новый класс.
+        const late = document.createElement("div");
+        late.className = "late fresh-class";
+        late.id = "late";
+        late.textContent = "Реклама позже";
+        document.body.append(late);
+        await wait(900);
+        checks.late_procedural = !shown("late");
+        checks.late_survey = __sent.some((m) => m.evt === "cosmetic_ids" && m.classes.includes("fresh-class"));
+        checks.no_repeat = __sent.filter((m) => m.evt === "cosmetic_ids" && m.classes.includes("ad-banner")).length === 1;
+
+        const ok = Object.values(checks).every(Boolean);
+        const out = document.getElementById("out");
+        out.dataset.ok = String(ok);
+        out.textContent = JSON.stringify(checks);
+      })();
+    </script>
+  </body>
+</html>

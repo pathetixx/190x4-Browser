@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use adblock::cosmetic_filter_cache::ProceduralOrActionFilter;
 use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
 use adblock::resources::{PermissionMask, Resource};
@@ -98,6 +100,18 @@ pub struct Guard {
     enabled: ArcSwap<bool>,
     /// Сайты, на которых пользователь выключил блокировку (ключи [`site_key`]).
     exempt: ArcSwap<HashSet<String>>,
+    /// Номер движка: растёт с каждой заменой, по нему устаревает кэш ниже.
+    generation: AtomicU64,
+    /// Исключения общих правил и `$generichide` по адресу документа: страница
+    /// спрашивает общие правила много раз, а собирать косметику сайта заново
+    /// ради одних исключений дорого.
+    generic_cache: parking_lot::Mutex<HashMap<String, (u64, Arc<GenericContext>)>>,
+}
+
+/// Что нужно общим правилам по классам и id на странице.
+struct GenericContext {
+    exceptions: HashSet<String>,
+    generichide: bool,
 }
 
 impl Guard {
@@ -108,6 +122,8 @@ impl Guard {
             stats: Stats::default(),
             enabled: ArcSwap::from_pointee(true),
             exempt: ArcSwap::from_pointee(HashSet::new()),
+            generation: AtomicU64::new(0),
+            generic_cache: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -185,25 +201,92 @@ impl Guard {
         Ok(serde_json::from_str(json)?)
     }
 
-    /// Косметика документа по адресу: что скрыть и какие скриптлеты запустить.
-    /// Пусто, если фильтр выключен. Звать на навигацию, не на каждый запрос.
+    /// Косметика документа по адресу: что скрыть, какие процедурные правила
+    /// выполнить и какие скриптлеты запустить. Пусто, если фильтр выключен.
+    /// Звать на навигацию, не на каждый запрос.
+    ///
+    /// Процедурное правило, которое выражается чистым CSS (`:style()` на
+    /// обычном селекторе), уходит в стиль: так оно действует и на элементы,
+    /// появившиеся позже, без работы скрипта.
     pub fn cosmetics(&self, url: &str) -> Cosmetics {
         if !self.filters(url) {
             return Cosmetics::default();
         }
         let resources = self.engine.load().url_cosmetic_resources(url);
         let mut hide: Vec<String> = resources.hide_selectors.into_iter().collect();
+        let mut styles = Vec::new();
+        let mut procedural = Vec::new();
+        for raw in resources.procedural_actions {
+            let Ok(filter) = serde_json::from_str::<ProceduralOrActionFilter>(&raw) else {
+                continue;
+            };
+            match (filter.as_css(), &filter.action) {
+                (Some((selector, _)), None) => hide.push(selector),
+                (Some(css), Some(_)) => styles.push(css),
+                (None, _) => procedural.push(raw),
+            }
+        }
         hide.sort_unstable();
+        styles.sort_unstable();
+        procedural.sort_unstable();
         Cosmetics {
             hide,
+            styles,
+            procedural,
+            generic: !resources.generichide,
             script: resources.injected_script,
         }
+    }
+
+    /// Общие правила скрытия для классов и id, которые нашлись на странице:
+    /// селекторы, которые ей нужно спрятать. Пусто, если фильтр на странице
+    /// выключен или у неё `$generichide`. Звать не с главного потока.
+    pub fn generic_hide(
+        &self,
+        document_url: &str,
+        classes: &[String],
+        ids: &[String],
+    ) -> Vec<String> {
+        if !self.filters(document_url) {
+            return Vec::new();
+        }
+        // Номер — до движка: замена между ними оставит в кэше устаревший номер,
+        // и исключения соберутся заново, а не наоборот.
+        let generation = self.generation.load(Ordering::Acquire);
+        let engine = self.engine.load();
+        let cached = self
+            .generic_cache
+            .lock()
+            .get(document_url)
+            .filter(|(at, _)| *at == generation)
+            .map(|(_, context)| context.clone());
+        let context = match cached {
+            Some(context) => context,
+            None => {
+                let resources = engine.url_cosmetic_resources(document_url);
+                let context = Arc::new(GenericContext {
+                    exceptions: resources.exceptions,
+                    generichide: resources.generichide,
+                });
+                let mut cache = self.generic_cache.lock();
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
+                cache.insert(document_url.to_string(), (generation, context.clone()));
+                context
+            }
+        };
+        if context.generichide {
+            return Vec::new();
+        }
+        engine.hidden_class_id_selectors(classes, ids, &context.exceptions)
     }
 
     /// Подменить движок целиком. Читатели, которые уже внутри `check`,
     /// дочитывают старый Arc и не блокируются — в этом весь смысл ArcSwap.
     pub fn swap(&self, engine: Engine) {
         self.engine.store(Arc::new(engine));
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn set_enabled(&self, on: bool) {
@@ -342,6 +425,53 @@ mod tests {
             .script;
         assert!(trusted.contains("function mark"));
         assert!(trusted.contains("function trustedMark"));
+    }
+
+    #[test]
+    fn procedural_rules_reach_the_page() {
+        let guard = guard_with(
+            "example.com##div:has-text(Реклама)\n\
+             example.com##.x:style(height: 0)\n\
+             example.com##.y:remove()\n\
+             example.com##.z:has(> .ad)",
+        );
+        let cosmetics = guard.cosmetics("https://example.com/");
+        assert!(cosmetics
+            .procedural
+            .iter()
+            .any(|rule| rule.contains(r#""type":"has-text""#) && rule.contains("Реклама")));
+        assert!(cosmetics
+            .procedural
+            .iter()
+            .any(|rule| rule.contains(r#""type":"remove""#)));
+        assert_eq!(cosmetics.styles.len(), 1);
+        assert_eq!(cosmetics.styles[0].0, ".x");
+        // `:has()` браузер понимает сам — это обычный стиль скрытия.
+        assert!(cosmetics
+            .hide
+            .iter()
+            .any(|selector| selector.contains(":has(")));
+        assert!(cosmetics.generic);
+    }
+
+    #[test]
+    fn generic_rules_follow_page_classes() {
+        let guard = guard_with("##.ad-banner\n###sidebar-ads\nnews.example#@#.ad-banner");
+        assert_eq!(
+            guard.generic_hide(
+                "https://other.example/",
+                &["ad-banner".into(), "content".into()],
+                &["sidebar-ads".into()]
+            ),
+            vec![".ad-banner".to_string(), "#sidebar-ads".to_string()]
+        );
+        assert!(guard
+            .generic_hide("https://news.example/", &["ad-banner".into()], &[])
+            .is_empty());
+        guard.set_exempt_sites(["other.example".to_string()]);
+        assert!(guard
+            .generic_hide("https://other.example/", &["ad-banner".into()], &[])
+            .is_empty());
     }
 
     #[test]

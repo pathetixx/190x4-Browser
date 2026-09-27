@@ -51,6 +51,12 @@ jobs:
             "file://$PWD/scripts/test/passwords-script.html" | tee /tmp/passwords.html | grep -o '<pre id="out"[^<]*</pre>'
           grep -q 'data-ok="true"' /tmp/passwords.html
 
+      - name: Cosmetic filtering script
+        run: |
+          google-chrome --headless=new --no-sandbox --virtual-time-budget=6000 --dump-dom \
+            "file://$PWD/scripts/test/cosmetic-script.html" | tee /tmp/cosmetic.html | grep -o '<pre id="out"[^<]*</pre>'
+          grep -q 'data-ok="true"' /tmp/cosmetic.html
+
   # Движковая часть собирается только под Windows (WebView2 COM). Проверки
   # Rust — отдельной задачей: если упадёт сборка установщика или публикация,
   # «Re-run failed jobs» перезапустит только их, без повторных тестов.
