@@ -57,6 +57,9 @@ export const DEFAULTS = {
   autoscroll_youtube: true,
   autoscroll_instagram: true,
   autoscroll_tiktok: true,
+  // YouTube NonStop: «Продолжить просмотр?» закрывается само. Тот же ключ
+  // читает src-tauri/src/nonstop.rs.
+  ext_nonstop_enabled: true,
   // Twitch: лучшее качество через сервер плейлистов, бонусы баллов канала и
   // смайлы BTTV и FFZ. Те же ключи читает src-tauri/src/twitch.rs.
   ext_twitch_enabled: true,

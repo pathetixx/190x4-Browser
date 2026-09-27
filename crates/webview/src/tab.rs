@@ -52,11 +52,13 @@ static PASSWORDS_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(PASSW
 /// * автопролистывание в Shorts, Reels и TikTok спрашивает, листать ли дальше
 ///   доигравший ролик (`src-tauri/src/autoscroll.rs`);
 /// * расширение Twitch собирает бонусы баллов канала и рисует в чате смайлы
-///   7TV, BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`).
-const SITE_SCRIPTS: [(&str, &str); 3] = [
+///   7TV, BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`);
+/// * YouTube NonStop закрывает «Продолжить просмотр?» (`src-tauri/src/nonstop.rs`).
+const SITE_SCRIPTS: [(&str, &str); 4] = [
     ("SponsorBlock", include_str!("inject/sponsorblock.js")),
     ("автопролистывания", include_str!("inject/autoscroll.js")),
     ("Twitch", include_str!("inject/twitch.js")),
+    ("NonStop", include_str!("inject/nonstop.js")),
 ];
 static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
     SITE_SCRIPTS

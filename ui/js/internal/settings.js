@@ -1076,7 +1076,9 @@ const BUILDERS = {
       const hint = [extension.summary, extension.note].filter(Boolean).join(" ") + service;
       const rows = [
         setting(extension.name, hint, toggle(extension.enabled), { iconId: extension.icon }),
-        switchSetting(extension.pinned, "Показывать значок на панели инструментов", extension.pinHint),
+        ...(extension.pinned
+          ? [switchSetting(extension.pinned, "Показывать значок на панели инструментов", extension.pinHint)]
+          : []),
         ...extension.settings.map((item) => {
           if (item.type === "switch") return switchSetting(item.key, item.label, item.hint);
           if (item.type === "text") return setting(item.label, item.hint, textField(item));

@@ -1708,7 +1708,7 @@ function translatorView({ text = "", services }) {
 function extensionState(extension, services) {
   if (missingService(extension, services)) return "Сервис 190x4 не настроен";
   if (!pref(extension.enabled)) return "Выключено";
-  return pref(extension.pinned) ? "Включено · значок на панели" : "Включено";
+  return extension.pinned && pref(extension.pinned) ? "Включено · значок на панели" : "Включено";
 }
 
 function extensionList(services, onOpen) {
@@ -1735,7 +1735,9 @@ function extensionList(services, onOpen) {
       row.dataset.off = String(!pref(extension.enabled) || missingService(extension, services));
       status.textContent = extensionState(extension, services);
     };
-    const pin = pinButton(extension, paint);
+    // Булавка — только у расширений со значком на панели; остальным место под
+    // неё оставлено пустым, чтобы строки не разъезжались.
+    const pin = extension.pinned ? pinButton(extension, paint) : el("span", "exts__pin");
     row.append(logo, text, pin, icon("chevron-right-16", 16, "exts__chevron"));
     paint();
     row.addEventListener("click", () => onOpen(extension));
@@ -1794,10 +1796,8 @@ function extensionDetail(extension, services, onBack) {
     if (openButton) openButton.disabled = missing || !pref(extension.enabled);
   };
 
-  body.append(
-    switchRow("Включено", "", extension.enabled, paint),
-    switchRow("Значок на панели инструментов", extension.pinHint, extension.pinned)
-  );
+  body.append(switchRow("Включено", "", extension.enabled, paint));
+  if (extension.pinned) body.append(switchRow("Значок на панели инструментов", extension.pinHint, extension.pinned));
   for (const item of extension.settings) {
     if (item.type === "switch") body.append(switchRow(item.label, item.hint, item.key));
     else if (item.type === "text") body.append(textRow(item));

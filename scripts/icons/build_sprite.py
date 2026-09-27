@@ -175,6 +175,11 @@ ICONS = {
     # Трансляция: окно чата со срезанным углом и хвостиком, в нём две риски
     # эфира — значок расширения Twitch.
     "stream": path("M3.25 3.25h13.5v8.5l-3.5 3.5h-3.5l-2.5 2v-2h-4z") + path("M8.75 6.75v3.75M12.75 6.75v3.75"),
+    # YouTube NonStop: круговая стрелка «ещё раз» и «играть» внутри.
+    "play-loop": RELOAD + path("M8.5 7.5v5l4-2.5z"),
+    # Мини-плеер: экран и окошко видео в его углу.
+    "pip": path(VIDEO_FRAME) + path(cut_rect(10, 10, 5.25, 3.75, tr=1.25)),
+    "pip-filled": path(VIDEO_FRAME) + fill(cut_rect(10, 10, 5.25, 3.75, tr=1.25), 0.45) + path(cut_rect(10, 10, 5.25, 3.75, tr=1.25)),
     "shield": path(SHIELD_SHAPE),
     "shield-filled": fill(SHIELD_SHAPE, 0.3) + path(SHIELD_SHAPE),
     "favorites": path(FAVORITES_STAR) + path("M13.5 7.5h3M13 11h3.5M4 15.5h12.5"),

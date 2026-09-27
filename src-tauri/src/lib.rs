@@ -21,6 +21,7 @@ mod import;
 pub mod ipc;
 mod launch;
 mod newtab;
+mod nonstop;
 mod passwords;
 mod popup;
 mod resources;
@@ -359,6 +360,7 @@ pub(crate) fn route_event(
                 || sponsorblock::handle_message(app, *id, *frame, source, payload)
                 || drm::handle_message(app, label, *id, source, payload)
                 || autoscroll::handle_message(app, *id, *frame, source, payload)
+                || nonstop::handle_message(app, *id, *frame, source, payload)
                 || frame.is_some()
                 || twitch::handle_message(app, *id, source, payload)
                 || newtab::handle_message(app, *id, source, payload)

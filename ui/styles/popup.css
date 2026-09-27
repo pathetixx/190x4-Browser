@@ -516,6 +516,12 @@ svg {
   color: var(--accent-bright);
 }
 
+/* Место булавки у расширения без значка на панели. */
+span.exts__pin {
+  flex: none;
+  width: 28px;
+}
+
 .exts__chevron {
   color: var(--text-faint);
 }

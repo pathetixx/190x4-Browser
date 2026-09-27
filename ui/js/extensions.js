@@ -4,6 +4,8 @@
  * Ключи — те же, что читает Rust (`src-tauri/src/sponsorblock.rs`,
  * `autoscroll.rs`, `twitch.rs`), умолчания — в `prefs.js`.
  *
+ * `pinned` есть только у расширений со значком на панели инструментов.
+ *
  * `settings` — настройки расширения: переключатели (`switch`), списки
  * (`select`) и строки (`text`). `service` — сервис 190x4, без которого расширение ничего не
  * сделает. `open` — у расширения есть своё окно, и так называется кнопка,
@@ -84,6 +86,15 @@ export const EXTENSIONS = [
       { type: "switch", key: "autoscroll_instagram", label: "Reels в Instagram", hint: "instagram.com/reels" },
       { type: "switch", key: "autoscroll_tiktok", label: "TikTok", hint: "tiktok.com" },
     ],
+  },
+  {
+    id: "nonstop",
+    name: "YouTube NonStop",
+    icon: "play-loop",
+    summary:
+      "Когда вы долго ничего не нажимаете, YouTube ставит видео на паузу и спрашивает «Продолжить просмотр?», а YouTube Music — «Вы ещё здесь?». Расширение закрывает это окно само, и музыка или видео играют дальше.",
+    enabled: "ext_nonstop_enabled",
+    settings: [],
   },
   {
     id: "twitch",
