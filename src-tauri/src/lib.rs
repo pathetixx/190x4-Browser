@@ -672,10 +672,16 @@ fn init_logging() {
     let dir = profile_dir();
     let _ = std::fs::create_dir_all(&dir);
 
-    let filter =
-        tracing_subscriber::EnvFilter::try_from_env("BROWSER190X4_LOG").unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new("info,browser190x4=debug,browser190x4_webview=debug")
-        });
+    // Подробности уровня debug — только пробе с отдельным профилем или по
+    // `BROWSER190X4_LOG`: журнал пишется с главного потока, и в обычном профиле
+    // ему незачем копить подробности о работе в браузере.
+    let fallback = if separate_profile().is_some() {
+        "info,browser190x4=debug,browser190x4_webview=debug"
+    } else {
+        "info"
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_env("BROWSER190X4_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(fallback));
 
     // Лог прошлого запуска остаётся рядом: браузер после падения открывают
     // заново, и без этого первый же запуск стирал бы причину.

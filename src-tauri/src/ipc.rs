@@ -54,7 +54,9 @@ pub fn tab_open(
     popup: Option<u64>,
 ) -> Result<u32, String> {
     let url = normalize_url(&url, &search_engine(&state));
-    tracing::info!(%url, popup = popup.is_some(), "открываем вкладку");
+    // Адрес в журнал не пишется: журнал не чистится вместе с историей, а
+    // вкладки приватного окна не должны оставлять следов на диске.
+    tracing::debug!(popup = popup.is_some(), "открываем вкладку");
     let result = with_host(&app, &owner(&window), move |host| {
         host.open_with(&url, popup).map(|id| id.0).map_err(text)
     })?;
@@ -2074,7 +2076,7 @@ pub async fn translate_text(
 /// Что за ссылка и что с неё можно скачать.
 #[tauri::command]
 pub async fn media_probe(state: State<'_, App>, url: String) -> Result<MediaInfo, String> {
-    tracing::info!(%url, "разбираем ссылку");
+    tracing::debug!("разбираем ссылку");
     state.services.media_info(&url).await.map_err(text)
 }
 
@@ -2093,7 +2095,7 @@ pub async fn media_download(
     let services = state.services.clone();
     let store = state.store.clone();
 
-    tracing::info!(%url, %format, "загрузка медиа");
+    tracing::debug!(%format, "загрузка медиа");
     let job_id = services.media_start(&url, &format).await.map_err(|err| {
         tracing::error!(%err, "загрузка не началась");
         text(err)
