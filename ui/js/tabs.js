@@ -866,15 +866,30 @@ function wireDrag() {
     event.dataTransfer.setData(TAB_MIME, JSON.stringify({ id: dragged, private: Boolean(state.window.private) }));
   });
 
+  // Вкладку из другого окна принимает вся полоса заголовка, а не только сами
+  // вкладки: их в окне бывает одна-две, и отпускают её где-нибудь на полосе.
+  // Иначе она не возвращалась в окно, а её собственное окно переезжало следом.
+  const bar = strip.closest(".titlebar") ?? strip;
+  const foreign = (event) => dragged == null && event.dataTransfer.types.includes(TAB_MIME);
+  bar.addEventListener("dragover", (event) => {
+    if (!foreign(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    dropIndex = indexAt(event.clientX);
+    bar.dataset.tabDrop = "true";
+  });
+  bar.addEventListener("dragleave", (event) => {
+    if (!bar.contains(event.relatedTarget)) delete bar.dataset.tabDrop;
+  });
+  bar.addEventListener("drop", (event) => {
+    delete bar.dataset.tabDrop;
+    if (!foreign(event)) return;
+    event.preventDefault();
+    adoptDropped(event, dropIndex);
+  });
+
   strip.addEventListener("dragover", (event) => {
-    if (dragged == null) {
-      // Вкладка из другого окна браузера: переедет сюда, когда её отпустят.
-      if (!event.dataTransfer.types.includes(TAB_MIME)) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      dropIndex = indexAt(event.clientX);
-      return;
-    }
+    if (dragged == null) return;
     event.preventDefault();
     const target = event.target.closest(".tab");
     if (!target || Number(target.dataset.id) === dragged) return;
@@ -895,8 +910,8 @@ function wireDrag() {
     dragged = null;
   };
   strip.addEventListener("drop", (event) => {
+    if (dragged == null) return;
     event.preventDefault();
-    if (dragged == null) adoptDropped(event, dropIndex);
     finish();
   });
   strip.addEventListener("dragend", (event) => {

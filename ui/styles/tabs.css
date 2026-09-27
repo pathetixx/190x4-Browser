@@ -432,3 +432,8 @@
 .tabstrip::-webkit-scrollbar {
   display: none;
 }
+
+/* Сюда можно отпустить вкладку из другого окна. */
+.titlebar[data-tab-drop="true"] {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
