@@ -323,10 +323,15 @@ listen("tab", (event) => {
       }
       break;
     }
-    case "blocked":
-      // Счётчик щита — по этой вкладке, а не по всему браузеру.
-      upsertTab(event.id, { blocked: event.count });
+    case "blocked": {
+      // Счётчик щита — по этой вкладке, а не по всему браузеру. Виден он только
+      // у вкладки на экране: у фоновой счёт меняется молча, без перерисовки
+      // интерфейса, — его покажет переключение на неё.
+      const tab = state.tabs.get(event.id);
+      if (tab && event.id !== state.activeId && event.id !== state.splitId) tab.blocked = event.count;
+      else upsertTab(event.id, { blocked: event.count });
       break;
+    }
     case "zoom":
       upsertTab(event.id, { zoom: event.factor });
       rememberSiteZoom(event.id, event.factor);
