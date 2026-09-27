@@ -42,8 +42,9 @@ const LABELS = {
   inspectElement: "Просмотреть код",
 };
 
-/** Пункты, которые ведут в окна и службы Edge, а не в браузер 190x4. */
-const HIDDEN = new Set(["createQrCode", "openLinkInNewPrivateWindow", "share", "readAloud"]);
+/** Пункты, которые ведут в окна и службы Edge, а не в браузер 190x4, и
+ *  «картинка в картинке» движка: вместо неё — свой мини-плеер. */
+const HIDDEN = new Set(["createQrCode", "openLinkInNewPrivateWindow", "share", "readAloud", "pictureInPicture"]);
 const HIDDEN_LABEL = /InPrivate|Microsoft|Edge|Copilot|QR/i;
 
 let current = null;
@@ -174,6 +175,11 @@ function buildRows(target, items, site) {
     rows.splice(after >= 0 ? after + 1 : 0, 0, ...extra);
   }
 
+  // Видео — в мини-плеер: окно поверх всех с паузой, перемоткой и громкостью.
+  if (target.kind === "video" && pref("ext_pip_enabled")) {
+    rows.unshift({ id: "pip", label: "Смотреть в мини-плеере", keys: "Alt+P" }, { separator: true });
+  }
+
   const source = target.source_url ?? "";
   const media = state.services.media && pref("ext_media_enabled");
   if ((target.kind === "video" || target.kind === "audio") && /^https?:/.test(source) && media) {
@@ -244,6 +250,8 @@ async function runAction(action, menu) {
     // открывает сайтом.
     const query = target.selection.trim().replace(/\s+/g, " ").slice(0, 500);
     open(`? ${query}`, { opener: menu.tab });
+  } else if (action === "pip") {
+    invoke("pip_toggle", { id: menu.tab }).catch((error) => hooks.toast(String(error?.message ?? error)));
   } else if (action === "media" && target.source_url) {
     openMediaExtension(target.source_url);
   } else if (action === "adblock" && menu.site?.site) {

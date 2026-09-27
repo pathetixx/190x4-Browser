@@ -45,6 +45,7 @@ use windows_core::{Interface, HSTRING};
 use crate::container;
 use crate::dialogs::{self, PermissionSetting};
 use crate::downloads::{self, DownloadPolicy, SharedDownloads};
+use crate::pip::{self, PipSignal};
 use crate::tab::{EventSink, PageColor, PopupSlots, Tab, TabEvent};
 
 /// Хост встроенных страниц. `.invalid` — зарезервированный TLD (RFC 2606):
@@ -225,6 +226,15 @@ struct HostState {
     /// Окно закрыто (`TabHost::shutdown`): вкладка, которую движок достроит
     /// позже, закрывается сразу.
     closed: bool,
+    /// Вкладка в мини-плеере и его окно. Её видимостью и местом ведает
+    /// мини-плеер, а не раскладка окна.
+    pip: Option<PipSlot>,
+}
+
+/// Вкладка, переехавшая в окно мини-плеера.
+struct PipSlot {
+    tab: TabId,
+    window: HWND,
 }
 
 /// Сколько прежняя вкладка остаётся на экране после переключения: новой
@@ -242,12 +252,16 @@ impl HostState {
     fn apply_visibility(&mut self) -> anyhow::Result<()> {
         let active = self.active;
         let split = self.split;
+        let pip = self.pip.as_ref().map(|slot| slot.tab);
         let keep = |id: &TabId| Some(*id) == active || Some(*id) == split;
         // Показывать есть что, только если активная вкладка уже создана: иначе
         // прежнюю держать незачем — на её месте будет фон новой.
         let ready = active.is_some_and(|id| self.tabs.contains_key(&id));
         let mut shown = false;
         for (id, tab) in self.tabs.iter_mut() {
+            if Some(*id) == pip {
+                continue;
+            }
             if keep(id) && !tab.visible() {
                 if let Some(hwnd) = self.windows.get(id) {
                     container::lower(*hwnd);
@@ -258,6 +272,9 @@ impl HostState {
         }
         let mut later = false;
         for (id, tab) in self.tabs.iter_mut() {
+            if Some(*id) == pip {
+                continue;
+            }
             if !keep(id) && tab.visible() {
                 if shown && ready && !self.overlay {
                     later = true;
@@ -277,8 +294,9 @@ impl HostState {
     fn hide_offscreen(&mut self) {
         let active = self.active;
         let split = self.split;
+        let pip = self.pip.as_ref().map(|slot| slot.tab);
         for (id, tab) in self.tabs.iter_mut() {
-            if Some(*id) != active && Some(*id) != split && tab.visible() {
+            if Some(*id) != active && Some(*id) != split && Some(*id) != pip && tab.visible() {
                 let _ = tab.set_visible(false);
             }
         }
@@ -345,7 +363,11 @@ impl HostState {
 
     /// Переставить видимые вкладки после смены раскладки или пары split.
     fn apply_bounds(&self) -> anyhow::Result<()> {
+        let pip = self.pip.as_ref().map(|slot| slot.tab);
         for id in [self.active, self.split].into_iter().flatten() {
+            if Some(id) == pip {
+                continue;
+            }
             let bounds = self.bounds_for(id);
             if let Some(tab) = self.tabs.get(&id) {
                 tab.set_bounds(bounds)?;
@@ -372,6 +394,61 @@ fn hide_offscreen_after(weak: Weak<RefCell<HostState>>, ms: u32) {
             hide_offscreen_after(Rc::downgrade(&inner), 50);
         }
     });
+}
+
+/// Вернуть вкладку из мини-плеера на её место в окне. `pause` — поставить
+/// видео на паузу (мини-плеер закрыли), `reason` уходит интерфейсу. Хост бывает
+/// занят в этот миг (сигнал окна пришёл во вложенном цикле) — тогда чуть позже.
+fn close_pip(inner: &Rc<RefCell<HostState>>, pause: bool, reason: &'static str) {
+    let Ok(mut state) = inner.try_borrow_mut() else {
+        let weak = Rc::downgrade(inner);
+        crate::later::after(50, move || {
+            if let Some(inner) = weak.upgrade() {
+                close_pip(&inner, pause, reason);
+            }
+        });
+        return;
+    };
+    let Some(slot) = state.pip.take() else { return };
+    let bounds = state.bounds_for(slot.tab);
+    let container = state.container;
+    if let Some(tab) = state.tabs.get(&slot.tab) {
+        tab.pip_exit_script(pause);
+        if let Err(err) = tab.reparent(container, bounds) {
+            tracing::warn!(tab = slot.tab.0, %err, "вкладка не вернулась из мини-плеера");
+        }
+    }
+    let _ = state.apply_visibility();
+    let _ = state.apply_bounds();
+    let sink = state.sink.clone();
+    drop(state);
+    pip::destroy(slot.window);
+    sink(TabEvent::Pip {
+        id: slot.tab.0,
+        on: false,
+        reason,
+    });
+}
+
+/// Сигнал окна мини-плеера: сменился размер или окно закрыли.
+fn pip_signal(weak: &Weak<RefCell<HostState>>, signal: PipSignal) {
+    let Some(inner) = weak.upgrade() else { return };
+    match signal {
+        PipSignal::Resized(bounds) => {
+            let Ok(state) = inner.try_borrow() else {
+                return;
+            };
+            if let Some(tab) = state
+                .pip
+                .as_ref()
+                .and_then(|slot| state.tabs.get(&slot.tab))
+            {
+                let _ = tab.set_bounds(bounds);
+            }
+        }
+        // Закрыли окно, как закрывают «картинку в картинке»: видео — на паузу.
+        PipSignal::Close => close_pip(&inner, true, "closed"),
+    }
 }
 
 /// `Rc` внутри уже делает тип не `Send`, так что случайно уехать в
@@ -416,6 +493,7 @@ impl TabHost {
                 windows: HashMap::new(),
                 weak: Weak::new(),
                 closed: false,
+                pip: None,
             })),
         };
         host.inner.borrow_mut().weak = Rc::downgrade(&host.inner);
@@ -652,6 +730,18 @@ impl TabHost {
     pub fn close(&self, id: TabId) -> anyhow::Result<Option<TabId>> {
         let mut state = self.inner.borrow_mut();
 
+        // Вкладку закрыли прямо в мини-плеере — окно мини-плеера уходит с ней.
+        if state.pip.as_ref().is_some_and(|slot| slot.tab == id) {
+            if let Some(slot) = state.pip.take() {
+                pip::destroy(slot.window);
+                (state.sink)(TabEvent::Pip {
+                    id: id.0,
+                    on: false,
+                    reason: "closed",
+                });
+            }
+        }
+
         let position = state.order.iter().position(|t| *t == id);
         if let Some(pos) = position {
             state.order.remove(pos);
@@ -716,6 +806,9 @@ impl TabHost {
         let (tabs, popups) = {
             let mut state = self.inner.borrow_mut();
             state.closed = true;
+            if let Some(slot) = state.pip.take() {
+                pip::destroy(slot.window);
+            }
             state.order.clear();
             state.active = None;
             state.split = None;
@@ -742,6 +835,87 @@ impl TabHost {
             closed.push(id);
         }
         closed
+    }
+
+    /// Открыть вкладку в мини-плеере: она переезжает в маленькое окно поверх
+    /// всех, а скрипт страницы разворачивает в нём главное видео и рисует
+    /// кнопки. Итог — событием `TabEvent::Pip`: открыт, или вкладка вернулась,
+    /// потому что видео на странице нет.
+    pub fn pip_open(&self, id: TabId) -> anyhow::Result<()> {
+        if self.pip_tab().is_some() {
+            close_pip(&self.inner, false, "replaced");
+        }
+        let container = {
+            let state = self.inner.borrow();
+            if !state.tabs.contains_key(&id) {
+                anyhow::bail!("вкладка ещё не готова");
+            }
+            state.container
+        };
+        let weak = Rc::downgrade(&self.inner);
+        let window = pip::create(container, Rc::new(move |signal| pip_signal(&weak, signal)))?;
+        let sink = {
+            let mut state = self.inner.borrow_mut();
+            let moved = match state.tabs.get_mut(&id) {
+                Some(tab) => tab
+                    .reparent(window, pip::page_bounds(window))
+                    .and_then(|()| tab.set_visible(true))
+                    .map_err(anyhow::Error::from),
+                None => Err(anyhow::anyhow!("вкладка закрылась")),
+            };
+            if let Err(err) = moved {
+                drop(state);
+                pip::destroy(window);
+                return Err(err);
+            }
+            state.pip = Some(PipSlot { tab: id, window });
+            state.apply_visibility()?;
+            state.sink.clone()
+        };
+        sink(TabEvent::Pip {
+            id: id.0,
+            on: true,
+            reason: "open",
+        });
+
+        let weak = Rc::downgrade(&self.inner);
+        let started = self.with_tab(id, |tab| {
+            tab.pip_script(move |result| {
+                if result == "ok" || result == "css" {
+                    return;
+                }
+                if let Some(inner) = weak.upgrade() {
+                    let reason = if result == "none" {
+                        "no_video"
+                    } else {
+                        "failed"
+                    };
+                    close_pip(&inner, false, reason);
+                }
+            })
+        });
+        if !matches!(started, Some(Ok(()))) {
+            close_pip(&self.inner, false, "failed");
+        }
+        Ok(())
+    }
+
+    /// Вернуть вкладку из мини-плеера. `pause` — видео на паузу: мини-плеер
+    /// закрыли, а не вернули во вкладку.
+    pub fn pip_close(&self, pause: bool, reason: &'static str) {
+        close_pip(&self.inner, pause, reason);
+    }
+
+    /// Начать перенос окна мини-плеера за видео.
+    pub fn pip_drag(&self) {
+        if let Some(slot) = &self.inner.borrow().pip {
+            pip::start_drag(slot.window);
+        }
+    }
+
+    /// Какая вкладка этого окна сейчас в мини-плеере.
+    pub fn pip_tab(&self) -> Option<TabId> {
+        self.inner.borrow().pip.as_ref().map(|slot| slot.tab)
     }
 
     /// Сделать вкладку активной.
@@ -878,6 +1052,10 @@ impl TabHost {
     /// со страницей, историей и введённым текстом; её место занимают соседи,
     /// как при закрытии. Возвращает вкладку и её окно внутри контейнера.
     pub fn detach(&self, id: TabId) -> anyhow::Result<(Tab, Option<HWND>)> {
+        // Из мини-плеера вкладка сперва возвращается в своё окно.
+        if self.pip_tab() == Some(id) {
+            close_pip(&self.inner, false, "moved");
+        }
         let mut state = self.inner.borrow_mut();
         let tab = state
             .tabs

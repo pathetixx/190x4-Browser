@@ -25,6 +25,7 @@ import {
   openTranslator,
   tabAction,
   toggleAutoscroll,
+  togglePip,
   autoscrollSite,
 } from "./actions.js";
 
@@ -37,6 +38,7 @@ const translateButton = document.getElementById("ext-translate");
 const autoscrollButton = document.getElementById("ext-autoscroll");
 const sponsorblockButton = document.getElementById("ext-sponsorblock");
 const twitchButton = document.getElementById("ext-twitch");
+const pipButton = document.getElementById("ext-pip");
 const mediaBadge = document.getElementById("ext-media-badge");
 const homeButton = document.getElementById("nav-home");
 
@@ -59,6 +61,7 @@ export function initToolbar() {
   autoscrollButton.addEventListener("click", () => toggleAutoscroll());
   sponsorblockButton.addEventListener("click", () => openExtensions("sponsorblock"));
   twitchButton.addEventListener("click", () => openExtensions("twitch"));
+  pipButton.addEventListener("click", () => togglePip());
   document.getElementById("ext-menu").addEventListener("click", () => openExtensions());
   onPopupAction("extensions", ({ action }) => {
     if (action === "manage") openSettings("extensions");
@@ -93,6 +96,11 @@ export function renderToolbar() {
     onSite(url, "youtube.com")
   );
   twitchButton.hidden = !(pref("ext_twitch_enabled") && pref("ext_twitch_pinned") && onSite(url, "twitch.tv"));
+  // Мини-плеер — на сайтах, а пока видео в нём — везде: им же его и возвращают.
+  const inPip = state.pipTab !== null;
+  pipButton.hidden = !(pref("ext_pip_enabled") && pref("ext_pip_pinned") && (inPip || /^https?:/.test(url)));
+  pipButton.setAttribute("aria-pressed", String(inPip));
+  pipButton.title = inPip ? "Вернуть видео из мини-плеера (Alt+P)" : "Мини-плеер: видео страницы поверх всех окон (Alt+P)";
   renderDownloads(null);
 
   const busy = summary().active > 0;

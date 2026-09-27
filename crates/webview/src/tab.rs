@@ -67,6 +67,11 @@ static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Мини-плеер: разворачивает главное видео страницы на окно мини-плеера и
+/// рисует кнопки (`pip.rs`). Выполняется по запросу, не встраивается.
+static PIP_SCRIPT: LazyLock<String> =
+    LazyLock::new(|| engine_script(include_str!("inject/pip.js")));
+
 /// Защищённое видео (EME): прячет Widevine от сайтов, где он выключен, и
 /// сообщает браузеру, что видео не пошло (`src-tauri/src/drm.rs`). В каждом
 /// документе и фрейме; настройки подставляются вместо `__X4_DRM__`.
@@ -322,6 +327,14 @@ pub enum TabEvent {
     Crashed {
         id: u32,
         what: &'static str,
+    },
+    /// Вкладка переехала в мини-плеер (`on`) или вернулась в окно. `reason`:
+    /// `open`, `back` (вернули во вкладку), `closed` (мини-плеер закрыли),
+    /// `no_video`, `failed`, `navigated`, `moved`, `replaced`.
+    Pip {
+        id: u32,
+        on: bool,
+        reason: &'static str,
     },
 }
 
@@ -1200,6 +1213,7 @@ fn classify(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<String> {
         (true, true, false, 0x49) => "ctrl+shift+i",           // инструменты разработчика
         (false, false, true, 0x44) => "alt+d",                 // адресная строка
         (false, false, true, 0x46) => "alt+f",                 // меню браузера
+        (false, false, true, 0x50) => "alt+p",                 // мини-плеер
         (false, false, false, VK_F6) => "f6",                  // адресная строка
         (false, false, false, VK_F11) => "f11",                // во весь экран
         (true, true, false, 0x54) => "ctrl+shift+t",           // вернуть закрытую вкладку
@@ -1913,6 +1927,60 @@ impl Tab {
         Ok(())
     }
 
+    /// Переехать в другое окно — в окно мини-плеера или обратно в контейнер.
+    /// Маршрут событий не меняется: вкладка остаётся в своём окне браузера.
+    pub(crate) fn reparent(&self, parent: HWND, bounds: RECT) -> windows_core::Result<()> {
+        unsafe {
+            self.controller.SetParentWindow(parent)?;
+            self.controller.SetBounds(bounds)
+        }
+    }
+
+    /// Развернуть главное видео страницы на окно мини-плеера (`inject/pip.js`).
+    /// Скрипт выполняется как действие человека: иначе страница не пустила бы
+    /// видео во весь экран. `done` получает `ok`, `css` или `none`, а пустую
+    /// строку — если скрипт не выполнился.
+    pub(crate) fn pip_script(
+        &self,
+        done: impl FnOnce(String) + 'static,
+    ) -> windows_core::Result<()> {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler as DevToolsDone;
+
+        let params = serde_json::json!({
+            "expression": PIP_SCRIPT.as_str(),
+            "userGesture": true,
+            "awaitPromise": true,
+            "returnByValue": true,
+        })
+        .to_string();
+        let handler = DevToolsDone::create(Box::new(move |code, json| {
+            let value = code
+                .ok()
+                .and_then(|()| serde_json::from_str::<serde_json::Value>(&json).ok())
+                .and_then(|reply| reply["result"]["value"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            done(value);
+            Ok(())
+        }));
+        unsafe {
+            self.core.CallDevToolsProtocolMethod(
+                &HSTRING::from("Runtime.evaluate"),
+                &HSTRING::from(params),
+                &handler,
+            )
+        }
+    }
+
+    /// Вернуть видео на страницу: убрать кнопки мини-плеера и свернуть видео из
+    /// экрана. `pause` — поставить его на паузу.
+    pub(crate) fn pip_exit_script(&self, pause: bool) {
+        run_script(
+            &self.core,
+            &format!("window[Symbol.for(\"x4pip\")]?.exit({pause})"),
+            "выход из мини-плеера",
+        );
+    }
+
     /// SmartScreen для этой вкладки — по настройке (`set_reputation_checking`).
     pub(crate) fn apply_reputation(&self) {
         if let Err(err) = configure(&self.core, true) {
@@ -2600,7 +2668,7 @@ mod tests {
     /// autocrlf) `engine_script` уже убирает.
     #[test]
     fn password_script_has_no_control_characters() {
-        for script in [PASSWORDS_SCRIPT, DRM_SCRIPT]
+        for script in [PASSWORDS_SCRIPT, DRM_SCRIPT, include_str!("inject/pip.js")]
             .into_iter()
             .chain(SITE_SCRIPTS.map(|(_, script)| script))
         {

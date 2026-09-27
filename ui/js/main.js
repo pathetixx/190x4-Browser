@@ -16,6 +16,7 @@ import {
   tabAction,
   toggleAutoscroll,
   toggleBookmarksBar,
+  togglePip,
   zoom,
 } from "./actions.js";
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
@@ -26,7 +27,7 @@ import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, isFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
-import { initLayout, isPageHidden, syncDuring } from "./layout.js";
+import { initLayout, isPageHidden, setPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
@@ -177,6 +178,15 @@ initPalette([
     run: () => openSettings("bookmarks"),
   },
   { group: "Браузер", title: "Блокировка рекламы", icon: "shield", run: () => openPanel("shield") },
+  {
+    group: "Страница",
+    title: "Мини-плеер: видео поверх всех окон",
+    icon: "pip",
+    keys: "Alt+P",
+    keywords: "картинка в картинке pip видео",
+    run: togglePip,
+    when: () => pref("ext_pip_enabled") && (web() || state.pipTab !== null),
+  },
   {
     group: "Браузер",
     title: "Включить или выключить автопролистывание",
@@ -391,8 +401,36 @@ listen("tab", (event) => {
     case "crashed":
       onPageCrashed(event);
       break;
+    case "pip":
+      onPip(event);
+      break;
   }
 });
+
+/**
+ * Вкладка ушла в мини-плеер или вернулась. Вернули «во вкладку» — она выходит
+ * на экран (окно браузера Rust уже поднял).
+ */
+function onPip({ id, on, reason }) {
+  if (on) state.pipTab = id;
+  else if (state.pipTab === id) state.pipTab = null;
+  emitState();
+  if (on) return;
+  if (reason === "back" && state.tabs.has(id)) activate(id);
+  if (reason === "no_video") toast("На странице нет видео для мини-плеера");
+  if (reason === "failed") toast("Мини-плеер не открылся");
+}
+
+const pipNote = document.getElementById("pip-note");
+document.getElementById("pip-back").addEventListener("click", () => togglePip());
+
+/** Вкладка на экране — в мини-плеере: вместо страницы заглушка с кнопкой «Вернуть». */
+function renderPip() {
+  const tab = activeTab();
+  const here = tab != null && tab.id === state.pipTab;
+  if (pipNote.hidden === here) pipNote.hidden = !here;
+  setPageHidden("pip", here);
+}
 
 /**
  * Процесс страницы упал или завис. На месте упавшей страницы движок сам
@@ -777,6 +815,9 @@ function runShortcut(combo) {
     case "alt+f":
       document.getElementById("open-menu").click();
       return true;
+    case "alt+p":
+      togglePip();
+      return true;
     default:
       break;
   }
@@ -842,6 +883,7 @@ subscribe(() => {
   renderToolbar();
   renderBarVisibility();
   renderInternal();
+  renderPip();
   scheduleSessionSave();
   refreshLivePanel();
   measureTabs();

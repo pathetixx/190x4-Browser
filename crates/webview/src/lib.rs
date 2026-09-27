@@ -31,6 +31,7 @@ pub mod identity;
 pub mod interop;
 pub(crate) mod later;
 pub mod message;
+pub(crate) mod pip;
 pub(crate) mod stream;
 pub mod tab;
 

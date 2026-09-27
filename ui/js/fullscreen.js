@@ -28,6 +28,8 @@ export function initFullscreen() {
 
 /** Страница развернула элемент на весь экран или свернула его. */
 export async function onPageFullscreen(id, on) {
+  // Видео мини-плеера разворачивается на его окно, а не на окно браузера.
+  if (id === state.pipTab) return;
   if (!on) {
     if (state.fullscreen.page !== id) return;
     setPage(null);

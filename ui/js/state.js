@@ -40,6 +40,8 @@ export const state = {
   zoomSites: {},
   /// Сколько окон, закрытых крестиком, можно вернуть (Ctrl+Shift+T).
   closedWindows: 0,
+  /// Вкладка этого окна, которая сейчас в мини-плеере.
+  pipTab: null,
 };
 
 export function subscribe(fn) {

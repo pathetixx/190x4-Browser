@@ -73,6 +73,9 @@ export const DEFAULTS = {
   twitch_proxy: "",
   ext_media_enabled: true,
   ext_media_pinned: true,
+  // Мини-плеер: видео в окне поверх всех (src-tauri/src/pip.rs).
+  ext_pip_enabled: true,
+  ext_pip_pinned: true,
   updates_auto: true,
   zoom_sites: {},
   smartscreen: true,

@@ -24,6 +24,7 @@ mod launch;
 mod newtab;
 mod nonstop;
 mod passwords;
+mod pip;
 mod popup;
 mod resources;
 mod site_icons;
@@ -248,6 +249,7 @@ pub fn run() {
             default_browser::default_browser_set,
             import::browsers_found,
             import::browser_import,
+            pip::pip_toggle,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -363,6 +365,7 @@ pub(crate) fn route_event(
                 || drm::handle_message(app, label, *id, source, payload)
                 || autoscroll::handle_message(app, *id, *frame, source, payload)
                 || nonstop::handle_message(app, *id, *frame, source, payload)
+                || pip::handle_message(app, *id, *frame, payload)
                 || frame.is_some()
                 || twitch::handle_message(app, *id, source, payload)
                 || newtab::handle_message(app, *id, source, payload)
@@ -395,6 +398,8 @@ pub(crate) fn route_event(
             relaunch_after_engine_crash(app);
             return;
         }
+        // Вкладка ушла в мини-плеер или вернулась: запомнить, какая она.
+        TabEvent::Pip { id, on, reason } => pip::on_event(app, label, *id, *on, reason),
         // Сайт открыли с неверным сертификатом: движок помнит это решение до
         // выхода для всех окон профиля, значит, и помечать его надо во всех.
         TabEvent::Insecure { host, .. } => {
@@ -402,6 +407,7 @@ pub(crate) fn route_event(
         }
         TabEvent::Started { id, .. } => {
             passwords::on_navigation(app, *id);
+            pip::on_navigation(app, *id);
             // Ссылки на приложения прежней страницы больше никто не откроет.
             external::forget_tab(&app.state::<App>(), *id);
         }

@@ -252,6 +252,14 @@ export function autoscrollSite(url) {
   return null;
 }
 
+/** Мини-плеер (Alt+P): видео активной вкладки — в окно поверх всех или обратно. */
+export function togglePip() {
+  const tab = activeTab();
+  const id = state.pipTab ?? (tab && !tab.internal && !tab.sleeping ? tab.id : null);
+  if (id == null || !pref("ext_pip_enabled")) return;
+  invoke("pip_toggle", { id }).catch((error) => hooks.toast(String(error?.message ?? error)));
+}
+
 /** Кнопка расширения: включить или выключить пролистывание одним щелчком. */
 export async function toggleAutoscroll() {
   const on = !pref("ext_autoscroll_enabled");
