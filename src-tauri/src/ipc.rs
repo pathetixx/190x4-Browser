@@ -1071,9 +1071,9 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
             .guard
             .set_enabled(state.store.setting_bool("adblock_enabled", true)),
         "adblock_exempt_sites" => state.guard.set_exempt_sites(exempt_sites(&state.store)),
-        "leave_quiet_sites" => browser190x4_webview::dialogs::set_leave_quiet_sites(
-            leave_quiet_sites(&state.store),
-        ),
+        "leave_quiet_sites" => {
+            browser190x4_webview::dialogs::set_leave_quiet_sites(leave_quiet_sites(&state.store))
+        }
         "adblock_lists" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
         }
