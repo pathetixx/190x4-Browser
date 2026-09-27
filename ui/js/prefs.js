@@ -12,6 +12,8 @@ import { invoke, listen } from "./bridge.js";
 export const DEFAULTS = {
   theme: "kurogane",
   bookmarks_bar: "always",
+  // Подсказка «Импортировать закладки» на пустой панели закладок.
+  bookmarks_hint: true,
   show_home: false,
   home_page: "newtab",
   home_url: "",

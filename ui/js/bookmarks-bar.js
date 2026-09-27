@@ -8,10 +8,10 @@
  */
 
 import { invoke, listen } from "./bridge.js";
-import { el, favicon, icon } from "./dom.js";
+import { el, favicon, icon, iconButton } from "./dom.js";
 import { syncDuring } from "./layout.js";
 import { onPopupAction, openMenu, openPopup } from "./popups.js";
-import { onPref, pref } from "./prefs.js";
+import { onPref, pref, setPref } from "./prefs.js";
 import { activeTab, state } from "./state.js";
 import {
   addBookmarkFolder,
@@ -44,6 +44,7 @@ export async function initBookmarksBar() {
   listen("bookmarks", reloadBookmarks);
   onPref((key) => {
     if (key === "bookmarks_bar") renderBarVisibility();
+    if (key === "bookmarks_hint") render();
   });
 
   onPopupAction("bookmark-folder", ({ action, url, urls, id }) => {
@@ -113,12 +114,17 @@ function render() {
   const items = childrenOf(BAR);
   itemsNode.replaceChildren(...items.map(makeItem));
 
-  if (!items.length) {
+  // Подсказку пустой панели можно убрать крестиком — насовсем.
+  if (!items.length && pref("bookmarks_hint")) {
     const hint = el("div", "bookmarks__empty");
     hint.append(el("span", null, "Чтобы быстро открывать сайты, добавьте их на панель закладок."));
     const importButton = el("button", null, "Импортировать закладки");
     importButton.addEventListener("click", () => openSettings("bookmarks"));
-    hint.append(importButton);
+    const dismiss = iconButton("dismiss-12", "Больше не показывать", () => setPref("bookmarks_hint", false).catch(() => {}), {
+      size: 12,
+      className: "bookmarks__dismiss",
+    });
+    hint.append(importButton, dismiss);
     itemsNode.append(hint);
   }
 

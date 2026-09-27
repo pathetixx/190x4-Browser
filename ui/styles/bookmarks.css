@@ -134,3 +134,16 @@ svg.bookmark__icon {
 .bookmarks__empty button:hover {
   background: var(--accent-soft);
 }
+
+.bookmarks__empty .bookmarks__dismiss {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-lo);
+}
+
+.bookmarks__empty .bookmarks__dismiss:hover {
+  color: var(--text-hi);
+}
