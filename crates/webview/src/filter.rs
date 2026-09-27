@@ -89,15 +89,18 @@ struct Counter {
     blocked: Cell<u64>,
     reported: Cell<u64>,
     at: Cell<Instant>,
+    /// Отложенный отчёт уже заведён.
+    flush: Cell<bool>,
 }
 
 impl Counter {
-    fn new() -> Self {
-        Self {
+    fn new() -> Rc<Self> {
+        Rc::new(Self {
             blocked: Cell::new(0),
             reported: Cell::new(0),
             at: Cell::new(Instant::now()),
-        }
+            flush: Cell::new(false),
+        })
     }
 
     /// Новая страница — счёт заново.
@@ -108,14 +111,33 @@ impl Counter {
         sink(TabEvent::Blocked { id, count: 0 });
     }
 
-    fn hit(&self, id: u32, sink: &EventSink) {
-        let count = self.blocked.get() + 1;
-        self.blocked.set(count);
-        let now = Instant::now();
-        if now.duration_since(self.at.get()) < REPORT_EVERY || self.reported.get() == count {
+    /// Блокировки идут пачками: реклама страницы запрашивается разом. Внутри
+    /// интервала отчёта счёт копится, а конец пачки приходит отложенным
+    /// отчётом — иначе щит застывал бы на первой блокировке пачки.
+    fn hit(self: &Rc<Self>, id: u32, sink: &EventSink) {
+        self.blocked.set(self.blocked.get() + 1);
+        let since = self.at.get().elapsed();
+        if since >= REPORT_EVERY {
+            self.report(id, sink);
             return;
         }
-        self.at.set(now);
+        if self.flush.replace(true) {
+            return;
+        }
+        let (counter, sink) = (self.clone(), sink.clone());
+        let wait = (REPORT_EVERY - since).as_millis() as u32 + 1;
+        crate::later::after(wait, move || {
+            counter.flush.set(false);
+            counter.report(id, &sink);
+        });
+    }
+
+    fn report(&self, id: u32, sink: &EventSink) {
+        let count = self.blocked.get();
+        if self.reported.get() == count {
+            return;
+        }
+        self.at.set(Instant::now());
         self.reported.set(count);
         sink(TabEvent::Blocked { id, count });
     }
