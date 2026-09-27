@@ -924,7 +924,17 @@ pub fn adblock_set_enabled(app: AppHandle, state: State<'_, App>, on: bool) -> R
 
 /// Сайты, где пользователь выключил блокировку, — ключи `site_key`.
 pub fn exempt_sites(store: &Store) -> Vec<String> {
-    match store.setting("adblock_exempt_sites").ok().flatten() {
+    site_list(store, "adblock_exempt_sites")
+}
+
+/// Сайты, которые уходят без «Покинуть сайт?» (`leave_quiet_sites`).
+pub fn leave_quiet_sites(store: &Store) -> Vec<String> {
+    site_list(store, "leave_quiet_sites")
+}
+
+/// Настройка-список строк: сайты без `www.` в нижнем регистре.
+fn site_list(store: &Store, key: &str) -> Vec<String> {
+    match store.setting(key).ok().flatten() {
         Some(Value::Array(items)) => items
             .into_iter()
             .filter_map(|item| item.as_str().map(str::to_string))
@@ -1061,6 +1071,9 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
             .guard
             .set_enabled(state.store.setting_bool("adblock_enabled", true)),
         "adblock_exempt_sites" => state.guard.set_exempt_sites(exempt_sites(&state.store)),
+        "leave_quiet_sites" => browser190x4_webview::dialogs::set_leave_quiet_sites(
+            leave_quiet_sites(&state.store),
+        ),
         "adblock_lists" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
         }

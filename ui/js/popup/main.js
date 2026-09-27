@@ -1050,8 +1050,24 @@ const DIALOGS = {
     }
     const suppress = repeat && !leave ? checkbox("Запретить этой странице показывать новые окна") : null;
     if (suppress) bubble.append(suppress.node);
+    // «Покинуть» с этой отметкой — и сайт больше не спрашивает: Rust отвечает
+    // ему сам (`leave_quiet_sites`), список — в «Конфиденциальности».
+    let site = "";
+    try {
+      if (leave && /^https?:$/.test(new URL(url).protocol)) site = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    } catch {
+      // Адрес не сайта — запоминать нечего.
+    }
+    const quiet = site ? checkbox("Больше не спрашивать на этом сайте") : null;
+    if (quiet) bubble.append(quiet.node);
 
-    const reply = (action) => answer(action, { text: input?.value ?? "", suppress: suppress?.input.checked ?? false });
+    const reply = (action) => {
+      if (action === "accept" && quiet?.input.checked) {
+        const sites = pref("leave_quiet_sites") ?? [];
+        if (!sites.includes(site)) setPref("leave_quiet_sites", [...sites, site].sort()).catch(() => {});
+      }
+      answer(action, { text: input?.value ?? "", suppress: suppress?.input.checked ?? false });
+    };
     const actions = el("div", "bubble__actions");
     if (kind !== "alert") actions.append(textButton(leave ? "Остаться" : "Отмена", () => reply("cancel"), "btn"));
     const ok = textButton(leave ? "Покинуть" : "ОК", () => reply("accept"), "btn btn--primary");

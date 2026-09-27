@@ -101,6 +101,8 @@ pub fn run() {
     twitch::init(&store);
     #[cfg(windows)]
     identity::init(&store);
+    #[cfg(windows)]
+    browser190x4_webview::dialogs::set_leave_quiet_sites(ipc::leave_quiet_sites(&store));
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {

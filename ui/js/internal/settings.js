@@ -900,6 +900,31 @@ const BUILDERS = {
         ];
     const popupsGroup = group(popupRows, { title: "Всплывающие окна" });
 
+    // «Покинуть сайт?» с отметкой «Больше не спрашивать на этом сайте».
+    const quietSites = pref("leave_quiet_sites") ?? [];
+    const leaveRows = quietSites.length
+      ? quietSites.map((site) =>
+          setting(
+            displayHost(site),
+            "Закрывается и уходит на другую страницу без вопроса «Покинуть сайт?»",
+            iconButton("delete-16", "Снова спрашивать", () =>
+              setPref(
+                "leave_quiet_sites",
+                quietSites.filter((entry) => entry !== site)
+              )
+            ),
+            { iconId: "dismiss-16" }
+          )
+        )
+      : [
+          setting(
+            "Сайты спрашивают «Покинуть сайт?»",
+            "Если на странице остались несохранённые изменения. Чтобы сайт больше не спрашивал, отметьте это в его окне «Покинуть сайт?»",
+            el("span")
+          ),
+        ];
+    const leaveGroup = group(leaveRows, { title: "Уход со страницы" });
+
     const safetyGroup = group(
       [
         switchSetting(
@@ -989,6 +1014,7 @@ const BUILDERS = {
       identityGroup,
       permissionsGroup,
       popupsGroup,
+      leaveGroup,
       appsGroup,
       adblockGroup,
       exemptGroup,

@@ -261,6 +261,35 @@ fn limit(text: &str) -> String {
     text.chars().take(TEXT_LIMIT).collect()
 }
 
+/// Сайты, которым «Покинуть сайт?» не показывается: человек отметил «Больше
+/// не спрашивать на этом сайте». Хост без `www.`, вместе с поддоменами. Общие
+/// на все окна; настройка `leave_quiet_sites`.
+static LEAVE_QUIET: parking_lot::RwLock<Vec<String>> = parking_lot::RwLock::new(Vec::new());
+
+/// Заменить список сайтов, которые уходят без вопроса.
+pub fn set_leave_quiet_sites(sites: Vec<String>) {
+    *LEAVE_QUIET.write() = sites;
+}
+
+/// Уходить ли с этого документа без «Покинуть сайт?».
+fn leaves_quietly(url: &str) -> bool {
+    let sites = LEAVE_QUIET.read();
+    if sites.is_empty() {
+        return false;
+    }
+    let Some(host) = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+        .map(|authority| authority.rsplit('@').next().unwrap_or(authority))
+        .map(|host| host.split(':').next().unwrap_or(host).to_ascii_lowercase())
+    else {
+        return false;
+    };
+    sites
+        .iter()
+        .any(|site| host == *site || host.ends_with(&format!(".{site}")))
+}
+
 fn read(get: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>) -> windows_core::Result<String> {
     let mut raw = PWSTR::null();
     get(&mut raw)?;
@@ -317,10 +346,12 @@ fn wire_script(
                 let mut kind = COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT;
                 args.Kind(&mut kind)?;
                 let leave = kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;
+                let url = read(|out| args.Uri(out))?;
                 // Странице, которой окна запретили, ответ до следующей навигации
                 // приходит сразу: alert закрыт, confirm и prompt отменены, уйти
-                // со страницы можно.
-                if dialogs.suppressed.get() {
+                // со страницы можно. С сайта, где «Покинуть сайт?» больше не
+                // спрашивают, уходят молча.
+                if dialogs.suppressed.get() || (leave && leaves_quietly(&url)) {
                     if leave {
                         args.Accept()?;
                     }
@@ -333,7 +364,7 @@ fn wire_script(
                         COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD => "beforeunload",
                         _ => "alert",
                     },
-                    url: read(|out| args.Uri(out))?,
+                    url,
                     message: limit(&read(|out| args.Message(out))?),
                     default_text: limit(&read(|out| args.DefaultText(out))?),
                 };
@@ -612,5 +643,16 @@ mod tests {
         assert_eq!(answer.action, DialogAction::AllowOnce);
         assert!(answer.text.is_empty() && !answer.remember && !answer.suppress);
         assert_eq!(DialogAnswer::default().action, DialogAction::Cancel);
+    }
+
+    #[test]
+    fn quiet_sites_leave_with_subdomains() {
+        set_leave_quiet_sites(vec!["docs.example".into()]);
+        assert!(leaves_quietly("https://docs.example/edit"));
+        assert!(leaves_quietly("https://sheets.docs.example:443/a"));
+        assert!(!leaves_quietly("https://olddocs.example/"));
+        assert!(!leaves_quietly("about:blank"));
+        set_leave_quiet_sites(Vec::new());
+        assert!(!leaves_quietly("https://docs.example/edit"));
     }
 }

@@ -29,6 +29,8 @@ export const DEFAULTS = {
   adblock_enabled: true,
   adblock_exempt_sites: [],
   popups_allowed_sites: [],
+  // Сайты, с которых уходят без «Покинуть сайт?» (src-tauri: `leave_quiet_sites`).
+  leave_quiet_sites: [],
   download_dir: "",
   download_ask: false,
   download_bubble: true,
