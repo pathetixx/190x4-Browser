@@ -378,8 +378,10 @@ impl Guard {
 
 impl Guard {
     /// Окно, которое страница `opener_url` открывает по адресу `url`, —
-    /// реклама: его ловит правило `$popup` или блокировка самого документа
-    /// (`$document`, `$all`). Звать на открытие окна и на переходы в нём, пока
+    /// реклама: его ловит правило `$popup` или `$all`. Основной движок здесь не
+    /// спрашивается: у adblock-rust обычное правило (`||tracker.example^`)
+    /// действует и на документ, и ссылка на любой домен из EasyPrivacy
+    /// закрывалась бы молча. Звать на открытие окна и на переходы в нём, пока
     /// оно ещё «окно страницы» — так ловится и реклама, уходящая на рекламный
     /// адрес через пустую страницу или переадресацию.
     pub fn blocks_popup(&self, url: &str, opener_url: &str) -> bool {
@@ -389,12 +391,11 @@ impl Guard {
         let Ok(request) = Request::new(url, opener_url, "document", "GET") else {
             return false;
         };
-        let engines = self.engine.load();
-        engines
+        self.engine
+            .load()
             .popups
             .check_network_request(&request)
             .should_block()
-            || engines.main.check_network_request(&request).should_block()
     }
 }
 
@@ -426,16 +427,20 @@ const TYPE_OPTIONS: &[&str] = &[
     "inline-font",
 ];
 
-/// Правило `$popup` из списка — как правило документа для движка окон:
-/// `||ads.example^$popup,3p` → `||ads.example^$document,3p`. Остальные строки
-/// (и `$popunder`, где рекламой становится сама страница) — `None`.
+/// Правило `$popup` (и `$all`, который в uBlock Origin включает окна) из
+/// списка — как правило документа для движка окон: `||ads.example^$popup,3p` →
+/// `||ads.example^$document,3p`. Остальные строки (и `$popunder`, где рекламой
+/// становится сама страница) — `None`.
 fn popup_rule(line: &str) -> Option<String> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
         return None;
     }
     let (pattern, options) = line.rsplit_once('$')?;
-    if !options.split(',').any(|option| option == "popup") {
+    if !options
+        .split(',')
+        .any(|option| option == "popup" || option == "all")
+    {
         return None;
     }
     let mut rule = format!("{pattern}$document");
@@ -746,6 +751,10 @@ mod tests {
             popup_rule("||x.example^$script,popup").as_deref(),
             Some("||x.example^$document")
         );
+        assert_eq!(
+            popup_rule("||x.example^$all").as_deref(),
+            Some("||x.example^$document")
+        );
         assert_eq!(popup_rule("||x.example^$popunder"), None);
         assert_eq!(popup_rule("||x.example^$script"), None);
         assert_eq!(popup_rule("example.com##.popup"), None);
@@ -758,14 +767,17 @@ mod tests {
             "||ads.example^$popup\n\
              $popup,third-party,domain=player.example\n\
              @@||ok.example^$popup,domain=player.example\n\
-             ||malware.example^$document\n\
+             ||malware.example^$all\n\
+             ||phishing.example^$document\n\
              ||tracker.example^",
         );
         let page = "https://news.example/";
         assert!(guard.blocks_popup("https://ads.example/click?id=1", page));
         assert!(guard.blocks_popup("https://malware.example/", page));
-        // Обычное правило запроса не про окна: ссылка туда открывается.
+        // Правила запроса и документа не про окна: ссылка туда открывается
+        // (а документ, если правило про него, закроет своя страница).
         assert!(!guard.blocks_popup("https://tracker.example/", page));
+        assert!(!guard.blocks_popup("https://phishing.example/", page));
         assert!(!guard.blocks_popup("https://wiki.example/", page));
         // Плеер, который открывает чужие окна, — только его окна.
         let player = "https://player.example/watch/1";
