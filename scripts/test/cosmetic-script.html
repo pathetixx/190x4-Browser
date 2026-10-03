@@ -89,9 +89,18 @@
         late.id = "late";
         late.textContent = "Реклама позже";
         document.body.append(late);
+        // Узел внутри другого добавленного: поддерево обходится один раз, но
+        // его классы не теряются.
+        const wrap = document.createElement("div");
+        wrap.className = "late-wrap";
+        document.body.append(wrap);
+        const inner = document.createElement("span");
+        inner.className = "late-inner";
+        wrap.append(inner);
         await wait(900);
         checks.late_procedural = !shown("late");
         checks.late_survey = __sent.some((m) => m.evt === "cosmetic_ids" && m.classes.includes("fresh-class"));
+        checks.late_nested = __sent.some((m) => m.evt === "cosmetic_ids" && m.classes.includes("late-wrap") && m.classes.includes("late-inner"));
         checks.no_repeat = __sent.filter((m) => m.evt === "cosmetic_ids" && m.classes.includes("ad-banner")).length === 1;
 
         const ok = Object.values(checks).every(Boolean);

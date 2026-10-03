@@ -263,7 +263,7 @@
         }
       }
     };
-    const roots = full ? [document.documentElement] : Array.from(added);
+    const roots = full ? [document.documentElement] : topmost(added);
     for (const node of full ? [] : touched) if (node.nodeType === 1) note(node);
     full = false;
     added.clear();
@@ -282,6 +282,16 @@
     }
     send(classes, ids);
   };
+
+  /**
+   * Добавленные узлы без тех, что лежат внутри других добавленных: поддерево
+   * обходится один раз, а не по разу на каждого предка из списка.
+   */
+  const topmost = (nodes) =>
+    Array.from(nodes).filter((node) => {
+      for (let up = node.parentElement; up; up = up.parentElement) if (nodes.has(up)) return false;
+      return true;
+    });
 
   /** Классы и id — браузеру, пачками до 40 КБ: длинные сообщения он не читает. */
   const send = (classes, ids) => {
@@ -345,6 +355,9 @@
 
   if (procedural.length || config.generic) {
     new MutationObserver((records) => {
+      // Пока документ разбирается, каждый его элемент приходит отдельной
+      // записью. Копить их незачем: проход и так смотрит документ целиком.
+      if (config.generic && !full && document.readyState === "loading") full = true;
       if (config.generic && !full) {
         for (const record of records) {
           if (record.type === "attributes") touched.add(record.target);
