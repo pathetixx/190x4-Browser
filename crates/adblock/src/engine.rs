@@ -93,9 +93,22 @@ pub enum Decision {
     Rewrite(String),
 }
 
+/// Собранный фильтр: движок запросов и косметики и движок окон, которые
+/// открывают страницы.
+///
+/// Правила `$popup` («реклама, открывающаяся новой вкладкой») adblock-rust не
+/// понимает и выбрасывает целиком — а в EasyList и RU AdList их тысячи. Поэтому
+/// они собираются отдельно, переписанные в правила документа
+/// ([`popup_rule`]), и спрашиваются только об адресе нового окна.
+#[derive(Default)]
+pub struct Engines {
+    main: Engine,
+    popups: Engine,
+}
+
 /// Точка входа горячего пути.
 pub struct Guard {
-    engine: ArcSwap<Engine>,
+    engine: ArcSwap<Engines>,
     stats: Stats,
     enabled: ArcSwap<bool>,
     /// Сайты, на которых пользователь выключил блокировку (ключи [`site_key`]).
@@ -118,7 +131,7 @@ impl Guard {
     /// Пустой фильтр: всё разрешено. Браузер стартует с ним и не ждёт списки.
     pub fn empty() -> Self {
         Self {
-            engine: ArcSwap::from_pointee(Engine::default()),
+            engine: ArcSwap::from_pointee(Engines::default()),
             stats: Stats::default(),
             enabled: ArcSwap::from_pointee(true),
             exempt: ArcSwap::from_pointee(HashSet::new()),
@@ -158,9 +171,11 @@ impl Guard {
     ///
     /// Берёт `Vec<String>` по значению: `FilterSet::add_filter_list` требует
     /// владения текстом, и лишний `clone` здесь — это лишние мегабайты.
-    pub fn build(lists: Vec<FilterList>, resources: Vec<Resource>) -> Engine {
+    pub fn build(lists: Vec<FilterList>, resources: Vec<Resource>) -> Engines {
         let mut set = FilterSet::new(false);
+        let mut popup_rules = Vec::new();
         for list in lists {
+            popup_rules.extend(list.text.lines().filter_map(popup_rule));
             let permissions = if list.trusted {
                 TRUSTED
             } else {
@@ -174,26 +189,48 @@ impl Guard {
                 },
             );
         }
-        let mut engine = Engine::new_with_filter_set(set);
-        engine.use_resources(resources);
-        engine
+        let mut main = Engine::new_with_filter_set(set);
+        main.use_resources(resources);
+        let mut popups = FilterSet::new(false);
+        popups.add_filters(popup_rules, ParseOptions::default());
+        Engines {
+            main,
+            popups: Engine::new_with_filter_set(popups),
+        }
     }
 
     /// Собранный движок в байтах. Следующий запуск поднимает его через
     /// [`Guard::restore`], не разбирая списки заново: разбор сотен тысяч
     /// правил стоит сотен миллисекунд процессора на каждом старте.
-    pub fn snapshot(engine: &Engine) -> Vec<u8> {
-        engine.serialize()
+    ///
+    /// Формат: длина снимка основного движка (u32, little-endian), он сам, за
+    /// ним снимок движка окон.
+    pub fn snapshot(engines: &Engines) -> Vec<u8> {
+        let main = engines.main.serialize();
+        let popups = engines.popups.serialize();
+        let mut bytes = Vec::with_capacity(4 + main.len() + popups.len());
+        bytes.extend_from_slice(&(main.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&main);
+        bytes.extend_from_slice(&popups);
+        bytes
     }
 
     /// Движок из снимка [`Guard::snapshot`]. Ресурсы скриптлетов в снимок не
     /// входят — их кладут заново. `None` — снимок испорчен или записан другой
     /// версией движка: тогда списки собираются как обычно.
-    pub fn restore(bytes: &[u8], resources: Vec<Resource>) -> Option<Engine> {
-        let mut engine = Engine::default();
-        engine.deserialize(bytes).ok()?;
-        engine.use_resources(resources);
-        Some(engine)
+    pub fn restore(bytes: &[u8], resources: Vec<Resource>) -> Option<Engines> {
+        let (length, rest) = bytes.split_first_chunk::<4>()?;
+        let length = usize::try_from(u32::from_le_bytes(*length)).ok()?;
+        if length > rest.len() {
+            return None;
+        }
+        let (main_bytes, popup_bytes) = rest.split_at(length);
+        let mut main = Engine::default();
+        main.deserialize(main_bytes).ok()?;
+        main.use_resources(resources);
+        let mut popups = Engine::default();
+        popups.deserialize(popup_bytes).ok()?;
+        Some(Engines { main, popups })
     }
 
     /// Ресурсы скриптлетов из `resources.json`.
@@ -212,7 +249,7 @@ impl Guard {
         if !self.filters(url) {
             return Cosmetics::default();
         }
-        let resources = self.engine.load().url_cosmetic_resources(url);
+        let resources = self.engine.load().main.url_cosmetic_resources(url);
         let mut hide: Vec<String> = resources.hide_selectors.into_iter().collect();
         let mut styles = Vec::new();
         let mut procedural = Vec::new();
@@ -263,7 +300,7 @@ impl Guard {
         let context = match cached {
             Some(context) => context,
             None => {
-                let resources = engine.url_cosmetic_resources(document_url);
+                let resources = engine.main.url_cosmetic_resources(document_url);
                 let context = Arc::new(GenericContext {
                     exceptions: resources.exceptions,
                     generichide: resources.generichide,
@@ -279,13 +316,15 @@ impl Guard {
         if context.generichide {
             return Vec::new();
         }
-        engine.hidden_class_id_selectors(classes, ids, &context.exceptions)
+        engine
+            .main
+            .hidden_class_id_selectors(classes, ids, &context.exceptions)
     }
 
     /// Подменить движок целиком. Читатели, которые уже внутри `check`,
     /// дочитывают старый Arc и не блокируются — в этом весь смысл ArcSwap.
-    pub fn swap(&self, engine: Engine) {
-        self.engine.store(Arc::new(engine));
+    pub fn swap(&self, engines: Engines) {
+        self.engine.store(Arc::new(engines));
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -323,7 +362,7 @@ impl Guard {
             return Decision::Allow;
         };
 
-        let result = engine.check_network_request(&request);
+        let result = engine.main.check_network_request(&request);
         let decision = if result.should_block() {
             Decision::Block
         } else if let Some(rewritten) = result.rewritten_url {
@@ -335,6 +374,80 @@ impl Guard {
         self.stats.record(started.elapsed(), &decision);
         decision
     }
+}
+
+impl Guard {
+    /// Окно, которое страница `opener_url` открывает по адресу `url`, —
+    /// реклама: его ловит правило `$popup` или блокировка самого документа
+    /// (`$document`, `$all`). Звать на открытие окна и на переходы в нём, пока
+    /// оно ещё «окно страницы» — так ловится и реклама, уходящая на рекламный
+    /// адрес через пустую страницу или переадресацию.
+    pub fn blocks_popup(&self, url: &str, opener_url: &str) -> bool {
+        if !self.filters(opener_url) {
+            return false;
+        }
+        let Ok(request) = Request::new(url, opener_url, "document", "GET") else {
+            return false;
+        };
+        let engines = self.engine.load();
+        engines
+            .popups
+            .check_network_request(&request)
+            .should_block()
+            || engines.main.check_network_request(&request).should_block()
+    }
+}
+
+/// Типы ресурсов в опциях правила: у правила окна они не нужны, оно станет
+/// правилом документа.
+const TYPE_OPTIONS: &[&str] = &[
+    "popup",
+    "popunder",
+    "document",
+    "doc",
+    "all",
+    "script",
+    "image",
+    "stylesheet",
+    "css",
+    "xmlhttprequest",
+    "xhr",
+    "subdocument",
+    "frame",
+    "media",
+    "font",
+    "object",
+    "object-subrequest",
+    "other",
+    "ping",
+    "beacon",
+    "websocket",
+    "inline-script",
+    "inline-font",
+];
+
+/// Правило `$popup` из списка — как правило документа для движка окон:
+/// `||ads.example^$popup,3p` → `||ads.example^$document,3p`. Остальные строки
+/// (и `$popunder`, где рекламой становится сама страница) — `None`.
+fn popup_rule(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
+        return None;
+    }
+    let (pattern, options) = line.rsplit_once('$')?;
+    if !options.split(',').any(|option| option == "popup") {
+        return None;
+    }
+    let mut rule = format!("{pattern}$document");
+    for option in options.split(',') {
+        let name = option.trim_start_matches('~');
+        let name = name.split('=').next().unwrap_or(name);
+        if !TYPE_OPTIONS.contains(&name) {
+            rule.push(',');
+            rule.push_str(option);
+        }
+    }
+    Some(rule)
 }
 
 impl Default for Guard {
@@ -590,7 +703,7 @@ mod tests {
         let resources = Guard::parse_resources(&json).unwrap();
         let engine = Guard::build(
             vec![list(
-                "||ads.example.com^\nexample.com##.promo\nexample.com##+js(mark, 1)",
+                "||ads.example.com^\nexample.com##.promo\nexample.com##+js(mark, 1)\n||pop.example^$popup",
                 false,
             )],
             resources,
@@ -598,6 +711,7 @@ mod tests {
         let bytes = Guard::snapshot(&engine);
 
         let resources = Guard::parse_resources(&json).unwrap();
+        assert!(Guard::restore(&bytes[..3], Vec::new()).is_none());
         let restored = Guard::restore(&bytes, resources).unwrap();
         let guard = Guard::empty();
         guard.swap(restored);
@@ -613,8 +727,64 @@ mod tests {
         let cosmetics = guard.cosmetics("https://example.com/");
         assert_eq!(cosmetics.hide, vec![".promo".to_string()]);
         assert!(cosmetics.script.contains("function mark"));
+        assert!(guard.blocks_popup("https://pop.example/", "https://news.example/"));
 
         assert!(Guard::restore(b"not an engine", Vec::new()).is_none());
+    }
+
+    #[test]
+    fn popup_rules_become_document_rules() {
+        assert_eq!(
+            popup_rule("||ads.example^$popup,third-party").as_deref(),
+            Some("||ads.example^$document,third-party")
+        );
+        assert_eq!(
+            popup_rule("@@||ok.example^$popup,domain=site.example").as_deref(),
+            Some("@@||ok.example^$document,domain=site.example")
+        );
+        assert_eq!(
+            popup_rule("||x.example^$script,popup").as_deref(),
+            Some("||x.example^$document")
+        );
+        assert_eq!(popup_rule("||x.example^$popunder"), None);
+        assert_eq!(popup_rule("||x.example^$script"), None);
+        assert_eq!(popup_rule("example.com##.popup"), None);
+        assert_eq!(popup_rule("! $popup"), None);
+    }
+
+    #[test]
+    fn ad_popups_are_blocked() {
+        let guard = guard_with(
+            "||ads.example^$popup\n\
+             $popup,third-party,domain=player.example\n\
+             @@||ok.example^$popup,domain=player.example\n\
+             ||malware.example^$document\n\
+             ||tracker.example^",
+        );
+        let page = "https://news.example/";
+        assert!(guard.blocks_popup("https://ads.example/click?id=1", page));
+        assert!(guard.blocks_popup("https://malware.example/", page));
+        // Обычное правило запроса не про окна: ссылка туда открывается.
+        assert!(!guard.blocks_popup("https://tracker.example/", page));
+        assert!(!guard.blocks_popup("https://wiki.example/", page));
+        // Плеер, который открывает чужие окна, — только его окна.
+        let player = "https://player.example/watch/1";
+        assert!(guard.blocks_popup("https://any.example/", player));
+        assert!(!guard.blocks_popup("https://ok.example/", player));
+        assert!(!guard.blocks_popup("https://player.example/next", player));
+        // Сайт в исключениях — как с выключенной блокировкой.
+        guard.set_exempt_sites(["news.example".to_string()]);
+        assert!(!guard.blocks_popup("https://ads.example/click?id=1", page));
+        // Запросы правило окна не трогает.
+        assert_eq!(
+            guard.check(
+                "https://ads.example/a.js",
+                "https://other.example/",
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Allow
+        );
     }
 
     #[test]

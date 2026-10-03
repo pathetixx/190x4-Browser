@@ -391,6 +391,10 @@ static NEXT_POPUP: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PendingPopup {
     /// Вкладка, чья страница открыла окно.
     pub opener: u32,
+    /// Адреса страницы, открывшей окно, и её фрейма, откуда пришёл вызов, если
+    /// окно открыла она сама, а не человек Ctrl+щелчком: такое окно первые
+    /// секунды сверяется с правилами окон (`PopupWatch`). Пусто — не сверяется.
+    pub watch: Vec<String>,
     pub args: ICoreWebView2NewWindowRequestedEventArgs,
     pub deferral: ICoreWebView2Deferral,
 }
@@ -403,6 +407,31 @@ impl PendingPopup {
             let _ = self.deferral.Complete();
         }
     }
+}
+
+/// Сколько окно страницы сверяется с правилами окон на каждом переходе:
+/// реклама уходит на рекламный адрес через пустую страницу и переадресации за
+/// секунды, а потом по окну ходит уже человек.
+const POPUP_WATCH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Вкладка — окно, которое открыла страница: адреса открывшей страницы (и её
+/// фрейма) и когда окно открылось.
+type PopupWatch = Rc<RefCell<Option<(Vec<String>, std::time::Instant)>>>;
+
+/// Адрес фрейма, из которого страница открывает окно (`window.open` в плеере
+/// чужого сайта). У главного документа — его же адрес.
+fn source_frame(args: &ICoreWebView2NewWindowRequestedEventArgs) -> Option<String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2NewWindowRequestedEventArgs3;
+
+    let info = unsafe {
+        args.cast::<ICoreWebView2NewWindowRequestedEventArgs3>()
+            .ok()?
+            .OriginalSourceFrameInfo()
+            .ok()?
+    };
+    let mut raw = PWSTR::null();
+    unsafe { info.Source(&mut raw) }.ok()?;
+    Some(take_pwstr(raw)).filter(|url| !url.is_empty())
 }
 
 /// Ждущие окна страниц одного окна браузера.
@@ -459,6 +488,9 @@ pub struct Tab {
     /// запоминают прежний.
     route: Rc<RefCell<EventSink>>,
     popups: PopupRoute,
+    /// Вкладка открыта страницей как окно: её переходы первые секунды
+    /// сверяются с правилами окон.
+    popup_watch: PopupWatch,
     downloads: Rc<RefCell<SharedDownloads>>,
     /// Вкладку усыпили: движок держит для неё меньше памяти до показа.
     low_memory: Cell<bool>,
@@ -1415,7 +1447,7 @@ impl Tab {
             sink.clone(),
             intercepts.clone(),
         )?;
-        filter::install_cosmetics(&core, guard)?;
+        filter::install_cosmetics(&core, guard.clone())?;
         wire_accelerators(id, &controller, &core, fullscreen.clone(), sink.clone())?;
         downloads::wire(id, &core, downloads.clone(), sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
@@ -1444,6 +1476,7 @@ impl Tab {
             sink: sink.clone(),
             route,
             popups: popups.clone(),
+            popup_watch: PopupWatch::default(),
             downloads,
             low_memory: Cell::new(false),
             page_color,
@@ -1454,14 +1487,19 @@ impl Tab {
             intercepts,
             identity,
         };
-        tab.wire_events(sink.clone(), popups)?;
+        tab.wire_events(sink.clone(), popups, guard)?;
         tab.wire_certificates();
         tab.wire_favicon(sink);
         tracing::debug!(?id, "вкладка готова");
         Ok(tab)
     }
 
-    fn wire_events(&self, sink: EventSink, popups: PopupRoute) -> anyhow::Result<()> {
+    fn wire_events(
+        &self,
+        sink: EventSink,
+        popups: PopupRoute,
+        guard: Arc<Guard>,
+    ) -> anyhow::Result<()> {
         let id = self.id.0;
         let core = &self.core;
         let mut token = 0i64;
@@ -1554,6 +1592,8 @@ impl Tab {
             let cert = self.cert.clone();
             let engine = self.core.clone();
             let identity = self.identity.clone();
+            let popup_watch = self.popup_watch.clone();
+            let popup_guard = guard.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -1568,6 +1608,26 @@ impl Tab {
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
+                    // Окно, которое открыла страница, ушло на рекламу —
+                    // переадресацией или через пустую страницу: окна не будет.
+                    let watched = popup_watch.borrow().clone();
+                    if let Some((openers, since)) = watched {
+                        if since.elapsed() > POPUP_WATCH {
+                            *popup_watch.borrow_mut() = None;
+                        } else if openers
+                            .iter()
+                            .any(|opener| popup_guard.blocks_popup(&url, opener))
+                        {
+                            *popup_watch.borrow_mut() = None;
+                            args.SetCancel(true)?;
+                            tracing::debug!(tab = id, "окно страницы ушло на рекламу — закрыто");
+                            s(TabEvent::CloseRequested {
+                                id,
+                                download: false,
+                            });
+                            return Ok(());
+                        }
+                    }
                     // Сайт представляется иначе, чем прежний, — подмена до того,
                     // как его скрипты спросят, что за браузер.
                     apply_identity(&engine, &identity, &url);
@@ -1731,6 +1791,7 @@ impl Tab {
             // вход через Google, VK ID или Telegram, который ждёт ответа от
             // своего окна, не заканчивался.
             let s = sink.clone();
+            let source = self.source.clone();
             core.add_NewWindowRequested(
                 &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
                     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -1746,6 +1807,28 @@ impl Tab {
                     // Ctrl+щелчок по ссылке: Ctrl всё ещё зажат.
                     let background = user.as_bool()
                         && (GetAsyncKeyState(i32::from(VK_CONTROL.0)) as u16 & 0x8000) != 0;
+                    // Рекламное окно — по правилам `$popup` списков, как в
+                    // uBlock Origin: такие окна сайты открывают и по щелчку по
+                    // плееру. Правила пишут и про сайт, и про фрейм плеера
+                    // (`domain=` чужого плеера), поэтому сверяются оба адреса.
+                    // Ctrl+щелчок — выбор человека, его не трогаем.
+                    let mut openers = Vec::new();
+                    if !background && guard.filters(&source.borrow()) {
+                        openers.push(source.borrow().clone());
+                        if let Some(frame) =
+                            source_frame(&args).filter(|frame| *frame != openers[0])
+                        {
+                            openers.push(frame);
+                        }
+                    }
+                    if openers
+                        .iter()
+                        .any(|opener| guard.blocks_popup(&url, opener))
+                    {
+                        tracing::debug!(tab = id, "рекламное окно страницы не открыто");
+                        args.SetHandled(true)?;
+                        return Ok(());
+                    }
                     let deferral = args.GetDeferral()?;
                     let token = NEXT_POPUP.fetch_add(1, Ordering::Relaxed);
                     let slots = popups.borrow().clone();
@@ -1753,6 +1836,7 @@ impl Tab {
                         token,
                         PendingPopup {
                             opener: id,
+                            watch: openers,
                             args: args.clone(),
                             deferral,
                         },
@@ -2197,6 +2281,9 @@ impl Tab {
     /// Отдать эту вкладку окну, которое открыла страница: движок сам поведёт
     /// её на адрес окна. Ждёт, пока встроится скрипт паролей.
     pub(crate) fn attach_popup(&self, popup: PendingPopup) {
+        if !popup.watch.is_empty() {
+            *self.popup_watch.borrow_mut() = Some((popup.watch.clone(), std::time::Instant::now()));
+        }
         let core = self.core.clone();
         let attach = move || unsafe {
             if let Err(err) = popup.args.SetNewWindow(&core) {
