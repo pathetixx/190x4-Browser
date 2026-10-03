@@ -192,7 +192,7 @@ impl Guard {
         let mut main = Engine::new_with_filter_set(set);
         main.use_resources(resources);
         let mut popups = FilterSet::new(false);
-        popups.add_filters(popup_rules, ParseOptions::default());
+        popups.add_filter_list(popup_rules.join("\n"), ParseOptions::default());
         Engines {
             main,
             popups: Engine::new_with_filter_set(popups),
