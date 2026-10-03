@@ -27,7 +27,7 @@ import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, isFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
-import { initLayout, isPageHidden, setPageHidden, syncDuring } from "./layout.js";
+import { initLayout, isPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
@@ -408,8 +408,9 @@ listen("tab", (event) => {
 });
 
 /**
- * Вкладка ушла в мини-плеер или вернулась. Вернули «во вкладку» — она выходит
- * на экран (окно браузера Rust уже поднял).
+ * Видео вкладки ушло в мини-плеер или вернулось. Сама вкладка остаётся на
+ * месте; вернули «во вкладку» — она выходит на экран (окно браузера Rust уже
+ * поднял).
  */
 function onPip({ id, on, reason }) {
   if (on) state.pipTab = id;
@@ -419,17 +420,6 @@ function onPip({ id, on, reason }) {
   if (reason === "back" && state.tabs.has(id)) activate(id);
   if (reason === "no_video") toast("На странице нет видео для мини-плеера");
   if (reason === "failed") toast("Мини-плеер не открылся");
-}
-
-const pipNote = document.getElementById("pip-note");
-document.getElementById("pip-back").addEventListener("click", () => togglePip());
-
-/** Вкладка на экране — в мини-плеере: вместо страницы заглушка с кнопкой «Вернуть». */
-function renderPip() {
-  const tab = activeTab();
-  const here = tab != null && tab.id === state.pipTab;
-  if (pipNote.hidden === here) pipNote.hidden = !here;
-  setPageHidden("pip", here);
 }
 
 /**
@@ -883,7 +873,6 @@ subscribe(() => {
   renderToolbar();
   renderBarVisibility();
   renderInternal();
-  renderPip();
   scheduleSessionSave();
   refreshLivePanel();
   measureTabs();

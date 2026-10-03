@@ -649,46 +649,6 @@ svg {
   inset: 0;
 }
 
-/* Вкладка на экране — в мини-плеере: на её месте заглушка. */
-.pip-note {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 10px;
-  padding: 24px;
-  text-align: center;
-  color: var(--text-lo);
-  background:
-    radial-gradient(900px 320px at 50% -140px, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
-    var(--ink-0);
-}
-
-.pip-note[hidden] {
-  display: none;
-}
-
-.pip-note svg {
-  color: var(--accent-bright);
-}
-
-.pip-note__title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-hi);
-}
-
-.pip-note__text {
-  max-width: 420px;
-  font-size: 13px;
-}
-
-.pip-note .btn {
-  margin-top: 8px;
-}
-
 /* ── Статусная строка ──────────────────────────────────────── */
 
 /* Строка состояния — телеметрия: моноширинные заглавные, развёртка и

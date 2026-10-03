@@ -328,7 +328,16 @@ pub enum TabEvent {
         id: u32,
         what: &'static str,
     },
-    /// Вкладка переехала в мини-плеер (`on`) или вернулась в окно. `reason`:
+    /// Страница попросила окно мини-плеера (`documentPictureInPicture`) по
+    /// просьбе браузера: окно ждёт под отсрочкой (`TabHost::pip_window`), а
+    /// интерфейс о нём не знает. Размер — в CSS-пикселях, `0` — не задан.
+    PipWindow {
+        opener: u32,
+        token: u64,
+        width: u32,
+        height: u32,
+    },
+    /// Видео вкладки ушло в мини-плеер (`on`) или вернулось. `reason`:
     /// `open`, `back` (вернули во вкладку), `closed` (мини-плеер закрыли),
     /// `no_video`, `failed`, `navigated`, `moved`, `replaced`.
     Pip {
@@ -434,6 +443,26 @@ fn source_frame(args: &ICoreWebView2NewWindowRequestedEventArgs) -> Option<Strin
     Some(take_pwstr(raw)).filter(|url| !url.is_empty())
 }
 
+/// Размер окна, который попросила страница (`window.open` с размерами,
+/// `requestWindow({width, height})`), в CSS-пикселях; `(0, 0)` — не задан.
+fn window_size(args: &ICoreWebView2NewWindowRequestedEventArgs) -> (u32, u32) {
+    let size = || -> windows_core::Result<(u32, u32)> {
+        let features = unsafe { args.WindowFeatures()? };
+        let mut has = BOOL::default();
+        let (mut width, mut height) = (0u32, 0u32);
+        unsafe {
+            features.HasSize(&mut has)?;
+            if !has.as_bool() {
+                return Ok((0, 0));
+            }
+            features.Width(&mut width)?;
+            features.Height(&mut height)?;
+        }
+        Ok((width, height))
+    };
+    size().unwrap_or((0, 0))
+}
+
 /// Ждущие окна страниц одного окна браузера.
 pub(crate) type PopupSlots = Rc<RefCell<HashMap<u64, PendingPopup>>>;
 
@@ -507,6 +536,9 @@ pub struct Tab {
     drm_script: Rc<RefCell<DrmSlot>>,
     /// Запросы страницы, которые ждут ответа браузера (`filter::Intercepts`).
     intercepts: Rc<filter::Intercepts>,
+    /// Браузер сам попросил страницу открыть мини-плеер (`pip_script`):
+    /// следующее её окно — окно мини-плеера, а не вкладка.
+    pip_expected: Rc<Cell<bool>>,
     /// Кем вкладка представляется сайтам сейчас (`identity`) и при какой
     /// версии настроек это поставлено; `None` — движок как есть.
     identity: IdentitySlot,
@@ -593,7 +625,7 @@ fn host_of(url: &str) -> Option<String> {
 /// Залить вкладку цветом до первой отрисовки. Сайтам без своего фона нужен
 /// белый — иначе чёрный текст оказался бы на тёмном; страницам браузера —
 /// цвет темы.
-fn paint_background(controller: &ICoreWebView2Controller, rgb: [u8; 3]) {
+pub(crate) fn paint_background(controller: &ICoreWebView2Controller, rgb: [u8; 3]) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Controller2, COREWEBVIEW2_COLOR,
     };
@@ -1485,6 +1517,7 @@ impl Tab {
             private,
             drm_script,
             intercepts,
+            pip_expected: Rc::default(),
             identity,
         };
         tab.wire_events(sink.clone(), popups, guard)?;
@@ -1792,6 +1825,7 @@ impl Tab {
             // своего окна, не заканчивался.
             let s = sink.clone();
             let source = self.source.clone();
+            let pip_expected = self.pip_expected.clone();
             core.add_NewWindowRequested(
                 &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
                     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -1802,6 +1836,30 @@ impl Tab {
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
+                    // Окно мини-плеера, которое браузер сам попросил открыть
+                    // (`pip_script`): не вкладка, его сажает в своё окно хост.
+                    if pip_expected.replace(false) {
+                        let (width, height) = window_size(&args);
+                        let deferral = args.GetDeferral()?;
+                        let token = NEXT_POPUP.fetch_add(1, Ordering::Relaxed);
+                        let slots = popups.borrow().clone();
+                        slots.borrow_mut().insert(
+                            token,
+                            PendingPopup {
+                                opener: id,
+                                watch: Vec::new(),
+                                args: args.clone(),
+                                deferral,
+                            },
+                        );
+                        s(TabEvent::PipWindow {
+                            opener: id,
+                            token,
+                            width,
+                            height,
+                        });
+                        return Ok(());
+                    }
                     let mut user = BOOL::default();
                     args.IsUserInitiated(&mut user)?;
                     // Ctrl+щелчок по ссылке: Ctrl всё ещё зажат.
@@ -2011,19 +2069,11 @@ impl Tab {
         Ok(())
     }
 
-    /// Переехать в другое окно — в окно мини-плеера или обратно в контейнер.
-    /// Маршрут событий не меняется: вкладка остаётся в своём окне браузера.
-    pub(crate) fn reparent(&self, parent: HWND, bounds: RECT) -> windows_core::Result<()> {
-        unsafe {
-            self.controller.SetParentWindow(parent)?;
-            self.controller.SetBounds(bounds)
-        }
-    }
-
-    /// Развернуть главное видео страницы на окно мини-плеера (`inject/pip.js`).
-    /// Скрипт выполняется как действие человека: иначе страница не пустила бы
-    /// видео во весь экран. `done` получает `ok`, `css` или `none`, а пустую
-    /// строку — если скрипт не выполнился.
+    /// Унести главное видео страницы в мини-плеер (`inject/pip.js`): скрипт
+    /// просит окно `documentPictureInPicture` и переносит в него видео и
+    /// кнопки. Выполняется как действие человека: без жеста окна не дадут.
+    /// `done` получает `ok`, `none` (видео нет), `unsupported` или `failed`, а
+    /// пустую строку — если скрипт не выполнился.
     pub(crate) fn pip_script(
         &self,
         done: impl FnOnce(String) + 'static,
@@ -2037,7 +2087,11 @@ impl Tab {
             "returnByValue": true,
         })
         .to_string();
+        // Окно, которое скрипт сейчас попросит, — мини-плеер, а не вкладка.
+        self.pip_expected.set(true);
+        let expected = self.pip_expected.clone();
         let handler = DevToolsDone::create(Box::new(move |code, json| {
+            expected.set(false);
             let value = code
                 .ok()
                 .and_then(|()| serde_json::from_str::<serde_json::Value>(&json).ok())
@@ -2055,8 +2109,8 @@ impl Tab {
         }
     }
 
-    /// Вернуть видео на страницу: убрать кнопки мини-плеера и свернуть видео из
-    /// экрана. `pause` — поставить его на паузу.
+    /// Вернуть видео из мини-плеера на его место на странице. `pause` —
+    /// поставить его на паузу.
     pub(crate) fn pip_exit_script(&self, pause: bool) {
         run_script(
             &self.core,

@@ -398,7 +398,17 @@ pub(crate) fn route_event(
             relaunch_after_engine_crash(app);
             return;
         }
-        // Вкладка ушла в мини-плеер или вернулась: запомнить, какая она.
+        // Страница открывает окно мини-плеера: интерфейсу оно не вкладка.
+        TabEvent::PipWindow {
+            opener,
+            token,
+            width,
+            height,
+        } => {
+            pip::on_window(app, *opener, *token, (*width, *height));
+            return;
+        }
+        // Видео ушло в мини-плеер или вернулось: запомнить, чьё оно.
         TabEvent::Pip { id, on, reason } => pip::on_event(app, label, *id, *on, reason),
         // Сайт открыли с неверным сертификатом: движок помнит это решение до
         // выхода для всех окон профиля, значит, и помечать его надо во всех.

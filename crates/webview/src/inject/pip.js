@@ -1,11 +1,15 @@
-// Мини-плеер 190x4: вкладка уже переехала в маленькое окно поверх всех, а этот
-// скрипт разворачивает главное видео страницы на всё окно и рисует поверх него
-// свои кнопки — пауза, перемотка, время, громкость, «вернуть во вкладку» и
-// «закрыть». Браузер выполняет его как действие человека (с жестом), иначе
-// страница не пустила бы видео во весь экран.
+// Мини-плеер 190x4: главное видео страницы уходит в маленькое окно поверх всех,
+// а страница остаётся во вкладке — на месте видео чёрный прямоугольник.
 //
-// Результат — строка: `ok` (видео во весь экран), `css` (экран не дали, видео
-// растянуто стилем), `none` (видео нет). Выход — `window[Symbol.for("x4pip")].exit`.
+// Окно — `documentPictureInPicture`, как у расширений «картинка в картинке»
+// Chrome: в него переезжает сам элемент видео (и продолжает играть) и
+// рисуются свои кнопки — пауза, перемотка, время, громкость, «вернуть во
+// вкладку» и «закрыть». Браузер выполняет скрипт как действие человека (без
+// жеста окна не дадут) и сажает окно в своё (`pip.rs`).
+//
+// Результат — строка: `ok` (видео в мини-плеере), `none` (видео нет — окна не
+// будет), `unsupported` (движок не умеет такие окна), `failed`. Выход —
+// `window[Symbol.for("x4pip")].exit(pause)`: видео возвращается на место.
 (async () => {
   "use strict";
 
@@ -16,8 +20,8 @@
 
   // Видео ищется и во фреймах своего сайта: плеер часто живёт во фрейме.
   const found = [];
-  const collect = (doc, chain) => {
-    for (const video of doc.querySelectorAll("video")) found.push({ video, chain });
+  const collect = (doc) => {
+    for (const video of doc.querySelectorAll("video")) found.push(video);
     for (const frame of doc.querySelectorAll("iframe")) {
       let inner = null;
       try {
@@ -25,61 +29,75 @@
       } catch (_) {
         inner = null;
       }
-      if (inner) collect(inner, [...chain, frame]);
+      if (inner) collect(inner);
     }
   };
-  collect(document, []);
-  const area = ({ video }) => {
+  collect(document);
+  const area = (video) => {
     const rect = video.getBoundingClientRect();
     return rect.width * rect.height;
   };
-  const playable = found.filter(({ video }) => video.readyState > 0 || video.currentSrc);
-  playable.sort((a, b) => Number(!b.video.paused) - Number(!a.video.paused) || area(b) - area(a));
-  const target = playable[0];
-  if (!target) return "none";
-  const { video, chain } = target;
+  const playable = found.filter((video) => video.readyState > 0 || video.currentSrc);
+  playable.sort((a, b) => Number(!b.paused) - Number(!a.paused) || area(b) - area(a));
+  const video = playable[0];
+  if (!video) return "none";
+  if (!("documentPictureInPicture" in window)) return "unsupported";
 
-  /* ── Видео на всё окно ───────────────────────────────────── */
+  /* ── Окно ────────────────────────────────────────────────── */
 
-  // Во весь экран уходит само видео, а если оно во фрейме — фрейм верхнего
-  // документа; внутри фреймов видео растягивается стилем.
-  const saved = [];
-  const pin = (node) => {
-    saved.push([node, node.style.cssText]);
-    const set = (name, value) => node.style.setProperty(name, value, "important");
-    set("position", "fixed");
-    set("inset", "0");
-    set("width", "100%");
-    set("height", "100%");
-    set("max-width", "none");
-    set("max-height", "none");
-    set("margin", "0");
-    set("transform", "none");
-    set("z-index", "2147483646");
-    set("background", "#000");
-    if (node === video) set("object-fit", "contain");
-  };
-  const unpin = () => {
-    for (const [node, css] of saved.reverse()) node.style.cssText = css;
-    saved.length = 0;
-  };
-  for (const [index, frame] of chain.entries()) {
-    if (index > 0) pin(frame);
-  }
-  if (chain.length) pin(video);
-
-  const screenTarget = chain[0] || video;
-  let mode = "ok";
+  // Размер — по пропорциям видео: широкое — 480 по ширине, вертикальное — 360
+  // по высоте. Окно браузер ещё ограничит долей экрана.
+  const ratio = video.videoWidth > 0 && video.videoHeight > 0 ? video.videoWidth / video.videoHeight : 16 / 9;
+  const width = ratio >= 1 ? 480 : Math.round(360 * ratio);
+  const height = Math.round(width / ratio);
+  let pip;
   try {
-    await screenTarget.requestFullscreen({ navigationUI: "hide" });
+    pip = await documentPictureInPicture.requestWindow({ width, height });
   } catch (_) {
-    // Экран не дали — растягиваем стилем и сам фрейм (или видео), а
-    // прокрутку страницы убираем.
-    mode = "css";
-    pin(screenTarget);
-    saved.push([document.documentElement, document.documentElement.style.cssText]);
-    document.documentElement.style.setProperty("overflow", "hidden", "important");
+    return "failed";
   }
+  const doc = pip.document;
+
+  const bridge = () => (window.chrome && window.chrome.webview) || null;
+  const post = (evt) => {
+    const hook = bridge();
+    if (!hook) return;
+    try {
+      hook.postMessage({ evt });
+    } catch (_) {
+      // Мост закрыт — документ уходит.
+    }
+  };
+
+  /* ── Видео — в окно, на странице — чёрное место ──────────── */
+
+  // Место повторяет видео по размеру и положению; классы сайта ему не даются,
+  // иначе скрипты сайта приняли бы его за плеер.
+  const home = video.ownerDocument;
+  const holder = home.createElement("div");
+  const computed = home.defaultView.getComputedStyle(video);
+  for (const property of ["position", "top", "right", "bottom", "left", "width", "height", "margin", "transform", "z-index"]) {
+    holder.style.setProperty(property, computed.getPropertyValue(property));
+  }
+  holder.style.setProperty("display", "flex");
+  holder.style.setProperty("align-items", "center");
+  holder.style.setProperty("justify-content", "center");
+  holder.style.setProperty("box-sizing", "border-box");
+  holder.style.setProperty("background", "#000");
+  holder.style.setProperty("color", "rgba(241, 241, 244, 0.55)");
+  holder.style.setProperty("font", "500 13px/1.3 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif");
+  holder.style.setProperty("text-align", "center");
+  holder.textContent = "Видео в мини-плеере";
+
+  const playing = !video.paused;
+  // Свои кнопки видео (атрибут `controls`) рисовались бы второй полосой под
+  // кнопками мини-плеера — на время мини-плеера они выключены.
+  const nativeControls = video.controls;
+  video.controls = false;
+  video.replaceWith(holder);
+  doc.body.append(video);
+  if (playing && video.paused) video.play().catch(() => {});
+  doc.title = document.title || location.hostname;
 
   /* ── Кнопки ──────────────────────────────────────────────── */
 
@@ -93,18 +111,18 @@
     close: ["M5 5l10 10M15 5 5 15"],
   };
   const glyph = (name) => {
-    const svg = document.createElementNS(SVG, "svg");
+    const svg = doc.createElementNS(SVG, "svg");
     svg.setAttribute("viewBox", "1 1 18 18");
     svg.setAttribute("aria-hidden", "true");
     for (const d of PATHS[name]) {
-      const path = document.createElementNS(SVG, "path");
+      const path = doc.createElementNS(SVG, "path");
       path.setAttribute("d", d);
       svg.append(path);
     }
     return svg;
   };
   const make = (tag, className, text) => {
-    const node = document.createElement(tag);
+    const node = doc.createElement(tag);
     if (className) node.className = className;
     if (text != null) node.textContent = text;
     return node;
@@ -114,6 +132,7 @@
     node.type = "button";
     node.title = title;
     node.setAttribute("aria-label", title);
+    node.dataset.icon = name;
     node.append(glyph(name));
     node.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -122,12 +141,17 @@
     return node;
   };
 
+  // Стиль сайта в окно не попадает; встроенный стиль видео (сайты ставят ему
+  // размеры и сдвиг) перебивается `!important`, а на странице остаётся как был.
   const CSS = `
-    :host { all: initial; position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
-      background: transparent; overflow: hidden; pointer-events: none; color: #f1f1f4;
-      font: 500 12.5px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
-    .ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between;
-      opacity: 1; transition: opacity 0.18s ease; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #f1f1f4;
+      font: 500 12.5px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+    video { position: fixed !important; inset: 0 !important; left: 0 !important; top: 0 !important;
+      width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important;
+      margin: 0 !important; transform: none !important; object-fit: contain !important; background: #000 !important;
+      visibility: visible !important; opacity: 1 !important; }
+    .ui { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; justify-content: space-between;
+      pointer-events: none; opacity: 1; transition: opacity 0.18s ease; }
     .ui[data-hidden="true"] { opacity: 0; }
     .ui[data-hidden="true"] * { pointer-events: none !important; }
     .top, .bottom { pointer-events: auto; display: flex; align-items: center; gap: 4px; padding: 6px 8px; }
@@ -143,22 +167,21 @@
       color: inherit; cursor: pointer; clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); }
     .btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
     .btn:focus-visible { outline: 2px solid #de5772; outline-offset: -2px; }
-    .btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+    .btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.4; pointer-events: none; }
     input[type="range"] { -webkit-appearance: none; appearance: none; margin: 0; height: 16px; background: transparent; cursor: pointer; }
     input[type="range"]::-webkit-slider-runnable-track { height: 3px;
       background: linear-gradient(90deg, #de5772 var(--fill, 0%), rgba(255, 255, 255, 0.28) var(--fill, 0%)); }
     input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px;
       background: #fff; border: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
     .seek { width: 100%; }
+    .seek[hidden] { display: none; }
     .volume { width: 72px; }
   `;
-
-  const host = document.createElement("div");
-  host.setAttribute("popover", "manual");
-  const root = host.attachShadow({ mode: "closed" });
-  const sheet = new CSSStyleSheet();
+  // Стиль — конструируемым листом окна: на него не действует политика
+  // встроенных стилей сайта, которую окно наследует.
+  const sheet = new pip.CSSStyleSheet();
   sheet.replaceSync(CSS);
-  root.adoptedStyleSheets = [sheet];
+  doc.adoptedStyleSheets = [sheet];
 
   const ui = make("div", "ui");
   const top = make("div", "top");
@@ -192,13 +215,7 @@
   const bottom = make("div", "bottom");
   bottom.append(seek, row);
   ui.append(top, bottom);
-  root.append(ui);
-  document.documentElement.append(host);
-  try {
-    host.showPopover();
-  } catch (_) {
-    // Нет верхнего слоя — остаётся поверх стилем.
-  }
+  doc.body.append(ui);
 
   /* ── Состояние ───────────────────────────────────────────── */
 
@@ -210,7 +227,12 @@
     const s = String(total % 60).padStart(2, "0");
     return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
   };
+  // Значок меняется, только когда меняется состояние: `render` идёт на каждое
+  // `timeupdate`, и замена значка под нажатой кнопкой съедала щелчок — нажатие
+  // приходилось на старый значок, отпускание на новый.
   const setIcon = (node, name, label) => {
+    if (node.dataset.icon === name) return;
+    node.dataset.icon = name;
     node.replaceChildren(glyph(name));
     node.title = label;
     node.setAttribute("aria-label", label);
@@ -234,6 +256,7 @@
     setIcon(muteButton, silent ? "mute" : "volume", silent ? "Включить звук (M)" : "Выключить звук (M)");
     volume.value = String(silent ? 0 : Math.round(video.volume * 100));
     volume.style.setProperty("--fill", `${volume.value}%`);
+    title.textContent = document.title || location.hostname;
   };
 
   seek.addEventListener("input", () => {
@@ -281,18 +304,7 @@
   };
   wake();
 
-  /* ── Мышь и клавиатура ───────────────────────────────────── */
-
-  const bridge = () => (window.chrome && window.chrome.webview) || null;
-  const post = (evt) => {
-    const hook = bridge();
-    if (!hook) return;
-    try {
-      hook.postMessage({ evt });
-    } catch (_) {
-      // Мост закрыт — документ уходит.
-    }
-  };
+  /* ── Мышь и клавиатура окна ──────────────────────────────── */
 
   // Щелчок по видео — пауза, а потянули — окно едет за мышью.
   let press = null;
@@ -313,8 +325,6 @@
   };
   const onClick = (event) => {
     if (!event.isTrusted) return;
-    event.preventDefault();
-    event.stopPropagation();
     if (!dragged) togglePlay();
     press = null;
     dragged = false;
@@ -340,63 +350,66 @@
     };
     const action = actions[event.key.length === 1 ? event.key.toLowerCase() : event.key];
     if (!action) return;
+    // Пробел на кнопке нажал бы её ещё раз.
     event.preventDefault();
-    event.stopImmediatePropagation();
     wake();
     action();
   };
 
-  // Слушаем и документ страницы, и документ видео, если оно во фрейме.
-  const windows = [...new Set([window, video.ownerDocument.defaultView])];
-  const listeners = [
-    ["mousedown", onDown],
-    ["mousemove", onMove],
-    ["click", onClick],
-    ["wheel", onWheel],
-    ["keydown", onKey],
-  ];
-  const inVideo = (handler) => (event) => {
-    // Свои кнопки обрабатывают щелчки сами.
-    if (event.composedPath().includes(host)) {
+  // Мышь по видео — только мимо кнопок: свои щелчки кнопки обрабатывают сами.
+  const onVideo = (handler) => (event) => {
+    if (ui.contains(event.target) && event.target !== ui) {
       if (event.type === "mousemove") wake();
       return;
     }
     handler(event);
   };
-  const wrapped = listeners.map(([type, handler]) => [type, type === "keydown" ? handler : inVideo(handler)]);
-  for (const target of windows) {
-    for (const [type, handler] of wrapped) {
-      target.addEventListener(type, handler, { capture: true, passive: type === "mousedown" || type === "mousemove" });
-    }
+  const listeners = [
+    ["mousedown", onVideo(onDown)],
+    ["mousemove", onVideo(onMove)],
+    ["click", onVideo(onClick)],
+    ["wheel", onVideo(onWheel)],
+    ["keydown", onKey],
+  ];
+  for (const [type, handler] of listeners) {
+    pip.addEventListener(type, handler, { capture: true, passive: type === "mousedown" || type === "mousemove" });
   }
 
-  // Видео свернули из экрана не мы (Esc, страница сама) или оно пропало со
-  // страницы — вкладка возвращается на место.
-  let leaving = false;
-  const onFullscreen = () => {
-    if (!leaving && mode === "ok" && !document.fullscreenElement) post("pip_back");
-  };
-  document.addEventListener("fullscreenchange", onFullscreen);
-  const watch = setInterval(() => {
-    if (!video.isConnected) post("pip_back");
-  }, 1000);
+  /* ── Обратно на страницу ─────────────────────────────────── */
 
-  const exit = (pause) => {
-    leaving = true;
-    clearInterval(watch);
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
     clearTimeout(hideTimer);
-    document.removeEventListener("fullscreenchange", onFullscreen);
     for (const type of MEDIA) video.removeEventListener(type, render);
-    for (const target of windows) {
-      for (const [type, handler] of wrapped) target.removeEventListener(type, handler, { capture: true });
-    }
+    for (const [type, handler] of listeners) pip.removeEventListener(type, handler, { capture: true });
     video.style.removeProperty("cursor");
-    host.remove();
-    unpin();
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    if (pause) video.pause();
+    const wasPlaying = !video.paused;
+    if (holder.isConnected) holder.replaceWith(video);
+    else holder.remove();
+    video.controls = nativeControls;
+    if (wasPlaying && video.paused) video.play().catch(() => {});
     delete window[KEY];
   };
+
+  // Окно закрылось не по просьбе браузера (упал его документ) — видео всё
+  // равно возвращается, а браузер узнаёт, что мини-плеера больше нет.
+  pip.addEventListener("pagehide", () => {
+    if (restored) return;
+    restore();
+    post("pip_back");
+  });
+
+  const exit = (pause) => {
+    restore();
+    if (pause) video.pause();
+    try {
+      pip.close();
+    } catch (_) {
+      // Окно уже закрыто.
+    }
+  };
   Object.defineProperty(window, KEY, { value: { exit }, configurable: true, enumerable: false });
-  return mode;
+  return "ok";
 })();

@@ -1,16 +1,16 @@
-//! Окно мини-плеера: маленькое окно поверх всех, куда на время переезжает
-//! вкладка с видео (`TabHost::pip_open`).
+//! Окно мини-плеера: маленькое окно поверх всех (`TabHost::pip_window`).
 //!
-//! Своё окно, а не «картинка в картинке» движка: у той только пауза, а в
-//! мини-плеере нужны перемотка и громкость. Вкладка переезжает сюда живой, как
-//! между окнами браузера (`SetParentWindow`), а видео на всё окно и кнопки
-//! поверх него делает скрипт страницы (`inject/pip.js`).
+//! Страница открывает окно `documentPictureInPicture` и переносит в него видео
+//! и свои кнопки (`inject/pip.js`); у WebView2 своего такого окна нет, и
+//! документ встаёт в это. Вкладка остаётся на месте — уходит только видео,
+//! как в «картинке в картинке» Chrome, но с перемоткой и громкостью.
 //!
 //! Рамки нет: по краю — тонкая кромка шириной [`EDGE`], за неё окно тянут, а
 //! внутри неё лежит страница. Двигают окно за видео: страница просит об этом
 //! сообщением, и перенос начинает [`start_drag`].
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Once;
 
@@ -30,9 +30,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, LoadCursorW, PostMessageW,
     RegisterClassW, ShowWindow, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTLEFT, HTRIGHT,
-    HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MINMAXINFO, SIZE_MINIMIZED, SW_SHOWNOACTIVATE,
-    WM_CLOSE, WM_GETMINMAXINFO, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SIZE, WNDCLASSW,
-    WS_CLIPCHILDREN, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME,
+    HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, MINMAXINFO, SIZE_MINIMIZED, SW_HIDE,
+    SW_SHOWNOACTIVATE, WM_CLOSE, WM_GETMINMAXINFO, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME,
 };
 use windows_core::{w, PCWSTR};
 
@@ -40,9 +40,12 @@ const CLASS_NAME: PCWSTR = w!("Browser190x4MiniPlayer");
 
 /// Кромка окна, за которую его тянут, — в пикселях при 100%.
 pub(crate) const EDGE: i32 = 4;
-/// Мини-плеер при открытии и самый маленький — при 100%.
+/// Мини-плеер при открытии, если страница не попросила размер, и самый
+/// маленький — при 100%.
 const SIZE: (i32, i32) = (480, 270);
 const MIN_SIZE: (i32, i32) = (240, 135);
+/// Больше этой доли рабочей области мини-плеер при открытии не бывает.
+const MAX_SHARE: i32 = 3;
 /// Отступ от угла рабочей области экрана.
 const MARGIN: i32 = 24;
 
@@ -57,12 +60,20 @@ pub(crate) enum PipSignal {
 type Handler = Rc<dyn Fn(PipSignal)>;
 
 thread_local! {
-    static HANDLER: RefCell<Option<Handler>> = const { RefCell::new(None) };
+    /// Обработчики окон: закрытое окно уходит с задержкой, и новое может
+    /// открыться раньше — у каждого свой.
+    static HANDLERS: RefCell<HashMap<isize, Handler>> = RefCell::new(HashMap::new());
 }
 
 /// Создать окно мини-плеера у правого нижнего угла экрана окна `near`.
-/// Окно показывается без фокуса: смотреть видео не значит отдать ему клавиатуру.
-pub(crate) fn create(near: HWND, on_signal: Handler) -> windows_core::Result<HWND> {
+/// `size` — размер, который попросила страница, в CSS-пикселях (`0` — не
+/// задан). Окно показывается без фокуса: смотреть видео не значит отдать ему
+/// клавиатуру.
+pub(crate) fn create(
+    near: HWND,
+    size: (u32, u32),
+    on_signal: Handler,
+) -> windows_core::Result<HWND> {
     static REGISTER: Once = Once::new();
     let instance = unsafe { GetModuleHandleW(None)? };
     REGISTER.call_once(|| {
@@ -78,8 +89,15 @@ pub(crate) fn create(near: HWND, on_signal: Handler) -> windows_core::Result<HWN
     });
 
     let scale = |value: i32| value * dpi_of(near) as i32 / 96;
-    let (width, height) = (scale(SIZE.0), scale(SIZE.1));
     let work = work_area(near);
+    let (width, height) = fit(
+        size,
+        (
+            (work.right - work.left) / MAX_SHARE,
+            (work.bottom - work.top) / MAX_SHARE,
+        ),
+        scale,
+    );
     let x = work.right - width - scale(MARGIN);
     let y = work.bottom - height - scale(MARGIN);
 
@@ -99,7 +117,7 @@ pub(crate) fn create(near: HWND, on_signal: Handler) -> windows_core::Result<HWN
             None,
         )?
     };
-    HANDLER.with(|handler| *handler.borrow_mut() = Some(on_signal));
+    HANDLERS.with(|handlers| handlers.borrow_mut().insert(hwnd.0 as isize, on_signal));
     unsafe {
         // Рамки нет, а тень у окна остаётся; углы прямые, как у всего 190x4.
         let _ = DwmExtendFrameIntoClientArea(
@@ -123,9 +141,35 @@ pub(crate) fn create(near: HWND, on_signal: Handler) -> windows_core::Result<HWN
     Ok(hwnd)
 }
 
-/// Закрыть окно мини-плеера. Страницу из него уже унесли.
+/// Размер окна в пикселях экрана: попрошенный страницей (или обычный) с
+/// сохранением пропорций, не меньше самого маленького и не больше `max`.
+fn fit(size: (u32, u32), max: (i32, i32), scale: impl Fn(i32) -> i32) -> (i32, i32) {
+    let (width, height) = match size {
+        (w, h) if w > 0 && h > 0 => (scale(w as i32), scale(h as i32)),
+        _ => (scale(SIZE.0), scale(SIZE.1)),
+    };
+    let shrink = f64::min(
+        1.0,
+        f64::min(max.0 as f64 / width as f64, max.1 as f64 / height as f64),
+    );
+    let (width, height) = (
+        (width as f64 * shrink) as i32,
+        (height as f64 * shrink) as i32,
+    );
+    (width.max(scale(MIN_SIZE.0)), height.max(scale(MIN_SIZE.1)))
+}
+
+/// Убрать окно с экрана, не закрывая: его закроют чуть позже ([`destroy`]).
+pub(crate) fn hide(hwnd: HWND) {
+    HANDLERS.with(|handlers| handlers.borrow_mut().remove(&(hwnd.0 as isize)));
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+/// Закрыть окно мини-плеера.
 pub(crate) fn destroy(hwnd: HWND) {
-    HANDLER.with(|handler| handler.borrow_mut().take());
+    HANDLERS.with(|handlers| handlers.borrow_mut().remove(&(hwnd.0 as isize)));
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
@@ -184,10 +228,10 @@ fn work_area(hwnd: HWND) -> RECT {
     info.rcWork
 }
 
-fn signal(value: PipSignal) {
+fn signal(hwnd: HWND, value: PipSignal) {
     // Обработчик достаётся из ячейки до вызова: он может закрыть окно, а с
     // ним и саму ячейку.
-    let handler = HANDLER.with(|handler| handler.borrow().clone());
+    let handler = HANDLERS.with(|handlers| handlers.borrow().get(&(hwnd.0 as isize)).cloned());
     if let Some(handler) = handler {
         handler(value);
     }
@@ -211,12 +255,12 @@ unsafe extern "system" fn wndproc(
         }
         WM_SIZE => {
             if wparam.0 != SIZE_MINIMIZED as usize {
-                signal(PipSignal::Resized(page_bounds(hwnd)));
+                signal(hwnd, PipSignal::Resized(page_bounds(hwnd)));
             }
             LRESULT(0)
         }
         WM_CLOSE => {
-            signal(PipSignal::Close);
+            signal(hwnd, PipSignal::Close);
             LRESULT(0)
         }
         WM_GETMINMAXINFO => {
@@ -258,5 +302,23 @@ fn hit_test(hwnd: HWND, screen: POINT) -> u32 {
         (_, _, true, _) => HTTOP,
         (.., true) => HTBOTTOM,
         _ => HTCAPTION,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit;
+
+    #[test]
+    fn window_keeps_the_asked_shape_within_limits() {
+        let same = |value: i32| value;
+        assert_eq!(fit((0, 0), (1000, 1000), same), (480, 270));
+        assert_eq!(fit((400, 300), (1000, 1000), same), (400, 300));
+        // Больше доли экрана — уменьшается, пропорции те же.
+        assert_eq!(fit((1600, 900), (800, 450), same), (800, 450));
+        // Меньше самого маленького — не бывает.
+        assert_eq!(fit((100, 50), (1000, 1000), same), (240, 135));
+        let double = |value: i32| value * 2;
+        assert_eq!(fit((0, 0), (2000, 2000), double), (960, 540));
     }
 }

@@ -226,15 +226,36 @@ struct HostState {
     /// Окно закрыто (`TabHost::shutdown`): вкладка, которую движок достроит
     /// позже, закрывается сразу.
     closed: bool,
-    /// Вкладка в мини-плеере и его окно. Её видимостью и местом ведает
-    /// мини-плеер, а не раскладка окна.
+    /// Мини-плеер: вкладка, чьё видео в нём играет, и его окно.
     pip: Option<PipSlot>,
 }
 
-/// Вкладка, переехавшая в окно мини-плеера.
+/// Мини-плеер. Вкладка остаётся на месте, в окно уходит только её видео:
+/// страница открывает окно `documentPictureInPicture` и переносит в него видео
+/// и кнопки (`inject/pip.js`), а браузер сажает это окно в своё — маленькое,
+/// поверх всех (`pip.rs`).
 struct PipSlot {
+    /// Вкладка, чьё видео в мини-плеере.
     tab: TabId,
     window: HWND,
+    /// Вебвью окна мини-плеера — документ, который открыла страница. Пока
+    /// движок его достраивает, `None`.
+    doc: Option<ICoreWebView2Controller>,
+}
+
+impl PipSlot {
+    /// Убрать окно с экрана сразу, а закрыть чуть позже: скрипт страницы за
+    /// это время возвращает видео на место (`pip_exit_script`).
+    fn destroy(self) {
+        pip::hide(self.window);
+        let (doc, window) = (self.doc, self.window);
+        crate::later::after(250, move || {
+            if let Some(doc) = doc {
+                let _ = unsafe { doc.Close() };
+            }
+            pip::destroy(window);
+        });
+    }
 }
 
 /// Сколько прежняя вкладка остаётся на экране после переключения: новой
@@ -252,16 +273,12 @@ impl HostState {
     fn apply_visibility(&mut self) -> anyhow::Result<()> {
         let active = self.active;
         let split = self.split;
-        let pip = self.pip.as_ref().map(|slot| slot.tab);
         let keep = |id: &TabId| Some(*id) == active || Some(*id) == split;
         // Показывать есть что, только если активная вкладка уже создана: иначе
         // прежнюю держать незачем — на её месте будет фон новой.
         let ready = active.is_some_and(|id| self.tabs.contains_key(&id));
         let mut shown = false;
         for (id, tab) in self.tabs.iter_mut() {
-            if Some(*id) == pip {
-                continue;
-            }
             if keep(id) && !tab.visible() {
                 if let Some(hwnd) = self.windows.get(id) {
                     container::lower(*hwnd);
@@ -272,9 +289,6 @@ impl HostState {
         }
         let mut later = false;
         for (id, tab) in self.tabs.iter_mut() {
-            if Some(*id) == pip {
-                continue;
-            }
             if !keep(id) && tab.visible() {
                 if shown && ready && !self.overlay {
                     later = true;
@@ -294,9 +308,8 @@ impl HostState {
     fn hide_offscreen(&mut self) {
         let active = self.active;
         let split = self.split;
-        let pip = self.pip.as_ref().map(|slot| slot.tab);
         for (id, tab) in self.tabs.iter_mut() {
-            if Some(*id) != active && Some(*id) != split && Some(*id) != pip && tab.visible() {
+            if Some(*id) != active && Some(*id) != split && tab.visible() {
                 let _ = tab.set_visible(false);
             }
         }
@@ -363,11 +376,7 @@ impl HostState {
 
     /// Переставить видимые вкладки после смены раскладки или пары split.
     fn apply_bounds(&self) -> anyhow::Result<()> {
-        let pip = self.pip.as_ref().map(|slot| slot.tab);
         for id in [self.active, self.split].into_iter().flatten() {
-            if Some(id) == pip {
-                continue;
-            }
             let bounds = self.bounds_for(id);
             if let Some(tab) = self.tabs.get(&id) {
                 tab.set_bounds(bounds)?;
@@ -396,9 +405,10 @@ fn hide_offscreen_after(weak: Weak<RefCell<HostState>>, ms: u32) {
     });
 }
 
-/// Вернуть вкладку из мини-плеера на её место в окне. `pause` — поставить
-/// видео на паузу (мини-плеер закрыли), `reason` уходит интерфейсу. Хост бывает
-/// занят в этот миг (сигнал окна пришёл во вложенном цикле) — тогда чуть позже.
+/// Вернуть видео из мини-плеера на страницу и закрыть его окно. `pause` —
+/// поставить видео на паузу (мини-плеер закрыли), `reason` уходит интерфейсу.
+/// Хост бывает занят в этот миг (сигнал окна пришёл во вложенном цикле) —
+/// тогда чуть позже.
 fn close_pip(inner: &Rc<RefCell<HostState>>, pause: bool, reason: &'static str) {
     let Ok(mut state) = inner.try_borrow_mut() else {
         let weak = Rc::downgrade(inner);
@@ -410,21 +420,15 @@ fn close_pip(inner: &Rc<RefCell<HostState>>, pause: bool, reason: &'static str) 
         return;
     };
     let Some(slot) = state.pip.take() else { return };
-    let bounds = state.bounds_for(slot.tab);
-    let container = state.container;
     if let Some(tab) = state.tabs.get(&slot.tab) {
         tab.pip_exit_script(pause);
-        if let Err(err) = tab.reparent(container, bounds) {
-            tracing::warn!(tab = slot.tab.0, %err, "вкладка не вернулась из мини-плеера");
-        }
     }
-    let _ = state.apply_visibility();
-    let _ = state.apply_bounds();
     let sink = state.sink.clone();
     drop(state);
-    pip::destroy(slot.window);
+    let id = slot.tab.0;
+    slot.destroy();
     sink(TabEvent::Pip {
-        id: slot.tab.0,
+        id,
         on: false,
         reason,
     });
@@ -438,12 +442,8 @@ fn pip_signal(weak: &Weak<RefCell<HostState>>, signal: PipSignal) {
             let Ok(state) = inner.try_borrow() else {
                 return;
             };
-            if let Some(tab) = state
-                .pip
-                .as_ref()
-                .and_then(|slot| state.tabs.get(&slot.tab))
-            {
-                let _ = tab.set_bounds(bounds);
+            if let Some(doc) = state.pip.as_ref().and_then(|slot| slot.doc.as_ref()) {
+                let _ = unsafe { doc.SetBounds(bounds) };
             }
         }
         // Закрыли окно, как закрывают «картинку в картинке»: видео — на паузу.
@@ -730,10 +730,10 @@ impl TabHost {
     pub fn close(&self, id: TabId) -> anyhow::Result<Option<TabId>> {
         let mut state = self.inner.borrow_mut();
 
-        // Вкладку закрыли прямо в мини-плеере — окно мини-плеера уходит с ней.
+        // Закрыли вкладку, чьё видео в мини-плеере, — окно уходит с ней.
         if state.pip.as_ref().is_some_and(|slot| slot.tab == id) {
             if let Some(slot) = state.pip.take() {
-                pip::destroy(slot.window);
+                slot.destroy();
                 (state.sink)(TabEvent::Pip {
                     id: id.0,
                     on: false,
@@ -807,7 +807,7 @@ impl TabHost {
             let mut state = self.inner.borrow_mut();
             state.closed = true;
             if let Some(slot) = state.pip.take() {
-                pip::destroy(slot.window);
+                slot.destroy();
             }
             state.order.clear();
             state.active = None;
@@ -837,71 +837,167 @@ impl TabHost {
         closed
     }
 
-    /// Открыть вкладку в мини-плеере: она переезжает в маленькое окно поверх
-    /// всех, а скрипт страницы разворачивает в нём главное видео и рисует
-    /// кнопки. Итог — событием `TabEvent::Pip`: открыт, или вкладка вернулась,
-    /// потому что видео на странице нет.
+    /// Мини-плеер для вкладки: скрипт страницы (`inject/pip.js`) ищет главное
+    /// видео и просит окно мини-плеера, а оно приходит в [`TabHost::pip_window`].
+    /// Видео нет — окна не будет вовсе, и страница не дёргается. Итог —
+    /// событием `TabEvent::Pip`.
     pub fn pip_open(&self, id: TabId) -> anyhow::Result<()> {
         if self.pip_tab().is_some() {
             close_pip(&self.inner, false, "replaced");
         }
-        let container = {
-            let state = self.inner.borrow();
-            if !state.tabs.contains_key(&id) {
-                anyhow::bail!("вкладка ещё не готова");
-            }
-            state.container
-        };
-        let weak = Rc::downgrade(&self.inner);
-        let window = pip::create(container, Rc::new(move |signal| pip_signal(&weak, signal)))?;
-        let sink = {
-            let mut state = self.inner.borrow_mut();
-            let moved = match state.tabs.get_mut(&id) {
-                Some(tab) => tab
-                    .reparent(window, pip::page_bounds(window))
-                    .and_then(|()| tab.set_visible(true))
-                    .map_err(anyhow::Error::from),
-                None => Err(anyhow::anyhow!("вкладка закрылась")),
-            };
-            if let Err(err) = moved {
-                drop(state);
-                pip::destroy(window);
-                return Err(err);
-            }
-            state.pip = Some(PipSlot { tab: id, window });
-            state.apply_visibility()?;
-            state.sink.clone()
-        };
-        sink(TabEvent::Pip {
-            id: id.0,
-            on: true,
-            reason: "open",
-        });
-
         let weak = Rc::downgrade(&self.inner);
         let started = self.with_tab(id, |tab| {
             tab.pip_script(move |result| {
-                if result == "ok" || result == "css" {
+                if result == "ok" {
                     return;
                 }
-                if let Some(inner) = weak.upgrade() {
-                    let reason = if result == "none" {
-                        "no_video"
-                    } else {
-                        "failed"
-                    };
+                let Some(inner) = weak.upgrade() else { return };
+                let reason = if result == "none" {
+                    "no_video"
+                } else {
+                    "failed"
+                };
+                tracing::debug!(tab = id.0, %result, "мини-плеер не открылся");
+                // Окно могло открыться, а видео — не переехать.
+                let opened = inner
+                    .try_borrow()
+                    .map(|state| state.pip.as_ref().is_some_and(|slot| slot.tab == id))
+                    .unwrap_or(false);
+                if opened {
                     close_pip(&inner, false, reason);
+                } else if let Ok(state) = inner.try_borrow() {
+                    let sink = state.sink.clone();
+                    drop(state);
+                    sink(TabEvent::Pip {
+                        id: id.0,
+                        on: false,
+                        reason,
+                    });
                 }
             })
         });
-        if !matches!(started, Some(Ok(()))) {
-            close_pip(&self.inner, false, "failed");
+        match started {
+            Some(result) => result.map_err(anyhow::Error::from),
+            None => anyhow::bail!("вкладка ещё не готова"),
+        }
+    }
+
+    /// Окно мини-плеера, которое попросила страница (`TabEvent::PipWindow`):
+    /// своё окно поверх всех, в нём вебвью того же профиля, и оно отдаётся
+    /// странице. `size` — размер, который она попросила, в CSS-пикселях.
+    pub fn pip_window(&self, opener: TabId, token: u64, size: (u32, u32)) -> anyhow::Result<()> {
+        let (popup, container, env, private, taken) = {
+            let state = self.inner.borrow();
+            let popup = state.popups.borrow_mut().remove(&token);
+            let taken = !state.tabs.contains_key(&opener) || state.pip.is_some();
+            (
+                popup,
+                state.container,
+                state.env.clone(),
+                state.private,
+                taken,
+            )
+        };
+        let Some(popup) = popup else { return Ok(()) };
+        if taken {
+            popup.deny();
+            return Ok(());
+        }
+        let weak = Rc::downgrade(&self.inner);
+        let window = match pip::create(
+            container,
+            size,
+            Rc::new(move |signal| pip_signal(&weak, signal)),
+        ) {
+            Ok(window) => window,
+            Err(err) => {
+                popup.deny();
+                return Err(err.into());
+            }
+        };
+        self.inner.borrow_mut().pip = Some(PipSlot {
+            tab: opener,
+            window,
+            doc: None,
+        });
+
+        let inner = self.inner.clone();
+        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+            move |code, controller| {
+                let controller = match code
+                    .and_then(|()| controller.ok_or_else(|| windows_core::Error::from(E_POINTER)))
+                {
+                    Ok(controller) => controller,
+                    Err(err) => {
+                        tracing::warn!(%err, "окно мини-плеера не получило страницу");
+                        popup.deny();
+                        close_pip(&inner, false, "failed");
+                        return Ok(());
+                    }
+                };
+                let mut state = inner.borrow_mut();
+                // Мини-плеер успели закрыть, пока движок строил вебвью.
+                let Some(slot) = state.pip.as_mut().filter(|slot| slot.window == window) else {
+                    drop(state);
+                    let _ = unsafe { controller.Close() };
+                    popup.deny();
+                    return Ok(());
+                };
+                crate::tab::configure_interface(&controller);
+                crate::tab::paint_background(&controller, [0, 0, 0]);
+                let core = match unsafe {
+                    controller
+                        .SetBounds(pip::page_bounds(window))
+                        .and_then(|()| controller.SetIsVisible(true))
+                        .and_then(|()| controller.CoreWebView2())
+                } {
+                    Ok(core) => core,
+                    Err(err) => {
+                        tracing::warn!(%err, "окно мини-плеера не настроено");
+                        drop(state);
+                        let _ = unsafe { controller.Close() };
+                        popup.deny();
+                        close_pip(&inner, false, "failed");
+                        return Ok(());
+                    }
+                };
+                if let Ok(settings) = unsafe { core.Settings() } {
+                    // Меню движка («Назад», «Обновить», «Проверить») окну
+                    // мини-плеера ни к чему.
+                    let _ = unsafe { settings.SetAreDefaultContextMenusEnabled(false) };
+                }
+                slot.doc = Some(controller);
+                let sink = state.sink.clone();
+                drop(state);
+                unsafe {
+                    if let Err(err) = popup.args.SetNewWindow(&core) {
+                        tracing::warn!(%err, "окно мини-плеера не отдано странице");
+                        let _ = popup.args.SetHandled(true);
+                    }
+                    let _ = popup.deferral.Complete();
+                }
+                sink(TabEvent::Pip {
+                    id: opener.0,
+                    on: true,
+                    reason: "open",
+                });
+                Ok(())
+            },
+        ));
+        unsafe {
+            match private_options(&env, private)? {
+                Some(options) => {
+                    let env10: ICoreWebView2Environment10 = env.cast()?;
+                    env10.CreateCoreWebView2ControllerWithOptions(window, &options, &handler)?
+                }
+                None => env.CreateCoreWebView2Controller(window, &handler)?,
+            }
         }
         Ok(())
     }
 
-    /// Вернуть вкладку из мини-плеера. `pause` — видео на паузу: мини-плеер
-    /// закрыли, а не вернули во вкладку.
+    /// Вернуть видео из мини-плеера на страницу. `pause` — видео на паузу:
+    /// мини-плеер закрыли, а не вернули во вкладку.
     pub fn pip_close(&self, pause: bool, reason: &'static str) {
         close_pip(&self.inner, pause, reason);
     }
@@ -913,7 +1009,7 @@ impl TabHost {
         }
     }
 
-    /// Какая вкладка этого окна сейчас в мини-плеере.
+    /// Чьё видео из вкладок этого окна сейчас в мини-плеере.
     pub fn pip_tab(&self) -> Option<TabId> {
         self.inner.borrow().pip.as_ref().map(|slot| slot.tab)
     }

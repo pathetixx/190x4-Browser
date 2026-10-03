@@ -983,7 +983,8 @@ const seenAt = new Map();
  * Вкладка, которую давно не открывали, засыпает — как спящие вкладки Edge:
  * страница замирает и отдаёт часть памяти, но история, прокрутка и введённый
  * текст остаются, а показ будит её сразу. Не засыпают закреплённые вкладки
- * (почта, мессенджеры), играющие звук и ещё не загрузившиеся.
+ * (почта, мессенджеры), играющие звук, ещё не загрузившиеся и та, чьё видео в
+ * мини-плеере.
  */
 function sleepIdle() {
   const minutes = Number(pref("tabs_sleep"));
@@ -993,6 +994,8 @@ function sleepIdle() {
     if (shown || !seenAt.has(tab.id)) seenAt.set(tab.id, now);
     if (shown || !(minutes > 0) || tab.id < 0 || tab.internal || tab.sleeping || tab.frozen) continue;
     if (tab.pinned || tab.audible || tab.loading || tab.crashed || tab.closing) continue;
+    // Видео вкладки играет в мини-плеере: звук идёт из его окна, а не из неё.
+    if (tab.id === state.pipTab) continue;
     if (now - seenAt.get(tab.id) < minutes * 60_000) continue;
     upsertTab(tab.id, { frozen: true });
     invoke("tab_suspend", { id: tab.id }).catch(() => {});
