@@ -26,6 +26,10 @@ use crate::passwords::Passwords;
 use crate::popup::Popup;
 use crate::transfers::Transfers;
 
+/// Ошибка команды, которая застала хост вкладок занятым: она не выполнилась
+/// вовсе, и её можно повторить. Тот же текст сверяет `ui/js/bridge.js`.
+pub const BUSY: &str = "хост вкладок занят";
+
 /// Сколько ждать главный поток. Он занят кадром, а не вечностью: если ответа
 /// нет и через это время, значит что-то встало намертво, и держать команду
 /// (а с ней и поток из пула Tauri) дальше незачем.
@@ -96,7 +100,7 @@ pub fn move_tab(app: &AppHandle, tab: u32, to: &str) -> Result<String, String> {
     on_main(app, move || {
         HOSTS.with(|cell| {
             let Ok(hosts) = cell.try_borrow() else {
-                return Err("хост вкладок занят".to_string());
+                return Err(BUSY.to_string());
             };
             let from = hosts
                 .iter()
@@ -143,7 +147,7 @@ where
                 Some(host) => Ok(f(host)),
                 None => Err("окно браузера уже закрыто".to_string()),
             },
-            Err(_) => Err("хост вкладок занят".to_string()),
+            Err(_) => Err(BUSY.to_string()),
         })
     })
 }
@@ -163,7 +167,7 @@ where
                 Some(host) => Ok(f(host)),
                 None => Err("вкладка уже закрыта".to_string()),
             },
-            Err(_) => Err("хост вкладок занят".to_string()),
+            Err(_) => Err(BUSY.to_string()),
         })
     })
 }
@@ -184,7 +188,7 @@ where
                 Some(host) => Ok(f(host)),
                 None => Err("эту загрузку уже не продолжить — начните заново".to_string()),
             },
-            Err(_) => Err("хост вкладок занят".to_string()),
+            Err(_) => Err(BUSY.to_string()),
         })
     })
 }
@@ -213,7 +217,7 @@ where
                     None => Err("окно браузера ещё не поднято".to_string()),
                 }
             }
-            Err(_) => Err("хост вкладок занят".to_string()),
+            Err(_) => Err(BUSY.to_string()),
         })
     })
 }
@@ -239,11 +243,32 @@ where
 /// текущего обработчика события. Зовётся с главного потока, поэтому ожидание
 /// уезжает в пул блокирующих задач, а не в новый поток на каждое сообщение
 /// страницы — иначе сайт, шлющий сообщения в цикле, поднимал бы тысячи потоков.
+///
+/// Хост, занятый вложенным циклом сообщений, задачу не выполняет вовсе — её
+/// повторяют, как интерфейс повторяет свои команды (`ui/js/bridge.js`): иначе
+/// ответ странице (NonStop, косметика) терялся бы молча.
 pub fn later(app: &AppHandle, tab: u32, f: impl FnOnce(&mut TabHost) + Send + 'static) {
+    const ATTEMPTS: u32 = 20;
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(err) = with_tab(&app, tab, f) {
-            tracing::debug!(%err, "отложенная задача вкладки не выполнена");
+        let task = Arc::new(Mutex::new(Some(f)));
+        for attempt in 1..=ATTEMPTS {
+            let slot = task.clone();
+            let result = with_tab(&app, tab, move |host| {
+                if let Some(f) = slot.lock().take() {
+                    f(host);
+                }
+            });
+            match result {
+                Err(err) if err == BUSY && attempt < ATTEMPTS => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => {
+                    tracing::debug!(%err, "отложенная задача вкладки не выполнена");
+                    return;
+                }
+                Ok(()) => return,
+            }
         }
     });
 }
