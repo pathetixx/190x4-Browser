@@ -66,6 +66,27 @@ export function initOmnibox() {
       if (document.activeElement !== field) exitEdit();
     }, 120);
   });
+  // Щелчок мимо адресной строки заканчивает ввод, как в Chrome: по строке
+  // вкладок, панели, пустому месту заголовка. Сам по себе такой щелчок фокус не
+  // уводит — кнопки интерфейса его не берут, а заголовок тянет окно.
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (field.hidden || omni.contains(event.target) || suggest.contains(event.target)) return;
+      exitEdit();
+    },
+    true
+  );
+  // Окно ушло на задний план — щелчок в другую программу, Alt+Tab: подсказки
+  // закрываются, а набранный текст ждёт возвращения. Щелчок по самим
+  // подсказкам тоже уводит фокус из окна, но выбор строки приходит раньше.
+  window.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (field.hidden || document.hasFocus()) return;
+      suggestToken += 1;
+      hideSuggestions();
+    }, 120);
+  });
   field.addEventListener("input", (event) => {
     completable = event.inputType === "insertText" && !event.isComposing;
     inline = null;
