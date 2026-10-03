@@ -2,9 +2,12 @@
 //! просмотр?» на YouTube и «Вы ещё здесь?» на YouTube Music закрывается само, а
 //! видео играет дальше.
 //!
-//! Скрипт страницы (`crates/webview/src/inject/nonstop.js`) замечает окно,
-//! которое YouTube показал, пока человек ничего не нажимал, и спрашивает
-//! браузер; решает Rust — по настройке `ext_nonstop_enabled`.
+//! Скрипт страницы (`crates/webview/src/inject/nonstop.js`) при загрузке
+//! спрашивает, включено ли расширение: да — он держит свежим время последнего
+//! действия, по которому YouTube решает спросить, и вопрос не появляется даже
+//! в фоновой вкладке. Окно, которое YouTube всё же показал, пока человек
+//! ничего не нажимал, скрипт тоже отдаёт браузеру. Решает Rust — по настройке
+//! `ext_nonstop_enabled`.
 
 use serde::Deserialize;
 use serde_json::json;
@@ -15,6 +18,9 @@ use crate::state::App;
 #[derive(Deserialize)]
 #[serde(tag = "evt")]
 enum PageEvent {
+    /// Страница YouTube загрузилась: включено ли расширение?
+    #[serde(rename = "nonstop_hello")]
+    Hello,
     /// YouTube спросил «Продолжить просмотр?».
     #[serde(rename = "nonstop_ask")]
     Ask,
@@ -28,7 +34,7 @@ pub fn handle_message(
     source: &str,
     payload: &str,
 ) -> bool {
-    let Ok(PageEvent::Ask) = serde_json::from_str::<PageEvent>(payload) else {
+    let Ok(event) = serde_json::from_str::<PageEvent>(payload) else {
         return false;
     };
     // Только документ вкладки на YouTube — адрес от движка.
@@ -44,7 +50,11 @@ pub fn handle_message(
         {
             return;
         }
-        let message = json!({ "cmd": "nonstop_continue", "origin": origin }).to_string();
+        let cmd = match event {
+            PageEvent::Hello => "nonstop_on",
+            PageEvent::Ask => "nonstop_continue",
+        };
+        let message = json!({ "cmd": cmd, "origin": origin }).to_string();
         crate::state::later(&app, tab, move |host| {
             host.with_tab(browser190x4_webview::TabId(tab), |view| {
                 if let Err(err) = view.post(&message) {

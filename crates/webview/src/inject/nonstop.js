@@ -3,9 +3,12 @@
 //
 // Если долго ничего не нажимать, YouTube ставит видео на паузу и спрашивает
 // «Видео приостановлено. Продолжить просмотр?», а YouTube Music — «Вы ещё
-// здесь?». Скрипт замечает это окно и спрашивает браузер; включено расширение
-// (src-tauri/src/nonstop.rs) — окно закрывается, а видео играет дальше. Паузу,
-// которую человек поставил сам, скрипт не трогает.
+// здесь?». Вопрос появляется, когда YouTube считает, что человек давно ничего
+// не нажимал (время последнего действия — `window._lact`). Включено расширение
+// (src-tauri/src/nonstop.rs) — скрипт держит это время свежим, и вопроса нет
+// даже в фоновой вкладке, где YouTube не рисует окно, пока вкладку не
+// откроют, а видео уже стоит. Если окно всё же появилось, оно закрывается, а
+// видео играет дальше. Паузу, которую человек поставил сам, скрипт не трогает.
 (() => {
   "use strict";
 
@@ -24,6 +27,8 @@
   const CONTAINER = MUSIC ? "ytmusic-popup-container" : "ytd-popup-container";
   /** Столько без щелчков и клавиш — и окно спросил YouTube, а не человек своим действием. */
   const IDLE_MS = 5000;
+  /** Как часто освежать время последнего действия: YouTube спрашивает после десятков минут. */
+  const KEEP_ALIVE_MS = 60_000;
 
   const bridge = () => (window.chrome && window.chrome.webview) || null;
   const post = (message) => {
@@ -72,14 +77,29 @@
     if (video && video.paused) video.play().catch(() => {});
   };
 
+  // Время последнего действия держится свежим, только пока играет видео:
+  // поставленная на паузу вкладка живёт по правилам YouTube.
+  let keepAlive = 0;
+  const touch = () => {
+    const video = document.querySelector("video.html5-main-video, video");
+    if (video && !video.paused) window._lact = Date.now();
+  };
+
   const onMessage = (event) => {
     const data = event.data;
-    if (data && data.cmd === "nonstop_continue" && data.origin === location.origin) resume();
+    if (!data || data.origin !== location.origin) return;
+    if (data.cmd === "nonstop_continue") resume();
+    if (data.cmd === "nonstop_on" && !keepAlive) {
+      touch();
+      keepAlive = setInterval(touch, KEEP_ALIVE_MS);
+    }
   };
   const subscribe = () => {
     const hook = bridge();
     if (!hook) return false;
     hook.addEventListener("message", onMessage);
+    // Включено ли расширение, решает браузер: ответом будет nonstop_on.
+    post({ evt: "nonstop_hello" });
     return true;
   };
   if (!subscribe()) document.addEventListener("DOMContentLoaded", subscribe, { once: true });
