@@ -38,6 +38,21 @@
     attach();
   };
   addCss(config.css);
+
+  // Ответы на классы и id страницы (общие правила) приходят пачками всю жизнь
+  // страницы. Все — в один лист: каждый новый <style> — это ещё один лист, и
+  // за долгую сессию их набегали бы сотни, а каждый пересчитывает стили всего
+  // документа.
+  let genericSheet = null;
+  const addGeneric = (text) => {
+    if (!text) return;
+    if (!genericSheet) {
+      genericSheet = document.createElement("style");
+      sheets.push(genericSheet);
+    }
+    genericSheet.appendChild(document.createTextNode(`${text}\n`));
+    attach();
+  };
   if (!document.documentElement) {
     new MutationObserver((_, observer) => {
       if (attach()) observer.disconnect();
@@ -323,7 +338,7 @@
       bridgeNow.addEventListener("message", (event) => {
         const data = event.data;
         if (!data || data.cmd !== "cosmetic_css" || data.origin !== location.origin || !Array.isArray(data.selectors)) return;
-        addCss(data.selectors.map((selector) => `${selector}{display:none!important}`).join("\n"));
+        addGeneric(data.selectors.map((selector) => `${selector}{display:none!important}`).join("\n"));
       });
       return true;
     };
@@ -334,20 +349,43 @@
 
   // Документ меняется пачками; классы и id сверяются не чаще четырёх раз в
   // секунду, процедурные правила — двух: каждое из них ищет по всему документу.
+  // Процедурные правила — только когда в документ что-то добавили, как в
+  // uBlock Origin: смена класса или текста (таймер плеера, бегущий счётчик)
+  // гоняла бы их по всему документу всё время, пока страница открыта. В
+  // фоновой вкладке не делается ничего — всё, что накопилось, проверяется при
+  // показе. Сами правила выполняются в простое страницы, а не посреди кадра.
   let timer = 0;
+  let idle = 0;
   let proceduralAt = -Infinity;
+  let structural = true;
+  const runSoon = () => {
+    if (idle) return;
+    const run = () => {
+      idle = 0;
+      if (document.hidden) {
+        structural = true;
+        return;
+      }
+      proceduralAt = performance.now();
+      structural = false;
+      runProcedural();
+    };
+    // Первый проход — сразу: реклама не должна мелькнуть при загрузке.
+    if (proceduralAt === -Infinity) run();
+    else idle = typeof requestIdleCallback === "function" ? requestIdleCallback(run, { timeout: 200 }) : setTimeout(run, 0);
+  };
   const pass = () => {
     timer = 0;
+    if (document.hidden) return;
     attach();
     if (config.generic) survey();
-    if (!procedural.length) return;
+    if (!procedural.length || !structural) return;
     const wait = proceduralAt + 500 - performance.now();
     if (wait > 0) {
       schedule(wait);
       return;
     }
-    proceduralAt = performance.now();
-    runProcedural();
+    runSoon();
   };
   const schedule = (delay) => {
     if (!timer) timer = setTimeout(pass, delay);
@@ -358,6 +396,12 @@
       // Пока документ разбирается, каждый его элемент приходит отдельной
       // записью. Копить их незачем: проход и так смотрит документ целиком.
       if (config.generic && !full && document.readyState === "loading") full = true;
+      for (const record of records) {
+        if (record.type === "childList" && record.addedNodes.length) {
+          structural = true;
+          break;
+        }
+      }
       if (config.generic && !full) {
         for (const record of records) {
           if (record.type === "attributes") touched.add(record.target);
@@ -371,6 +415,9 @@
       }
       schedule(250);
     }).observe(document, config.generic ? { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "id"] } : { childList: true, subtree: true });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) schedule(0);
+    });
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => schedule(0), { once: true });
     else schedule(0);
   }
