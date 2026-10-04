@@ -4,19 +4,22 @@
 //! синхронные команды интерфейса. Если он чем-то занят, «зависает» весь
 //! интерфейс — а по логу этого не видно: зависший поток ничего не пишет.
 //!
-//! Сторож четыре раза в секунду ставит в очередь главного потока пустую задачу.
-//! Не выполнилась за секунду — главный поток занят: сторож на мгновение
-//! приостанавливает его, снимает стек и пишет в `browser.log`, где он стоит.
-//! Когда поток отпустит, в лог уходит, сколько длилось зависание.
+//! Сторож раз в секунду ставит в очередь главного потока пустую задачу и ждёт
+//! её ответа. Не выполнилась за секунду — главный поток занят: сторож на
+//! мгновение приостанавливает его, снимает стек и пишет в `browser.log`, где он
+//! стоит. Когда поток отпустит, в лог уходит, сколько длилось зависание.
+//!
+//! Сам сторож в простое почти не просыпается: одна задача главному потоку в
+//! секунду и ожидание ответа на канале, а не опрос. Частые пробуждения не дают
+//! процессору уходить в глубокий сон — у ноутбука это батарея.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 
 /// Как часто проверять главный поток.
-const TICK: Duration = Duration::from_millis(250);
+const TICK: Duration = Duration::from_secs(1);
 /// Задержка, после которой эпизод попадает в лог.
 const SLOW: Duration = Duration::from_millis(400);
 /// Задержка, после которой снимается стек.
@@ -42,15 +45,17 @@ pub fn spawn(app: AppHandle) {
     std::thread::Builder::new()
         .name("main-thread-watchdog".into())
         .spawn(move || {
-            let answered = Arc::new(AtomicU64::new(0));
+            let (answers, answered) = mpsc::channel::<u64>();
             let mut sent = 0u64;
             loop {
                 sent += 1;
-                let mark = answered.clone();
+                let reply = answers.clone();
                 let ping = sent;
                 let asked = Instant::now();
                 if app
-                    .run_on_main_thread(move || mark.store(ping, Ordering::Relaxed))
+                    .run_on_main_thread(move || {
+                        let _ = reply.send(ping);
+                    })
                     .is_err()
                 {
                     // Цикл сообщений закончился — приложение выходит.
@@ -58,27 +63,30 @@ pub fn spawn(app: AppHandle) {
                 }
 
                 let mut snapshots = 0u32;
-                let mut next_snapshot = HUNG;
-                while answered.load(Ordering::Relaxed) < ping {
-                    std::thread::sleep(Duration::from_millis(50));
-                    let waited = asked.elapsed();
-                    if waited >= next_snapshot {
-                        snapshots += 1;
-                        next_snapshot = waited + AGAIN;
-                        #[cfg(windows)]
-                        {
-                            let frames =
-                                main.as_ref().map(|main| main.capture()).unwrap_or_default();
-                            tracing::warn!(
-                                ms = waited.as_millis() as u64,
-                                snapshot = snapshots,
-                                "главный поток не отвечает, стек:\n{}",
-                                stack::describe(&frames)
-                            );
-                        }
-                        #[cfg(not(windows))]
-                        tracing::warn!(ms = waited.as_millis() as u64, "главный поток не отвечает");
+                let mut wait = HUNG;
+                loop {
+                    match answered.recv_timeout(wait) {
+                        Ok(answer) if answer == ping => break,
+                        // Запоздалый ответ на прежнюю проверку.
+                        Ok(_) => continue,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                        Err(RecvTimeoutError::Timeout) => {}
                     }
+                    let waited = asked.elapsed();
+                    snapshots += 1;
+                    wait = AGAIN;
+                    #[cfg(windows)]
+                    {
+                        let frames = main.as_ref().map(|main| main.capture()).unwrap_or_default();
+                        tracing::warn!(
+                            ms = waited.as_millis() as u64,
+                            snapshot = snapshots,
+                            "главный поток не отвечает, стек:\n{}",
+                            stack::describe(&frames)
+                        );
+                    }
+                    #[cfg(not(windows))]
+                    tracing::warn!(ms = waited.as_millis() as u64, "главный поток не отвечает");
                 }
 
                 let waited = asked.elapsed();
@@ -101,15 +109,15 @@ fn self_test() {
 mod stack {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Diagnostics::Debug::{
-        GetThreadContext, RtlLookupFunctionEntry, RtlVirtualUnwind, SymFromAddrW,
-        SymGetLineFromAddrW64, SymInitializeW, SymSetOptions, CONTEXT, CONTEXT_FULL_AMD64,
-        IMAGEHLP_LINEW64, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME,
-        UNW_FLAG_NHANDLER,
+        GetThreadContext, RtlVirtualUnwind, SymFromAddrW, SymGetLineFromAddrW64, SymInitializeW,
+        SymSetOptions, CONTEXT, CONTEXT_FULL_AMD64, IMAGEHLP_LINEW64, IMAGE_RUNTIME_FUNCTION_ENTRY,
+        SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME, UNW_FLAG_NHANDLER,
     };
     use windows::Win32::System::LibraryLoader::{
         GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
         GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
     };
+    use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_IMAGE};
     use windows::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentThreadId, OpenThread, ResumeThread, SuspendThread,
         THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
@@ -148,8 +156,11 @@ mod stack {
         }
 
         /// Адреса возврата главного потока. Пока поток приостановлен, здесь
-        /// нельзя ни выделять память, ни писать в лог: он мог остановиться,
-        /// держа замок кучи, и сторож повис бы на нём же.
+        /// нельзя ни выделять память, ни писать в лог, ни звать то, что берёт
+        /// замки пользовательского режима: он мог остановиться, держа замок
+        /// кучи или загрузчика DLL, и сторож повис бы на нём же — а вместе с
+        /// ним навсегда и приостановленный главный поток. Поэтому функцию по
+        /// адресу ищет `function_entry`, а не `RtlLookupFunctionEntry`.
         pub fn capture(&self) -> Vec<u64> {
             let mut frames = [0u64; DEPTH];
             let mut count = 0usize;
@@ -164,9 +175,7 @@ mod stack {
                     while count < DEPTH && context.Rip != 0 {
                         frames[count] = context.Rip;
                         count += 1;
-                        let mut image_base = 0u64;
-                        let entry = RtlLookupFunctionEntry(context.Rip, &mut image_base, None);
-                        if entry.is_null() {
+                        let Some((image_base, entry)) = function_entry(context.Rip) else {
                             // Функция без таблицы раскрутки (лист): адрес возврата
                             // лежит прямо на вершине стека.
                             if context.Rsp == 0 {
@@ -174,25 +183,83 @@ mod stack {
                             }
                             context.Rip = *(context.Rsp as *const u64);
                             context.Rsp += 8;
-                        } else {
-                            let mut handler_data = std::ptr::null_mut();
-                            let mut establisher = 0u64;
-                            RtlVirtualUnwind(
-                                UNW_FLAG_NHANDLER,
-                                image_base,
-                                context.Rip,
-                                entry,
-                                context,
-                                &mut handler_data,
-                                &mut establisher,
-                                None,
-                            );
-                        }
+                            continue;
+                        };
+                        let mut handler_data = std::ptr::null_mut();
+                        let mut establisher = 0u64;
+                        RtlVirtualUnwind(
+                            UNW_FLAG_NHANDLER,
+                            image_base,
+                            context.Rip,
+                            entry,
+                            context,
+                            &mut handler_data,
+                            &mut establisher,
+                            None,
+                        );
                     }
                 }
                 ResumeThread(self.0);
             }
             frames[..count].to_vec()
+        }
+    }
+
+    /// Модуль и запись его таблицы раскрутки (`.pdata`) для адреса кода.
+    ///
+    /// Без замков пользовательского режима — это зовётся, пока главный поток
+    /// приостановлен: `VirtualQuery` — вызов ядра, а заголовки модуля и его
+    /// таблица — просто память образа. `None` — адрес не в модуле или функция
+    /// без записи (лист).
+    fn function_entry(pc: u64) -> Option<(u64, *const IMAGE_RUNTIME_FUNCTION_ENTRY)> {
+        use std::ptr::read_unaligned;
+
+        // Номер записи таблицы исключений в каталоге данных PE32+.
+        const EXCEPTION_DIRECTORY: usize = 112 + 3 * 8;
+        unsafe {
+            let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+            let size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+            if VirtualQuery(Some(pc as *const std::ffi::c_void), &mut info, size) == 0
+                || info.Type != MEM_IMAGE
+            {
+                return None;
+            }
+            let base = info.AllocationBase as usize;
+            // «MZ», затем заголовок «PE\0\0» и необязательный заголовок PE32+.
+            if base == 0 || read_unaligned(base as *const u16) != 0x5A4D {
+                return None;
+            }
+            let nt = base + read_unaligned((base + 0x3C) as *const u32) as usize;
+            if read_unaligned(nt as *const u32) != 0x0000_4550 {
+                return None;
+            }
+            let optional = nt + 24;
+            if read_unaligned(optional as *const u16) != 0x20B {
+                return None;
+            }
+            let directory = optional + EXCEPTION_DIRECTORY;
+            let rva = read_unaligned(directory as *const u32) as usize;
+            let bytes = read_unaligned((directory + 4) as *const u32) as usize;
+            let count = bytes / std::mem::size_of::<IMAGE_RUNTIME_FUNCTION_ENTRY>();
+            if rva == 0 || count == 0 {
+                return None;
+            }
+            let table = (base + rva) as *const IMAGE_RUNTIME_FUNCTION_ENTRY;
+            let offset = u32::try_from(pc.checked_sub(base as u64)?).ok()?;
+            // Записи отсортированы по началу функции.
+            let (mut low, mut high) = (0usize, count);
+            while low < high {
+                let middle = (low + high) / 2;
+                let entry = &*table.add(middle);
+                if offset < entry.BeginAddress {
+                    high = middle;
+                } else if offset >= entry.EndAddress {
+                    low = middle + 1;
+                } else {
+                    return Some((base as u64, table.add(middle)));
+                }
+            }
+            None
         }
     }
 
