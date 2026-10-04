@@ -91,6 +91,7 @@ export const DEFAULTS = {
   identity: "edge",
   identity_sites: {},
   tabs_sleep: "60",
+  tabs_discard: "240",
 };
 
 const values = { ...DEFAULTS };

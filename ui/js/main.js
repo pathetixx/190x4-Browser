@@ -60,7 +60,6 @@ import {
   open,
   openSleeping,
   parseInternal,
-  prewarmSoon,
   renderTabs,
   returnLeaving,
   reopenClosed,
@@ -1134,8 +1133,9 @@ async function restoreSession() {
   // Вкладка так и не переехала (её закрыли раньше) — окно не остаётся пустым.
   if (!state.tabs.size) await open("about:newtab");
   sessionReady = true;
-  // Первая Ctrl+T окна — уже прогретой вкладкой.
-  prewarmSoon(2500);
+  // Прогретая новая вкладка — не на старте, а после первой новой вкладки окна
+  // (`open` в tabs.js): живая невидимая страница держит процесс и память, а
+  // окно, где Ctrl+T не нажимают, платило бы за неё всё время.
   // Повторный запуск мог прийти, пока открывалась сессия.
   await openLaunched();
 }

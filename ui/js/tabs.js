@@ -985,24 +985,60 @@ const seenAt = new Map();
  * текст остаются, а показ будит её сразу. Не засыпают закреплённые вкладки
  * (почта, мессенджеры), играющие звук, ещё не загрузившиеся и та, чьё видео в
  * мини-плеере.
+ *
+ * Уснувшая вкладка всё равно держит процесс страницы. Ту, которую не открывали
+ * ещё дольше (`tabs_discard`), браузер выгружает совсем: её страница
+ * закрывается, а в строке остаётся спящая вкладка — как из прошлого сеанса, —
+ * и при показе страница открывается заново.
  */
 function sleepIdle() {
   const minutes = Number(pref("tabs_sleep"));
+  const discard = Number(pref("tabs_discard"));
   const now = Date.now();
-  for (const tab of state.tabs.values()) {
+  for (const tab of [...state.tabs.values()]) {
     const shown = tab.id === state.activeId || tab.id === state.splitId;
     if (shown || !seenAt.has(tab.id)) seenAt.set(tab.id, now);
-    if (shown || !(minutes > 0) || tab.id < 0 || tab.internal || tab.sleeping || tab.frozen) continue;
+    if (shown || tab.id < 0 || tab.internal || tab.sleeping) continue;
     if (tab.pinned || tab.audible || tab.loading || tab.crashed || tab.closing) continue;
     // Видео вкладки играет в мини-плеере: звук идёт из его окна, а не из неё.
     if (tab.id === state.pipTab) continue;
-    if (now - seenAt.get(tab.id) < minutes * 60_000) continue;
+    const idle = now - seenAt.get(tab.id);
+    if (discard > 0 && idle >= discard * 60_000 && discardable(tab)) {
+      discardTab(tab);
+      continue;
+    }
+    if (tab.frozen || !(minutes > 0) || idle < minutes * 60_000) continue;
     upsertTab(tab.id, { frozen: true });
     invoke("tab_suspend", { id: tab.id }).catch(() => {});
   }
   for (const id of seenAt.keys()) {
     if (!state.tabs.has(id)) seenAt.delete(id);
   }
+}
+
+/** Страница сайта, которая ничего не ждёт от человека: её можно закрыть и открыть заново. */
+function discardable(tab) {
+  return /^https?:\/\//i.test(tab.url ?? "") && !hasLeaveDialog(tab.id);
+}
+
+/** Выгрузить вкладку: страница закрывается, место в строке остаётся спящей вкладкой. */
+function discardTab(tab) {
+  const id = tab.id;
+  markClosed(id);
+  replaceTabId(id, sleepSeq--, {
+    sleeping: true,
+    frozen: false,
+    loading: false,
+    audible: false,
+    blocked: 0,
+    media: null,
+    canBack: false,
+    canForward: false,
+  });
+  state.passwordSites.delete(id);
+  state.blockedPopups.delete(id);
+  seenAt.delete(id);
+  invoke("tab_close", { id }).catch(() => {});
 }
 
 /* ── Рендер ────────────────────────────────────────────────── */
