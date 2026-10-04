@@ -26,10 +26,14 @@ use crate::state::with_any_host;
 /// Замер свежее этого отдаётся из кэша: страницу могут открыть в двух вкладках.
 const FRESH: Duration = Duration::from_millis(700);
 /// Список процессов движка перечитывается не чаще.
-const ENGINE_TTL: Duration = Duration::from_millis(2500);
+const ENGINE_TTL: Duration = Duration::from_secs(9);
 /// Процессорное время за интервал длиннее этого — уже не «сейчас», а среднее
-/// за минуты: такой замер процессор не показывает.
-const STALE: Duration = Duration::from_secs(5);
+/// за минуты: такой замер процессор не показывает. Страница просит замер раз в
+/// пять секунд (`MONITOR_EVERY` в `pages/newtab.js`).
+const STALE: Duration = Duration::from_secs(12);
+/// Счётчики видеокарты — через замер: их сбор перебирает движки GPU всех
+/// процессов системы и стоит дороже всего остального замера.
+const GPU_EVERY: u64 = 2;
 const HISTORY: usize = 60;
 
 #[derive(Default)]
@@ -102,6 +106,9 @@ struct Sampler {
     system_times: Option<(u64, u64)>,
     gpu: Option<Gpu>,
     gpu_failed: bool,
+    /// Последние значения видеокарты и номер замера: между сборами — они.
+    gpu_last: (HashMap<u32, f64>, HashMap<u32, u64>),
+    samples: u64,
     history: VecDeque<Point>,
     last: Option<(Instant, Report)>,
 }
@@ -264,10 +271,14 @@ impl Sampler {
                 tracing::debug!("счётчики видеокарты недоступны");
             }
         }
-        match &self.gpu {
-            Some(gpu) => gpu.read(),
-            None => Default::default(),
+        let Some(gpu) = &self.gpu else {
+            return Default::default();
+        };
+        self.samples += 1;
+        if self.samples % GPU_EVERY == 1 {
+            self.gpu_last = gpu.read();
         }
+        self.gpu_last.clone()
     }
 
     fn system(&mut self, with_cpu: bool) -> System {
