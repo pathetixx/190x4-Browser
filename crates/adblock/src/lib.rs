@@ -15,9 +15,11 @@
 mod cosmetic;
 mod engine;
 mod lists;
+mod script;
 mod stats;
 
 pub use cosmetic::{document_host, document_script, Cosmetics};
 pub use engine::{site_key, Decision, Engines, FilterList, Guard, ResourceKind};
 pub use lists::{ListSource, ListSpec, Subscriptions};
+pub use script::strip_comment_lines;
 pub use stats::{Snapshot, Stats};

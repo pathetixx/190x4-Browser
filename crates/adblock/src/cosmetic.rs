@@ -32,13 +32,8 @@ impl Cosmetics {
 /// Исполнитель косметики на странице: стили, процедурные правила и сбор
 /// классов и id для общих правил. Без строк-комментариев — они нужны в
 /// исходнике, а не в каждом документе.
-static RUNTIME: LazyLock<String> = LazyLock::new(|| {
-    include_str!("cosmetic.js")
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
-});
+static RUNTIME: LazyLock<String> =
+    LazyLock::new(|| crate::script::strip_comment_lines(include_str!("cosmetic.js")));
 
 /// Хост адреса http(s) в нижнем регистре — с ним сверяется `location.hostname`.
 pub fn document_host(url: &str) -> Option<String> {

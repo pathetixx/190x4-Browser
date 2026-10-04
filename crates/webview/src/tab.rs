@@ -104,11 +104,7 @@ fn drm_script() -> String {
 }
 
 fn engine_script(source: &str) -> String {
-    source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    browser190x4_adblock::strip_comment_lines(source)
 }
 
 /// Проверять ли адреса вкладок в SmartScreen (настройка `smartscreen`). Общая на
