@@ -260,6 +260,7 @@ pub fn run() {
             updates::spawn_checker(handle.clone());
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
+            prune_history(store.clone());
 
             // Первое окно — всегда; остальные поднимаются, если в прошлый раз
             // их было больше и пользователь просил восстанавливать сессию.
@@ -292,6 +293,29 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Сколько хранится список посещений: дольше он только растёт и замедляет
+/// страницу истории. Сводка по адресам для подсказок остаётся.
+const VISITS_KEPT: std::time::Duration = std::time::Duration::from_secs(365 * 24 * 60 * 60);
+
+/// Забыть старые посещения — не на старте: сначала поднимаются окна и вкладки.
+fn prune_history(store: Arc<Store>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let before = std::time::SystemTime::now()
+                .checked_sub(VISITS_KEPT)
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_secs() as i64);
+            match store.prune_visits(before) {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "старые посещения забыты"),
+                Err(err) => tracing::warn!(%err, "старые посещения не удалены"),
+            }
+        })
+        .await;
+    });
 }
 
 /// Восстанавливать ли вкладки прошлого сеанса (настройка «При запуске»).

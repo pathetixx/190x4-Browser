@@ -175,17 +175,24 @@ impl Store {
         let now = now_secs();
 
         self.with(|db| {
+            // Кандидаты — лучшие по тому же весу среди всех совпадений, а не
+            // последние двести: иначе частый, но давний сайт выпадал из
+            // подсказок за вчерашними случайными ссылками. Корня в SQLite нет,
+            // но порядок по `visits / (1 + возраст/7)²` — тот же, что по весу ниже.
             let mut stmt = db.prepare(
                 r#"
                 SELECT url, title, host, visits, visited_at
                 FROM history
                 WHERE search LIKE ?1 ESCAPE '\'
-                ORDER BY visited_at DESC
+                ORDER BY visits / (
+                    (1.0 + MAX(?2 - visited_at, 0) / 604800.0) *
+                    (1.0 + MAX(?2 - visited_at, 0) / 604800.0)
+                ) DESC
                 LIMIT 200
                 "#,
             )?;
             let entries: Vec<HistoryEntry> = stmt
-                .query_map([&needle], row_to_entry)?
+                .query_map(rusqlite::params![needle, now], row_to_entry)?
                 .collect::<rusqlite::Result<_>>()?;
 
             let mut hits: Vec<HistoryHit> = entries
@@ -254,6 +261,15 @@ impl Store {
             tx.commit()
         })?;
         Ok(())
+    }
+
+    /// Забыть посещения старше `before` (unix-секунды): список посещений иначе
+    /// рос бы без конца. Сводка по адресам остаётся — по ней работают
+    /// подсказки адресной строки. Возвращает, сколько посещений удалено.
+    pub fn prune_visits(&self, before: i64) -> anyhow::Result<usize> {
+        let removed =
+            self.with(|db| db.execute("DELETE FROM visits WHERE visited_at < ?1", [before]))?;
+        Ok(removed)
     }
 
     /// Удалить историю за последнее время: «час», «сутки», «неделя».
@@ -475,5 +491,46 @@ mod tests {
         let left = store.history_visits("", None, 10).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].url, "https://old.example/");
+    }
+
+    /// Частый сайт не теряется за двумя сотнями свежих разовых совпадений.
+    #[test]
+    fn frequent_site_beats_many_fresh_matches() {
+        let store = Store::memory().unwrap();
+        for _ in 0..30 {
+            store
+                .record_visit("https://news.example/", "Новости")
+                .unwrap();
+        }
+        let now = super::now_secs();
+        store
+            .with(|db| db.execute("UPDATE history SET visited_at = ?1", [now - 3 * 86_400]))
+            .unwrap();
+        for index in 0..250 {
+            store
+                .record_visit(&format!("https://news.example/item/{index}"), "Новость")
+                .unwrap();
+        }
+        let hits = store.search_history("news", 3).unwrap();
+        assert_eq!(hits[0].entry.url, "https://news.example/");
+    }
+
+    #[test]
+    fn old_visits_are_pruned_but_summary_stays() {
+        let store = Store::memory().unwrap();
+        store
+            .record_visit("https://old.example/", "Старая")
+            .unwrap();
+        let now = super::now_secs();
+        store
+            .with(|db| db.execute("UPDATE visits SET visited_at = ?1", [now - 400 * 86_400]))
+            .unwrap();
+        store.record_visit("https://new.example/", "Новая").unwrap();
+
+        assert_eq!(store.prune_visits(now - 365 * 86_400).unwrap(), 1);
+        let left = store.history_visits("", None, 10).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].url, "https://new.example/");
+        assert_eq!(store.search_history("old", 5).unwrap().len(), 1);
     }
 }

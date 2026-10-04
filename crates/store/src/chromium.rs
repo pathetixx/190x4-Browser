@@ -189,53 +189,79 @@ impl Store {
         pages: &[ImportedPage],
         visits: &[ImportedVisit],
     ) -> anyhow::Result<(usize, usize)> {
-        self.with(|db| {
-            let tx = db.unchecked_transaction()?;
-            let mut written_pages = 0;
-            {
-                let mut upsert = tx.prepare(
-                    "INSERT INTO history (url, title, host, search, visits, visited_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(url) DO UPDATE SET
-                         title = CASE WHEN history.title = ''
-                             THEN excluded.title ELSE history.title END,
-                         search = CASE WHEN history.title = ''
-                             THEN excluded.search ELSE history.search END,
-                         visits = MAX(history.visits, excluded.visits),
-                         visited_at = MAX(history.visited_at, excluded.visited_at)",
-                )?;
-                for page in pages.iter().filter(|page| is_recordable(&page.url)) {
-                    upsert.execute(rusqlite::params![
-                        page.url,
-                        page.title,
-                        host_of(&page.url),
-                        searchable(&page.title, &page.url),
-                        page.visits,
-                        page.visited_at,
-                    ])?;
-                    written_pages += 1;
+        // Кусками, каждый в своей транзакции: база одна на весь браузер, и
+        // импорт десятков тысяч адресов одним заходом держал бы её всё это
+        // время — у окна, которое ждёт базу на закрытии, это зависание.
+        // Повторный импорт ничего не удваивает, так что оборванный посередине
+        // импорт просто доделывается следующим.
+        const CHUNK: usize = 500;
+        let pages: Vec<&ImportedPage> = pages
+            .iter()
+            .filter(|page| is_recordable(&page.url))
+            .collect();
+        let visits: Vec<&ImportedVisit> = visits
+            .iter()
+            .filter(|visit| is_recordable(&visit.url))
+            .collect();
+
+        let mut written_pages = 0;
+        for chunk in pages.chunks(CHUNK) {
+            written_pages += self.with(|db| {
+                let tx = db.unchecked_transaction()?;
+                {
+                    let mut upsert = tx.prepare(
+                        "INSERT INTO history (url, title, host, search, visits, visited_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(url) DO UPDATE SET
+                             title = CASE WHEN history.title = ''
+                                 THEN excluded.title ELSE history.title END,
+                             search = CASE WHEN history.title = ''
+                                 THEN excluded.search ELSE history.search END,
+                             visits = MAX(history.visits, excluded.visits),
+                             visited_at = MAX(history.visited_at, excluded.visited_at)",
+                    )?;
+                    for page in chunk {
+                        upsert.execute(rusqlite::params![
+                            page.url,
+                            page.title,
+                            host_of(&page.url),
+                            searchable(&page.title, &page.url),
+                            page.visits,
+                            page.visited_at,
+                        ])?;
+                    }
                 }
-            }
-            let mut written_visits = 0;
-            {
-                let mut insert = tx.prepare(
-                    "INSERT INTO visits (url, title, host, search, visited_at)
-                     SELECT ?1, ?2, ?3, ?4, ?5
-                     WHERE NOT EXISTS (SELECT 1 FROM visits WHERE url = ?1 AND visited_at = ?5)",
-                )?;
-                for visit in visits.iter().filter(|visit| is_recordable(&visit.url)) {
-                    written_visits += insert.execute(rusqlite::params![
-                        visit.url,
-                        visit.title,
-                        host_of(&visit.url),
-                        searchable(&visit.title, &visit.url),
-                        visit.visited_at,
-                    ])?;
+                tx.commit()?;
+                Ok(chunk.len())
+            })?;
+        }
+
+        let mut written_visits = 0;
+        for chunk in visits.chunks(CHUNK) {
+            written_visits += self.with(|db| {
+                let tx = db.unchecked_transaction()?;
+                let mut written = 0;
+                {
+                    let mut insert = tx.prepare(
+                        "INSERT INTO visits (url, title, host, search, visited_at)
+                         SELECT ?1, ?2, ?3, ?4, ?5
+                         WHERE NOT EXISTS (SELECT 1 FROM visits WHERE url = ?1 AND visited_at = ?5)",
+                    )?;
+                    for visit in chunk {
+                        written += insert.execute(rusqlite::params![
+                            visit.url,
+                            visit.title,
+                            host_of(&visit.url),
+                            searchable(&visit.title, &visit.url),
+                            visit.visited_at,
+                        ])?;
+                    }
                 }
-            }
-            tx.commit()?;
-            Ok((written_pages, written_visits))
-        })
+                tx.commit()?;
+                Ok(written)
+            })?;
+        }
+        Ok((written_pages, written_visits))
     }
 }
 
