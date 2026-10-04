@@ -174,6 +174,38 @@ fn decide(
         return;
     };
     let state = app.state::<App>();
+    // Приложения для схемы нет: Windows предложила бы искать его в магазине, а
+    // сайт мог бы звать это окно сколько угодно. Как в Chrome — ничего не
+    // открываем, только говорим, почему.
+    if !registered(&scheme) {
+        tracing::info!(%scheme, "для ссылки нет приложения");
+        if user_initiated {
+            let _ = app.emit_to(
+                window,
+                "notice",
+                serde_json::json!({
+                    "id": tab,
+                    "text": format!("Для ссылок «{scheme}:» на компьютере нет приложения"),
+                }),
+            );
+        }
+        return;
+    }
+    // Вопрос этой вкладке уже на экране: страница, открывающая ссылку на
+    // приложение в цикле, иначе засыпала бы человека одинаковыми окнами.
+    // Щелчок человека по ссылке другой схемы — новый вопрос.
+    let pending = state
+        .external
+        .0
+        .lock()
+        .iter()
+        .filter(|((owner, _), _)| *owner == tab)
+        .map(|(_, offer)| offer.scheme.clone())
+        .collect::<Vec<_>>();
+    if !pending.is_empty() && (!user_initiated || pending.contains(&scheme)) {
+        tracing::debug!(%scheme, "вопрос о приложении уже открыт");
+        return;
+    }
     let origin = clean_origin(origin);
     // «Всегда» не распространяется на ссылки, которые страница открывает сама,
     // без щелчка: иначе сайт запускал бы приложение при каждой загрузке.
@@ -231,18 +263,31 @@ pub fn forget_tab(state: &App, tab: u32) {
 
 /// Название приложения, которое Windows открывает для схемы.
 fn app_name(scheme: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::ASSOCSTR_FRIENDLYAPPNAME;
+    association(scheme, ASSOCSTR_FRIENDLYAPPNAME)
+}
+
+/// Есть ли в Windows приложение для схемы: команда запуска (обычная
+/// программа), приложение из магазина (`AppUserModelID`) или хотя бы имя.
+fn registered(scheme: &str) -> bool {
+    use windows::Win32::UI::Shell::{ASSOCSTR_APPID, ASSOCSTR_COMMAND};
+    association(scheme, ASSOCSTR_COMMAND).is_some()
+        || association(scheme, ASSOCSTR_APPID).is_some()
+        || app_name(scheme).is_some()
+}
+
+/// Сведения Windows о схеме ссылки: `None` — их нет.
+fn association(scheme: &str, what: windows::Win32::UI::Shell::ASSOCSTR) -> Option<String> {
     use windows::core::{HSTRING, PCWSTR, PWSTR};
-    use windows::Win32::UI::Shell::{
-        AssocQueryStringW, ASSOCF_IS_PROTOCOL, ASSOCSTR_FRIENDLYAPPNAME,
-    };
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_IS_PROTOCOL};
 
     let scheme = HSTRING::from(scheme);
-    let mut buffer = [0u16; 512];
+    let mut buffer = [0u16; 1024];
     let mut len = buffer.len() as u32;
     let result = unsafe {
         AssocQueryStringW(
             ASSOCF_IS_PROTOCOL,
-            ASSOCSTR_FRIENDLYAPPNAME,
+            what,
             &scheme,
             PCWSTR::null(),
             Some(PWSTR(buffer.as_mut_ptr())),
@@ -254,16 +299,40 @@ fn app_name(scheme: &str) -> Option<String> {
     }
     // Длина — вместе с завершающим нулём.
     let end = (len as usize).min(buffer.len());
-    let name = String::from_utf16_lossy(&buffer[..end]);
-    let name = name.trim_end_matches('\0').trim();
-    (!name.is_empty()).then(|| name.to_string())
+    let value = String::from_utf16_lossy(&buffer[..end]);
+    let value = value.trim_end_matches('\0').trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// Адрес для приложения — как его экранирует Chrome
+/// (`EscapeExternalHandlerValue`): буквы, цифры, служебные символы адреса и
+/// готовые `%XX` остаются, всё остальное — `%XX`. Пробел и кавычка внутри
+/// адреса иначе разбили бы его на несколько аргументов у приложения, которое
+/// зарегистрировано без кавычек вокруг `%1`.
+fn escape_for_app(uri: &str) -> String {
+    use std::fmt::Write as _;
+
+    const KEEP: &[u8] = b";/?:@&=+$,!'()*-._~#[]";
+    let bytes = uri.as_bytes();
+    let mut out = String::with_capacity(uri.len());
+    for (index, &byte) in bytes.iter().enumerate() {
+        let escaped = byte == b'%'
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit);
+        if byte.is_ascii_alphanumeric() || KEEP.contains(&byte) || escaped {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
 }
 
 /// Открыть ссылку приложением Windows. Отдельный поток: обработчик схемы бывает
 /// COM-сервером и может думать долго, а окно браузера ждать не должно.
 fn launch(uri: &str) {
     // Кавычки — чтобы приложение получило адрес одним аргументом.
-    let quoted = format!("\"{}\"", uri.replace('"', "%22"));
+    let quoted = format!("\"{}\"", escape_for_app(uri));
     std::thread::spawn(move || unsafe {
         use windows::core::{w, HSTRING, PCWSTR};
         use windows::Win32::System::Com::{
@@ -316,6 +385,23 @@ mod tests {
         assert_eq!(scheme_of("no-colon"), None);
         assert_eq!(scheme_of(&format!("tg://{}", "a".repeat(MAX_URI))), None);
         assert_eq!(scheme_of("tg://x\ny"), None);
+    }
+
+    #[test]
+    fn addresses_for_apps_are_escaped_like_chrome() {
+        assert_eq!(
+            escape_for_app("tg://resolve?domain=durov&start=1"),
+            "tg://resolve?domain=durov&start=1"
+        );
+        // Пробел и кавычка больше не разбивают адрес на аргументы.
+        assert_eq!(
+            escape_for_app("app:x --flag \"y\""),
+            "app:x%20--flag%20%22y%22"
+        );
+        // Готовые escape-последовательности остаются, одинокий % — нет.
+        assert_eq!(escape_for_app("app:a%20b%zz"), "app:a%20b%25zz");
+        assert_eq!(escape_for_app("app:я"), "app:%D1%8F");
+        assert_eq!(escape_for_app("app:a|b^c<d>"), "app:a%7Cb%5Ec%3Cd%3E");
     }
 
     #[test]
