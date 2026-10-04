@@ -6,14 +6,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: filters
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # Сборка выполняет чужой код — модули скриптлетов из релиза uBlock Origin —
+  # и поэтому живёт отдельно, без ключа подписи и токенов публикации: то, что
+  # она запустила, не дотянется до них ни через окружение, ни через файлы
+  # раннера.
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,8 +36,50 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/filters/build.mjs filters-out
 
-      # Основной источник. manifest.json — последним: браузер сверяет файлы с
-      # ним, и неполная выкладка не должна выглядеть готовой.
+      - name: Upload filters
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: filters
+          path: filters-out/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Download filters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: filters
+          path: filters-out
+
+      # Подпись — тем же ключом, что и обновления браузера: скриптлеты из канала
+      # выполняются на каждом сайте, и браузер не примет выкладку без неё
+      # (src-tauri/src/filters.rs).
+      - name: Sign manifest
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          npx --yes @tauri-apps/cli@2.11.4 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "" filters-out/manifest.json
+          test -s filters-out/manifest.json.sig
+
+      # Основной источник. Подпись и manifest.json — последними: браузер сверяет
+      # файлы с манифестом, и неполная выкладка не должна выглядеть готовой.
       - name: Publish to GitLab
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
@@ -48,8 +94,12 @@ jobs:
             done
           }
           for file in filters-out/*; do
-            [ "$(basename "$file")" = manifest.json ] || upload "$file"
+            case "$(basename "$file")" in
+              manifest.json | manifest.json.sig) ;;
+              *) upload "$file" ;;
+            esac
           done
+          upload filters-out/manifest.json.sig
           upload filters-out/manifest.json
 
       # Резервный источник. Prerelease: иначе релиз фильтров стал бы Latest и
@@ -64,5 +114,6 @@ jobs:
             gh release create filters --prerelease --latest=false --title "Filters" \
               --notes "Обновляемые фильтры и ресурсы скриптлетов для 190x4 Browser. Лицензии — NOTICE.txt."
           fi
-          find filters-out -maxdepth 1 -type f ! -name manifest.json -print0 | xargs -0 gh release upload filters --clobber
+          find filters-out -maxdepth 1 -type f ! -name manifest.json ! -name manifest.json.sig -print0 | xargs -0 gh release upload filters --clobber
+          gh release upload filters filters-out/manifest.json.sig --clobber
           gh release upload filters filters-out/manifest.json --clobber

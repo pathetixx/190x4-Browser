@@ -22,6 +22,9 @@ tauri-plugin-single-instance = "2"
 # Расширенные фильтры: скачивание и сверка с манифестом (filters.rs).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
+# Подпись канала фильтров — тот же формат minisign, что у обновлений (его же
+# берёт tauri-plugin-updater).
+minisign-verify = "0.2"
 # Значки сайтов на плитках новой вкладки — data:-адресами.
 base64 = "0.22"
 # Адресная строка: «habr.com» — сайт, «node.js» — поиск (домен верхнего уровня

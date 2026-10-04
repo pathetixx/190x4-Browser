@@ -464,6 +464,7 @@ dependencies = [
  "browser190x4-services",
  "browser190x4-store",
  "browser190x4-webview",
+ "minisign-verify",
  "parking_lot",
  "psl",
  "reqwest 0.12.28",

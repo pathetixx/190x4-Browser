@@ -1,10 +1,14 @@
 //! Обновление расширенных фильтров: списки и ресурсы скриптлетов, которые
 //! собирает workflow `filters.yml`.
 //!
-//! Источник — GitLab, резерв — GitHub, как у обновлений браузера. Файлы
-//! сверяются с `manifest.json` по размеру и SHA-256 и записываются атомарно;
-//! манифест — последним, поэтому оборванное обновление не выглядит готовым.
-//! После обновления фильтр пересобирается.
+//! Источник — GitLab, резерв — GitHub, как у обновлений браузера. Манифест
+//! подписан тем же ключом minisign, что и обновления (`manifest.json.sig`):
+//! скриптлеты из канала выполняются на каждом сайте, и без подписи доступ к
+//! пакету GitLab или релизу на GitHub значил бы свой код на всех сайтах у всех
+//! пользователей. Старый манифест не принимается — откатить фильтры, подсунув
+//! прежнюю выкладку, нельзя. Файлы сверяются с манифестом по размеру и SHA-256
+//! и записываются атомарно; манифест — последним, поэтому оборванное
+//! обновление не выглядит готовым. После обновления фильтр пересобирается.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,6 +25,11 @@ const SOURCES: [&str; 2] = [
     "https://gitlab.com/api/v4/projects/86438976/packages/generic/filters/stable/",
     "https://github.com/pathetixx/190x4-Browser/releases/download/filters/",
 ];
+
+/// Открытый ключ подписи — тот же, что у обновлений браузера (`plugins.updater.pubkey`
+/// в `tauri.conf.json`; тест ниже следит, чтобы они не разошлись): base64 от
+/// файла открытого ключа minisign.
+const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFNUE4NUMwQzk1NkMxOUEKUldTYXdWYkp3SVZhN2hnYm1mUWJOZlpnRk9zY3NrVkR6WTNjRlN5MHB5K2t5d3FRZnBGL0NVejgK";
 
 /// Первое обновление — не в момент запуска: сначала поднимаются вкладки.
 const FIRST: Duration = Duration::from_secs(30);
@@ -86,13 +95,23 @@ async fn update_from(client: &reqwest::Client, base: &str, dir: &Path) -> anyhow
         .error_for_status()?
         .text()
         .await?;
+    let signature = client
+        .get(format!("{base}manifest.json.sig"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    verify(manifest_text.as_bytes(), &signature, PUBLIC_KEY).context("подпись manifest.json")?;
     let manifest: Manifest = serde_json::from_str(&manifest_text).context("manifest.json")?;
 
     let local = std::fs::read_to_string(dir.join("manifest.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Manifest>(&text).ok());
     if let Some(local) = &local {
-        if local.generated_at == manifest.generated_at {
+        // Время выкладки — ISO 8601 в UTC одной длины: строки сравниваются как
+        // время. Та же или более старая выкладка — обновлять нечего.
+        if manifest.generated_at <= local.generated_at {
             return Ok(false);
         }
     }
@@ -134,6 +153,22 @@ async fn update_from(client: &reqwest::Client, base: &str, dir: &Path) -> anyhow
     Ok(true)
 }
 
+/// Подпись minisign в формате Tauri: и ключ, и подпись — base64 от текста
+/// файлов minisign. Так же проверяет обновления плагин updater.
+fn verify(data: &[u8], signature: &str, public_key: &str) -> anyhow::Result<()> {
+    use base64::Engine as _;
+    use minisign_verify::{PublicKey, Signature};
+
+    let text = |value: &str| -> anyhow::Result<String> {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(value.trim())?;
+        Ok(String::from_utf8(bytes)?)
+    };
+    let key = PublicKey::decode(&text(public_key)?)?;
+    let signature = Signature::decode(&text(signature)?)?;
+    key.verify(data, &signature, true)?;
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -155,6 +190,29 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ключ и подпись, сделанные для теста (Ed25519 с BLAKE2b, как подписывает
+    /// `tauri signer sign`).
+    const TEST_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgMDEyMzQ1Njc4OUFCQ0RFRgpSV1FCSTBWbmlhdk43d09oQjcvenpoQytIWERkR09kTHdKbG41Tll3bTZVTlh4M2NobVFTVlRHNAo=";
+    const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQkkwVm5pYXZON3pYYTN6SnFodnNjNzZzUzF0b1F6bHVTanBYVXo5L1NJNDgrbEdCYnhkM0ZLcSttL1V6ekJzQXVDanZxWGpyR1U5enBvL0hRYUx6Y1cwOHVVRE0wWndrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDgzODIwCWZpbGU6bWFuaWZlc3QuanNvbgo2TXNFTXh0NEJQekRpOXcyc3B4elgrSHB5WnhHVHZVSUk4bWJIT1NSS0MyU3hyWUtBR1FvdVZQVEtKdjJUQnhnWEkzbnNOdWlxbVpieU9sSE1RVjdDdz09Cg==";
+    const TEST_DATA: &str = r#"{"generated_at":"2026-10-04T03:17:00.000Z","files":{}}"#;
+
+    #[test]
+    fn signed_manifest_passes_and_changed_one_does_not() {
+        assert!(verify(TEST_DATA.as_bytes(), TEST_SIGNATURE, TEST_KEY).is_ok());
+        let changed = TEST_DATA.replace("2026", "2027");
+        assert!(verify(changed.as_bytes(), TEST_SIGNATURE, TEST_KEY).is_err());
+        // Чужой ключ — тот, которым подписаны настоящие выкладки.
+        assert!(verify(TEST_DATA.as_bytes(), TEST_SIGNATURE, PUBLIC_KEY).is_err());
+        assert!(verify(TEST_DATA.as_bytes(), "не base64", TEST_KEY).is_err());
+    }
+
+    #[test]
+    fn filters_key_is_the_updater_key() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["plugins"]["updater"]["pubkey"], PUBLIC_KEY);
+    }
 
     #[test]
     fn sha256_matches_known_value() {
