@@ -929,7 +929,16 @@ pub fn adblock_set_enabled(app: AppHandle, state: State<'_, App>, on: bool) -> R
         "settings",
         serde_json::json!({ "key": "adblock_enabled", "value": on }),
     );
+    apply_filtering(&app, &state);
     Ok(())
+}
+
+/// Подписка фильтра у вкладок всех окон — по новым правилам блокировки: без
+/// блокировки запросы страниц не идут через главный поток вовсе.
+fn apply_filtering(app: &AppHandle, state: &App) {
+    for label in state.windows.labels() {
+        let _ = with_host(app, &label, |host| host.apply_filtering());
+    }
 }
 
 /// Сайты, где пользователь выключил блокировку, — ключи `site_key`.
@@ -1001,6 +1010,7 @@ pub fn adblock_site_set(
         "settings",
         serde_json::json!({ "key": "adblock_exempt_sites", "value": value }),
     );
+    apply_filtering(&app, &state);
     Ok(SiteBlocking {
         blocking: !state.guard.is_exempt(&url),
         site: Some(site),
@@ -1077,10 +1087,16 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
                 let _ = with_host(app, &label, move |host| host.set_download_policy(policy));
             }
         }
-        "adblock_enabled" => state
-            .guard
-            .set_enabled(state.store.setting_bool("adblock_enabled", true)),
-        "adblock_exempt_sites" => state.guard.set_exempt_sites(exempt_sites(&state.store)),
+        "adblock_enabled" => {
+            state
+                .guard
+                .set_enabled(state.store.setting_bool("adblock_enabled", true));
+            apply_filtering(app, state);
+        }
+        "adblock_exempt_sites" => {
+            state.guard.set_exempt_sites(exempt_sites(&state.store));
+            apply_filtering(app, state);
+        }
         "leave_quiet_sites" => {
             browser190x4_webview::dialogs::set_leave_quiet_sites(leave_quiet_sites(&state.store))
         }

@@ -20,8 +20,9 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
 };
 use webview2_com::{
@@ -82,6 +83,46 @@ pub fn map_context(context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT, main_frame: bool)
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING => ResourceKind::Ping,
         _ => ResourceKind::Other,
     }
+}
+
+/// Типы запросов, которые разбирает фильтр. Медиа здесь нет: видео и звук идут
+/// десятками range-запросов на ролик, а правил `$media` в списках единицы —
+/// каждый из этих запросов стоил бы похода через главный поток впустую.
+const FILTERED: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 10] = [
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
+];
+
+/// Подписать вкладку на запросы для фильтра или снять подписку.
+///
+/// Каждый запрос, попавший под подписку, движок отдаёт главному потоку и ждёт
+/// ответа — пока поток занят, сеть всех вкладок стоит. Поэтому подписка есть,
+/// только пока она нужна: страницам браузера, сайтам без блокировки и при
+/// выключенной блокировке её нет вовсе. Плейлисты Twitch подписаны отдельно
+/// и всегда (`install`).
+pub(crate) fn set_filtering(core: &ICoreWebView2, on: bool) -> windows_core::Result<()> {
+    let mut result = Ok(());
+    for context in FILTERED {
+        let done = unsafe {
+            if on {
+                core.AddWebResourceRequestedFilter(h!("*"), context)
+            } else {
+                core.RemoveWebResourceRequestedFilter(h!("*"), context)
+            }
+        };
+        if result.is_ok() {
+            result = done;
+        }
+    }
+    result
 }
 
 /// Счётчик заблокированного на вкладке: его показывает щит в адресной строке.
@@ -233,6 +274,7 @@ impl Intercepts {
 }
 
 /// Навесить фильтр на вкладку. Возвращает токен для `remove_WebResourceRequested`.
+/// Подписка на запросы сразу включена (`set_filtering`).
 pub(crate) fn install(
     core: &ICoreWebView2,
     env: &ICoreWebView2Environment,
@@ -246,10 +288,14 @@ pub(crate) fn install(
     let mut token = 0i64;
     let counter = Counter::new();
 
+    // Подписка фильтра снимается и ставится на переходах вкладки
+    // (`Tab::sync_filter`); плейлисты Twitch нужны и на сайте без блокировки.
+    set_filtering(core, true)?;
     unsafe {
-        // Фильтр на всё: adblock-rust сам решает быстрее, чем WebView2
-        // отфильтрует по маске, а сузив маску мы теряем счётчик «сколько всего».
-        core.AddWebResourceRequestedFilter(h!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)?;
+        core.AddWebResourceRequestedFilter(
+            h!("https://usher.ttvnw.net/*"),
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        )?;
 
         core.add_WebResourceRequested(
             &WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {

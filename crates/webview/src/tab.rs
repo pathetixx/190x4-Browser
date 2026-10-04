@@ -549,6 +549,9 @@ pub struct Tab {
     /// Кем вкладка представляется сайтам сейчас (`identity`) и при какой
     /// версии настроек это поставлено; `None` — движок как есть.
     identity: IdentitySlot,
+    /// Вкладка подписана на запросы для фильтра (`filter::set_filtering`).
+    filtering: Rc<Cell<bool>>,
+    guard: Arc<Guard>,
 }
 
 type IdentitySlot = Rc<Cell<Option<(Identity, u64)>>>;
@@ -644,6 +647,38 @@ pub(crate) fn paint_background(controller: &ICoreWebView2Controller, rgb: [u8; 3
             B: rgb[2],
         };
         let _ = unsafe { controller2.SetDefaultBackgroundColor(color) };
+    }
+}
+
+/// Нужен ли фильтр документу по этому адресу. Страницам браузера, сайтам без
+/// блокировки и при выключенной блокировке — нет: тогда их запросы не идут
+/// через главный поток вовсе.
+fn wants_filtering(guard: &Guard, url: &str) -> bool {
+    !is_pages_url(url) && guard.filters(url)
+}
+
+/// Подписать вкладку на запросы для фильтра или снять подписку — под документ
+/// по адресу `url`. Без подписки счётчик блокировок вкладки — ноль.
+fn sync_filtering(
+    core: &ICoreWebView2,
+    slot: &Cell<bool>,
+    guard: &Guard,
+    url: &str,
+    id: u32,
+    sink: &EventSink,
+) {
+    let wanted = wants_filtering(guard, url);
+    if slot.get() == wanted {
+        return;
+    }
+    match filter::set_filtering(core, wanted) {
+        Ok(()) => {
+            slot.set(wanted);
+            if !wanted {
+                sink(TabEvent::Blocked { id, count: 0 });
+            }
+        }
+        Err(err) => tracing::debug!(%err, "подписка фильтра вкладки не переключена"),
     }
 }
 
@@ -1537,6 +1572,8 @@ impl Tab {
             intercepts,
             pip_expected: Rc::default(),
             identity,
+            filtering: Rc::new(Cell::new(true)),
+            guard: guard.clone(),
         };
         tab.wire_events(sink.clone(), popups, guard)?;
         tab.wire_certificates();
@@ -1645,6 +1682,7 @@ impl Tab {
             let identity = self.identity.clone();
             let popup_watch = self.popup_watch.clone();
             let popup_guard = guard.clone();
+            let filtering = self.filtering.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -1682,6 +1720,8 @@ impl Tab {
                     // Сайт представляется иначе, чем прежний, — подмена до того,
                     // как его скрипты спросят, что за браузер.
                     apply_identity(&engine, &identity, &url);
+                    // Подписка фильтра — под новый документ, до его первого запроса.
+                    sync_filtering(&engine, &filtering, &popup_guard, &url, id, &s);
                     // Источник для third-party обновляем ровно здесь: до
                     // первого запроса ресурсов страницы.
                     *source.borrow_mut() = url.clone();
@@ -1711,6 +1751,8 @@ impl Tab {
             let s = sink.clone();
             let source = self.source.clone();
             let cert = self.cert.clone();
+            let filtering = self.filtering.clone();
+            let filter_guard = guard.clone();
             core.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -1768,6 +1810,11 @@ impl Tab {
                     // для third-party и автозаполнения — снова адрес документа.
                     if !url.is_empty() {
                         *source.borrow_mut() = url.clone();
+                        // Переход отменили («Остаться» на «Покинуть сайт?») или он
+                        // ушёл в загрузку: подписка — снова под документ на экране.
+                        if let Some(core) = &sender {
+                            sync_filtering(core, &filtering, &filter_guard, &url, id, &s);
+                        }
                     }
                     // Сайт с ошибкой сертификата всё-таки открылся: пользователь
                     // нажал «Всё равно перейти». Замок в адресной строке был бы
@@ -2156,6 +2203,20 @@ impl Tab {
     /// Сайт увидит его со следующей загрузки страницы.
     pub(crate) fn apply_identity(&self) {
         apply_identity(&self.core, &self.identity, &self.source.borrow());
+    }
+
+    /// Блокировку включили или выключили, сайт добавили в исключения или убрали:
+    /// подписка фильтра — под документ вкладки по новым правилам.
+    pub(crate) fn sync_filter(&self) {
+        let url = self.source.borrow().clone();
+        sync_filtering(
+            &self.core,
+            &self.filtering,
+            &self.guard,
+            &url,
+            self.id.0,
+            &self.sink,
+        );
     }
 
     /// Ответ браузера на перехваченный запрос ([`TabEvent::Intercept`]):
