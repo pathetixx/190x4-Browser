@@ -747,14 +747,20 @@ impl TabHost {
             state.order.remove(pos);
         }
 
+        // Вкладка уже ушла из порядка: ошибка движка здесь не должна оставить
+        // окно с активной вкладкой, которой нет, и с неотвеченными окнами страницы.
         if let Some(mut tab) = state.tabs.remove(&id) {
             if state.downloads.busy(id.0) {
                 tracing::debug!(?id, "вкладка закрыта, её загрузка ещё идёт");
-                tab.set_visible(false)?;
+                if let Err(err) = tab.set_visible(false) {
+                    tracing::debug!(?id, %err, "вкладка с загрузкой не спрятана");
+                }
                 state.parked.insert(id, tab);
             } else {
                 state.windows.remove(&id);
-                tab.close()?;
+                if let Err(err) = tab.close() {
+                    tracing::debug!(?id, %err, "вебвью вкладки не закрылось");
+                }
             }
         }
         // Окна, которые открывала эта страница, больше никто не ждёт.
