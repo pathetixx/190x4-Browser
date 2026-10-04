@@ -95,13 +95,67 @@ pub fn already_running() -> bool {
 
 /// Второй процесс запустил пользователь или программа на переднем плане, и
 /// вывести окно вперёд может только он. Передаём это право первому — иначе
-/// Windows вместо окна мигнёт кнопкой на панели задач.
+/// Windows вместо окна мигнёт кнопкой на панели задач. Только ему: право
+/// «любому процессу» (`ASFW_ANY`) отдало бы передний план и чужой программе,
+/// которая успеет попросить его раньше.
 pub fn allow_foreground() {
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
 
+    let others = other_instances();
     unsafe {
-        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        if others.is_empty() {
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+        }
+        for pid in others {
+            let _ = AllowSetForegroundWindow(pid);
+        }
     }
+}
+
+/// Другие процессы с тем же именем exe — среди них первый, которому этот
+/// отдаёт свои адреса.
+fn other_instances() -> Vec<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let Some(name) = std::env::current_exe().ok().and_then(|exe| {
+        exe.file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+    }) else {
+        return Vec::new();
+    };
+    let me = std::process::id();
+    let mut found = Vec::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return found;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let exe = String::from_utf16_lossy(&entry.szExeFile[..end]).to_lowercase();
+                if exe == name && entry.th32ProcessID != me {
+                    found.push(entry.th32ProcessID);
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    found
 }
 
 /// Адреса из командной строки этого процесса.
