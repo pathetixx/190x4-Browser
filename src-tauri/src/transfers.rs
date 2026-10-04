@@ -63,7 +63,21 @@ pub struct DownloadEvent {
     pub error: String,
 }
 
+/// Номер загрузки видео из приватного окна. Записи в базе у неё нет, как и у
+/// загрузок движка из такого окна (`private_id`), а номера идут из своей
+/// отрицательной половины, далеко от номеров операций движка.
+pub fn private_media_id() -> i64 {
+    static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN / 2);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Transfers {
+    /// Файл, скачанный в приватном окне: открыть и показать его в папке из
+    /// пузыря загрузок можно до выхода из браузера.
+    pub fn remember_private_file(&self, id: i64, path: PathBuf) {
+        self.inner.lock().private_files.insert(id, path);
+    }
+
     pub fn register_media(&self, id: i64, job: String) {
         self.inner.lock().media_jobs.insert(id, job);
     }
@@ -317,6 +331,13 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
     // Загрузка приватного окна в базу не попадает, но управлять ею всё равно
     // нужно: её номер — это номер операции движка со знаком минус.
     if id < 0 {
+        // Видео из приватного окна качает сервер: отменяется задание там.
+        if action == "cancel" {
+            if let Some(job) = state.transfers.media_job(id) {
+                state.services.media_cancel(&job).await?;
+                return Ok(());
+            }
+        }
         let key = (-id - 1) as u64;
         if matches!(action, "cancel" | "pause" | "resume") {
             let action = action.to_string();

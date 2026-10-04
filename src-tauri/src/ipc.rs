@@ -2078,12 +2078,16 @@ pub async fn media_probe(state: State<'_, App>, url: String) -> Result<MediaInfo
 #[tauri::command]
 pub async fn media_download(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, App>,
     url: String,
     format: String,
 ) -> Result<String, String> {
     let services = state.services.clone();
     let store = state.store.clone();
+    // Приватное окно не оставляет следов: прогресс виден в пузыре загрузок, а в
+    // списке и в базе такой загрузки нет — как у загрузок движка оттуда.
+    let private = is_private(&app, &window);
 
     tracing::debug!(%format, "загрузка медиа");
     let job_id = services.media_start(&url, &format).await.map_err(|err| {
@@ -2092,9 +2096,13 @@ pub async fn media_download(
     })?;
 
     let target_dir = download_dir(&app, &store);
-    let id = store
-        .start_download(DownloadKind::Media, &url, "", None)
-        .map_err(text)?;
+    let id = if private {
+        transfers::private_media_id()
+    } else {
+        store
+            .start_download(DownloadKind::Media, &url, "", None)
+            .map_err(text)?
+    };
     state.transfers.register_media(id, job_id.clone());
     transfers::emit_media(&app, id, "started", &url, "", 0, None, "");
 
@@ -2108,7 +2116,9 @@ pub async fn media_download(
             } else {
                 DownloadState::Failed
             };
-            let _ = store.finish_download(id, bytes, final_state, error);
+            if !private {
+                let _ = store.finish_download(id, bytes, final_state, error);
+            }
             transfers::emit_media(app, id, phase, &url, name, bytes, None, error);
             let _ = app.emit(
                 "media",
@@ -2146,9 +2156,13 @@ pub async fn media_download(
             let total = (progress.total > 0).then_some(progress.total);
             if !progress.file_name.is_empty() && progress.file_name != name {
                 name = progress.file_name.clone();
-                let _ = store.set_download_target(id, &name, total);
+                if !private {
+                    let _ = store.set_download_target(id, &name, total);
+                }
             }
-            let _ = store.update_download(id, progress.downloaded, DownloadState::Running);
+            if !private {
+                let _ = store.update_download(id, progress.downloaded, DownloadState::Running);
+            }
             transfers::emit_media(
                 &app,
                 id,
@@ -2198,8 +2212,14 @@ pub async fn media_download(
                             .await
                             .map(|meta| meta.len() as i64)
                             .unwrap_or(progress.downloaded);
-                        let _ = store.set_download_target(id, &path_text, Some(bytes));
-                        let _ = store.finish_download(id, bytes, DownloadState::Done, "");
+                        if private {
+                            app.state::<App>()
+                                .transfers
+                                .remember_private_file(id, path.clone());
+                        } else {
+                            let _ = store.set_download_target(id, &path_text, Some(bytes));
+                            let _ = store.finish_download(id, bytes, DownloadState::Done, "");
+                        }
                         transfers::emit_media(
                             &app,
                             id,
