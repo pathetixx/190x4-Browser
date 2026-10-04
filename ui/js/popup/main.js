@@ -72,7 +72,9 @@ function render({ kind, payload, reuse = false, seq = null }) {
   root.className = `popup popup--${kind}`;
   current = { kind, payload, seq, cleanup: null };
   current.cleanup = view(payload ?? {}) ?? null;
-  visible = keep;
+  // Попап на экране без фокуса (список учёток у поля), а теперь его просят с
+  // фокусом — стрелкой вниз в поле: показать заново, уже забрав клавиатуру.
+  visible = keep && payload?.focus !== true;
   requestAnimationFrame(fit);
 }
 
@@ -111,7 +113,9 @@ async function fitNow() {
       // Escape — у видео, ввод — у страницы.
       applied = await invoke("popup_show", {
         height,
-        focus: !["suggest", "hint", "toast"].includes(current?.kind),
+        // Список учёток у поля, открытый щелчком, клавиатуру не забирает:
+        // человек может и сам набрать логин.
+        focus: current?.payload?.focus ?? !["suggest", "hint", "toast"].includes(current?.kind),
         seq: current?.seq ?? null,
       });
       root.querySelector("[autofocus]")?.focus();
@@ -539,8 +543,12 @@ const VIEWS = {
     root.append(bubble);
   },
 
-  /** Ключ в адресной строке: выбрать учётку для входа. */
-  accounts({ tab, origin, accounts = [] }) {
+  /**
+   * Учётки сайта: из ключа в адресной строке или у поля логина на странице
+   * (`field`, `frame` — фрейм, которому их показали). Выбор делает человек
+   * здесь, в окне браузера: странице список не отдаётся вовсе.
+   */
+  accounts({ tab, frame = null, origin, accounts = [], field = false, focus = false }) {
     const head = el("div", "panel-head");
     head.append(el("span", "panel-head__title", `Пароли · ${hostOf(origin)}`));
     const list = el("div", "menu");
@@ -551,11 +559,21 @@ const VIEWS = {
       // Учётка другого адреса того же сайта подписана своим адресом.
       const from = account.origin && account.origin !== origin ? hostOf(account.origin) : "заполнить";
       row.append(slot, el("span", "menu__label", account.username || "без логина"), el("span", "menu__keys", from));
-      row.addEventListener("click", async () => {
-        await invoke("password_fill", { tab, id: account.id }).catch(() => {});
+      row.addEventListener("click", () => {
+        // Сначала закрыться: клавиатуру после заполнения забирает страница.
         close();
+        invoke("password_fill", { tab, frame, id: account.id }).catch(() => {});
       });
       list.append(row);
+    }
+    if (field) {
+      // Список открыт стрелкой вниз — первая учётка уже выбрана, как в Chrome.
+      if (focus) list.querySelector(".menu__item")?.setAttribute("data-selected", "true");
+      // Escape возвращает клавиатуру в поле, а не в окно браузера.
+      current.onEscape = () => {
+        close();
+        invoke("tab_focus", { id: tab }).catch(() => {});
+      };
     }
     list.append(el("div", "menu__sep"));
     const manage = el("button", "menu__item");

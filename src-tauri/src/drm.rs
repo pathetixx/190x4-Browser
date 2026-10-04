@@ -54,9 +54,12 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
     else {
         return false;
     };
-    if !source.starts_with("https://") {
+    if !source.starts_with("https://") || !first_in_a_while(tab) {
         return true;
     }
+    // Поля — текст страницы: в журнал идёт только их начало.
+    let clip = |text: String| -> String { text.chars().take(DETAIL_LIMIT).collect() };
+    let (system, stage, detail) = (clip(system), clip(stage), clip(detail));
     let (app, label) = (app.clone(), label.to_string());
     // Адрес вкладки и настройки — не на главном потоке, куда пришло сообщение.
     tauri::async_runtime::spawn_blocking(move || {
@@ -81,6 +84,37 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
         on_problem(&app, &label, tab, &site, &system, &stage, hidden);
     });
     true
+}
+
+/// Сколько текста каждого поля сообщения страницы попадает в журнал.
+const DETAIL_LIMIT: usize = 200;
+
+/// Как часто вкладка может сообщить о застрявшем видео. Застревание одно на
+/// ролик; чаще — это уже не видео, а страница, которая шлёт сообщение в цикле:
+/// каждое стоило бы похода в базу, уведомления и, может быть, перезагрузки.
+const PROBLEM_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+static PROBLEMS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<u32, std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Первое сообщение вкладки о застрявшем видео за `PROBLEM_EVERY`.
+fn first_in_a_while(tab: u32) -> bool {
+    let mut problems = PROBLEMS.lock();
+    let now = std::time::Instant::now();
+    if problems
+        .get(&tab)
+        .is_some_and(|at| now.duration_since(*at) < PROBLEM_EVERY)
+    {
+        return false;
+    }
+    problems.insert(tab, now);
+    true
+}
+
+/// Вкладку закрыли — её отметка больше не нужна.
+pub fn forget_tab(tab: u32) {
+    PROBLEMS.lock().remove(&tab);
 }
 
 fn on_problem(

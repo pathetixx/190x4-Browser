@@ -23,6 +23,7 @@ pub mod ipc;
 mod launch;
 mod newtab;
 mod nonstop;
+mod page_messages;
 mod passwords;
 mod pip;
 mod popup;
@@ -159,6 +160,7 @@ pub fn run() {
             ipc::tab_context_menu,
             ipc::tab_dialog,
             ipc::tab_mute,
+            ipc::tab_focus,
             ipc::tab_zoom_set,
             ipc::tab_find,
             ipc::tab_find_step,
@@ -349,30 +351,13 @@ pub(crate) fn route_event(
             source,
             payload,
         } => {
-            // `postMessage` доступен любой странице, и разбирается он здесь, на
-            // главном потоке — том же, что рисует окна. Свои сообщения короткие
-            // (самое длинное — плитки новой вкладки), большие не разбираем вовсе.
-            if payload.len() > MAX_PAGE_MESSAGE {
-                return;
-            }
-            // Фреймам доступны только менеджер паролей, SponsorBlock (плеер
-            // YouTube, встроенный в чужую страницу), защищённое видео (плеер
-            // кинотеатра во фрейме) и косметика фреймов сайта: новая вкладка и
-            // chrome принимают сообщения лишь от документа вкладки.
-            if passwords::handle_message(app, label, *id, *frame, source, payload)
-                || cosmetic::handle_message(app, *id, *frame, source, payload)
-                || sponsorblock::handle_message(app, *id, *frame, source, payload)
-                || drm::handle_message(app, label, *id, source, payload)
-                || autoscroll::handle_message(app, *id, *frame, source, payload)
-                || nonstop::handle_message(app, *id, *frame, source, payload)
-                || pip::handle_message(app, *id, *frame, payload)
-                || frame.is_some()
-                || twitch::handle_message(app, *id, source, payload)
-                || newtab::handle_message(app, *id, source, payload)
-                || !for_interface(payload)
-            {
-                return;
-            }
+            route_message(app, label, *id, *frame, source, payload);
+            return;
+        }
+        // Фрейм ушёл на другой адрес: учётки прежнего документа ему не отдаются.
+        TabEvent::FrameStarted { id, frame } => {
+            passwords::on_frame_navigation(app, *id, *frame);
+            return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
         TabEvent::Intercept { id, token, url } => {
@@ -444,22 +429,78 @@ pub(crate) fn route_event(
 #[cfg(windows)]
 const MAX_PAGE_MESSAGE: usize = 64 * 1024;
 
-/// Сообщение страницы, которое ждёт интерфейс окна (`handlePageMessage` в
-/// `ui/js/main.js`). Остальные туда не идут: страница, шлющая `postMessage` в
-/// цикле, иначе загружала бы интерфейс браузера событиями.
+/// Сообщение страницы (`postMessage`) — тому, кто его ждёт.
+///
+/// Канал открыт любой странице и любому фрейму, а разбирается всё здесь, на
+/// главном потоке — том же, что рисует окна. Поэтому сообщение читается один
+/// раз, ровно до имени события, и уходит одному обработчику; большие и
+/// слишком частые сообщения выбрасываются (`page_messages`).
+///
+/// Фреймам доступны только менеджер паролей, косметика, SponsorBlock (плеер
+/// YouTube, встроенный в чужую страницу), защищённое видео (плеер кинотеатра во
+/// фрейме), автопролистывание, NonStop и мини-плеер — они сами проверяют, от
+/// кого сообщение. Twitch, новая вкладка и интерфейс окна (`handlePageMessage`
+/// в `ui/js/main.js`) принимают сообщения лишь от документа вкладки.
 #[cfg(windows)]
-fn for_interface(payload: &str) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Message<'a> {
-        #[serde(borrow)]
-        evt: std::borrow::Cow<'a, str>,
+fn route_message(
+    app: &tauri::AppHandle,
+    label: &str,
+    id: u32,
+    frame: Option<u32>,
+    source: &str,
+    payload: &str,
+) {
+    if payload.len() > MAX_PAGE_MESSAGE {
+        return;
     }
-    serde_json::from_str::<Message>(payload).is_ok_and(|message| {
-        matches!(
-            message.evt.as_ref(),
-            "navigate" | "middle_click" | "media_found"
-        )
-    })
+    let Some(evt) = page_messages::event_name(payload) else {
+        return;
+    };
+    if !page_messages::allow(id) {
+        return;
+    }
+    let top = frame.is_none();
+    match evt.as_ref() {
+        name if name.starts_with("password_") => {
+            passwords::handle_message(app, label, id, frame, source, payload);
+        }
+        "cosmetic_ids" => {
+            cosmetic::handle_message(app, id, frame, source, payload);
+        }
+        name if name.starts_with("sponsorblock_") => {
+            sponsorblock::handle_message(app, id, frame, source, payload);
+        }
+        "drm_problem" => {
+            drm::handle_message(app, label, id, source, payload);
+        }
+        name if name.starts_with("autoscroll_") => {
+            autoscroll::handle_message(app, id, frame, source, payload);
+        }
+        name if name.starts_with("nonstop_") => {
+            nonstop::handle_message(app, id, frame, source, payload);
+        }
+        name if name.starts_with("pip_") => {
+            pip::handle_message(app, id, frame, payload);
+        }
+        name if top && name.starts_with("twitch_") => {
+            twitch::handle_message(app, id, source, payload);
+        }
+        name if top && name.starts_with("newtab_") => {
+            newtab::handle_message(app, id, source, payload);
+        }
+        // Остальное ждёт интерфейс окна; другие сообщения туда не идут:
+        // страница, шлющая `postMessage` в цикле, загружала бы его событиями.
+        "navigate" | "middle_click" | "media_found" if top => {
+            let event = browser190x4_webview::TabEvent::Message {
+                id,
+                frame,
+                source: source.to_string(),
+                payload: payload.to_string(),
+            };
+            let _ = app.emit_to(label, "tab", &event);
+        }
+        _ => {}
+    }
 }
 
 /// Движок WebView2 упал целиком: окна пусты и не отвечают, вернуть их можно

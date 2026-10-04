@@ -20,7 +20,7 @@ import {
   zoom,
 } from "./actions.js";
 import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
-import { initContextMenu, openContextMenu, wantsBackgroundTab } from "./context-menu.js";
+import { initContextMenu, openContextMenu, paneOffset, wantsBackgroundTab } from "./context-menu.js";
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
 import { displayHost, displayUrl, el, hostOf } from "./dom.js";
 import { initDownloads } from "./downloads-model.js";
@@ -31,10 +31,19 @@ import { initLayout, isPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
-import { closePopup, initPopups, onPopupAction, openPopup, openPopupKey } from "./popups.js";
+import { closePopup, initPopups, onPopupAction, onPopupClosed, openPopup, openPopupKey } from "./popups.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
-import { activeTab, emit as emitState, isClosed, removeTab, state, subscribe, upsertTab } from "./state.js";
+import {
+  activeTab,
+  emit as emitState,
+  isClosed,
+  removeTab,
+  rightPaneId,
+  state,
+  subscribe,
+  upsertTab,
+} from "./state.js";
 import {
   activate,
   adoptTab,
@@ -295,6 +304,7 @@ listen("tab", (event) => {
     case "started":
       upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
       onNavigation(event.id);
+      closeFieldMenu(event.id);
       state.passwordSites.delete(event.id);
       state.blockedPopups.delete(event.id);
       recorded.delete(event.id);
@@ -613,6 +623,50 @@ listen("password-site", ({ tab, origin, accounts }) => {
   if (tab === state.activeId) renderOmnibox();
 });
 
+/**
+ * Человек встал в поле логина: список учёток — окном браузера у поля. Страница
+ * списка не видит, и выбрать учётку за человека не может. У документа вкладки
+ * поле известно (`rect`, CSS-пиксели страницы); у фрейма — нет, и список
+ * встаёт у курсора (`point`, CSS-пиксели окна).
+ */
+let fieldMenu = null;
+let fieldMenus = 0;
+listen("password-menu", async ({ tab, frame = null, origin, accounts = [], rect = null, point = null, focus = false }) => {
+  if (!accounts.length || (tab !== state.activeId && tab !== state.splitId)) return;
+  const stage = document.getElementById("stage").getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const left = stage.left + (tab === rightPaneId() ? paneOffset(stage.width * scale) / scale : 0);
+  const zoom = state.tabs.get(tab)?.zoom || 1;
+  const anchor = rect
+    ? { x: left + rect.x * zoom, y: stage.top + rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }
+    : point
+      ? { x: point.x, y: point.y, width: 0, height: 0 }
+      : null;
+  if (!anchor) return;
+  // Поле, уехавшее за край страницы, списка не получает.
+  if (anchor.y + anchor.height < stage.top || anchor.y > stage.bottom) return;
+  const width = Math.min(Math.max(anchor.width, 260), 360);
+  const menu = `field:${++fieldMenus}`;
+  const seq = await openPopup("accounts", anchor, {
+    width,
+    payload: { menu, tab, frame, origin, accounts, focus, field: true },
+  }).catch(() => false);
+  if (typeof seq === "number") fieldMenu = { tab, seq };
+});
+
+listen("password-menu-close", ({ tab }) => closeFieldMenu(tab));
+
+/** Убрать список учёток у поля вкладки `tab` (или любой, если не задана). */
+function closeFieldMenu(tab = null) {
+  if (!fieldMenu || (tab !== null && fieldMenu.tab !== tab)) return;
+  fieldMenu = null;
+  if (openPopupKey()?.startsWith("accounts:field:")) closePopup();
+}
+
+onPopupClosed((seq) => {
+  if (fieldMenu?.seq === seq) fieldMenu = null;
+});
+
 // «Управление паролями» из списка учёток на странице: Rust просит открыть настройки.
 listen("open-settings", ({ section }) => openSettings(section));
 
@@ -866,6 +920,8 @@ function isTyping(target) {
 /* ── Представления ─────────────────────────────────────────── */
 
 subscribe(() => {
+  // Список учёток у поля живёт, пока его вкладка на экране.
+  if (fieldMenu && fieldMenu.tab !== state.activeId && fieldMenu.tab !== state.splitId) closeFieldMenu();
   renderTabs();
   renderOmnibox();
   renderStatus();

@@ -19,8 +19,9 @@ use webview2_com::{
     take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     ContainsFullScreenElementChangedEventHandler, DocumentTitleChangedEventHandler,
     FaviconChangedEventHandler, FocusChangedEventHandler, FrameChildFrameCreatedEventHandler,
-    FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler,
-    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameNavigationStartingEventHandler,
+    FrameWebMessageReceivedEventHandler, HistoryChangedEventHandler,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
     WindowCloseRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
@@ -233,6 +234,12 @@ pub enum TabEvent {
         frame: Option<u32>,
         source: String,
         payload: String,
+    },
+    /// Фрейм страницы начал переход на новый адрес: всё, что браузер знал о
+    /// его прежнем документе (учётки для формы входа), к новому не относится.
+    FrameStarted {
+        id: u32,
+        frame: u32,
     },
     /// Запрос страницы ждёт ответа браузера (плейлист Twitch). Ответ —
     /// [`Tab::answer_intercept`] с тем же номером, и прийти он должен всегда.
@@ -934,6 +941,17 @@ fn wire_frame(tab: u32, frame: ICoreWebView2Frame, sink: EventSink, frames: Fram
                     frame: Some(frame_id),
                     source: take_pwstr(raw),
                     payload,
+                });
+                Ok(())
+            })),
+            &mut token,
+        );
+        let s = sink.clone();
+        let _ = frame2.add_NavigationStarting(
+            &FrameNavigationStartingEventHandler::create(Box::new(move |_, _| {
+                s(TabEvent::FrameStarted {
+                    id: tab,
+                    frame: frame_id,
                 });
                 Ok(())
             })),
@@ -2398,6 +2416,15 @@ impl Tab {
 
     pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    /// Отдать клавиатуру странице: всплывающее окно браузера забирало её себе.
+    pub fn focus(&self) {
+        let _ = unsafe {
+            self.controller.MoveFocus(
+                webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+            )
+        };
     }
 
     /// Значок, который вкладка уже знает, — интерфейсу, который о ней только

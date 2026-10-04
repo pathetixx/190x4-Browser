@@ -143,6 +143,8 @@ pub fn tab_popup_deny(app: AppHandle, opener: u32, token: u64) -> Result<(), Str
 pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
     passwords::forget_tab(&app, id);
     external::forget_tab(&state, id);
+    crate::page_messages::forget(id);
+    crate::drm::forget_tab(id);
     with_tab(&app, id, move |host| {
         host.close(TabId(id))
             .map(|next| next.map(|t| t.0))
@@ -268,6 +270,14 @@ pub fn tab_dialog(
         serde_json::json!({ "id": id, "tokens": tokens }),
     );
     Ok(())
+}
+
+/// Вернуть клавиатуру странице: список учёток у поля закрыли, ничего не выбрав.
+#[tauri::command]
+pub fn tab_focus(app: AppHandle, id: u32) -> Result<(), String> {
+    with_tab(&app, id, move |host| {
+        host.with_tab(TabId(id), |tab| tab.focus());
+    })
 }
 
 /// Заглушить вкладку или вернуть ей звук.
@@ -1655,10 +1665,11 @@ pub fn password_offer_answer(app: AppHandle, tab: u32, action: String) -> Result
     passwords::answer(&app, tab, &action).map_err(text)
 }
 
-/// Заполнить форму на вкладке выбранной учёткой.
+/// Заполнить форму учёткой, которую человек выбрал в окне браузера: в
+/// документе вкладки или во фрейме `frame`, которому её показали.
 #[tauri::command(async)]
-pub fn password_fill(app: AppHandle, tab: u32, id: i64) -> Result<(), String> {
-    passwords::fill(&app, tab, id).map_err(text)
+pub fn password_fill(app: AppHandle, tab: u32, frame: Option<u32>, id: i64) -> Result<(), String> {
+    passwords::fill(&app, tab, frame, id).map_err(text)
 }
 
 /* ── Загрузки ───────────────────────────────────────────────────────────── */

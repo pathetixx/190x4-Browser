@@ -519,6 +519,8 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             for tab in state::remove_host(&label) {
                 crate::passwords::forget_tab(&handle, tab);
                 crate::external::forget_tab(&handle.state::<App>(), tab);
+                crate::page_messages::forget(tab);
+                crate::drm::forget_tab(tab);
             }
             handle.state::<App>().windows.remove(&label);
             crate::popup::destroy(&handle, &label);
