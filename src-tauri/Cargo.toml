@@ -50,6 +50,7 @@ windows = { workspace = true, features = [
     "Devices_Geolocation",
     "Security_Credentials_UI",
     "Win32_Foundation",
+    "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_System_Com",
     "Win32_System_Diagnostics_Debug",
