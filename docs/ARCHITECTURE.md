@@ -1206,7 +1206,10 @@ PlayReady — там, где Widevine выключен вообще (`drm_widevi
 (`Sec-CH-UA*`, `navigator.userAgentData`) — бренд «Microsoft Edge WebView2».
 Настройка `identity` (`edge` — как есть, `chrome`) и исключения по сайтам
 `identity_sites` (сайт → вид, домен с поддоменами; ставятся в сведениях о
-сайте) меняют это.
+сайте) меняют это. Дзен (`dzen.ru`) по умолчанию — Chrome (`BUILTIN` в
+`src-tauri/src/identity.rs`): для Edge он рисует над лентой ряд рекламы,
+который после блокировщика остаётся пустыми заготовками, а Chrome и Brave его
+не показывает; своё исключение для сайта важнее встроенного.
 
 Вид Chrome — команда протокола отладки `Emulation.setUserAgentOverride` во
 вкладке (`crates/webview/src/identity.rs`): строка движка без `Edg/…` и Client

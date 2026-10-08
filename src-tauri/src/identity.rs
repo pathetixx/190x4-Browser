@@ -4,6 +4,9 @@
 //! сайт → `edge` или `chrome`, сайт — ключ `site_key`, домен с поддоменами).
 //! Подмену ставит вкладка сама (`crates/webview/src/identity.rs`); здесь —
 //! настройки для движка и настоящие Client Hints, которые присылает интерфейс.
+//!
+//! Часть сайтов представляется Chrome сама, без настройки ([`BUILTIN`]); своё
+//! исключение для такого сайта в `identity_sites` важнее.
 
 use browser190x4_store::Store;
 use browser190x4_webview::identity::{self, Identity};
@@ -11,6 +14,11 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::state::App;
+
+/// Сайты, которым браузер по умолчанию представляется Chrome. Дзен для Edge
+/// рисует над лентой ряд рекламы, который блокировщик оставляет пустыми
+/// заготовками; Chrome (и Brave) он его не показывает вовсе.
+const BUILTIN: &[(&str, Identity)] = &[("dzen.ru", Identity::Chrome)];
 
 /// Настройки — движку для вкладок, которые ещё откроются.
 pub fn init(store: &Store) {
@@ -42,7 +50,7 @@ pub fn set_engine_hints(app: &AppHandle, hints: Value) {
 }
 
 fn sites(store: &Store) -> Vec<(String, Identity)> {
-    match store.setting("identity_sites").ok().flatten() {
+    let own = match store.setting("identity_sites").ok().flatten() {
         Some(Value::Object(sites)) => sites
             .iter()
             .filter_map(|(site, value)| {
@@ -50,5 +58,32 @@ fn sites(store: &Store) -> Vec<(String, Identity)> {
             })
             .collect(),
         _ => Vec::new(),
+    };
+    with_builtin(own)
+}
+
+/// Свои исключения и встроенные — свои первыми: сайт ищется по порядку, и
+/// своё решение для сайта важнее встроенного.
+fn with_builtin(mut sites: Vec<(String, Identity)>) -> Vec<(String, Identity)> {
+    for (site, identity) in BUILTIN {
+        if !sites.iter().any(|(own, _)| own == site) {
+            sites.push((site.to_string(), *identity));
+        }
+    }
+    sites
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dzen_is_chrome_unless_chosen_otherwise() {
+        assert_eq!(
+            with_builtin(Vec::new()),
+            vec![("dzen.ru".to_string(), Identity::Chrome)]
+        );
+        let own = vec![("dzen.ru".to_string(), Identity::Edge)];
+        assert_eq!(with_builtin(own.clone()), own);
     }
 }
