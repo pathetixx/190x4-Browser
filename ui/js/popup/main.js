@@ -585,6 +585,135 @@ const VIEWS = {
     root.append(head, list);
   },
 
+  /**
+   * Окно щита в адресной строке: блокировка на этом сайте, сколько закрыто на
+   * странице, дополнительные параметры. Счёт растёт, пока окно открыто:
+   * окно браузера присылает его (`shield-count`).
+   */
+  shield({ tab, url, host, site, adblock, blocking, blocked = 0, aggressive }) {
+    const bubble = el("div", "bubble shield");
+    const head = el("div", "bubble__head");
+    const mark = el("span", "shield__mark");
+    mark.append(icon("shield-16", 16));
+    head.append(mark, el("h2", "bubble__title", host), iconButton("dismiss-16", "Закрыть", close, { className: "bubble__close" }));
+    bubble.append(head);
+
+    // Главная строка: блокировка на этом сайте или, если она выключена во всём
+    // браузере, — кнопка включить.
+    const main = el("div", "shield__main");
+    const state = el("div", "shield__state");
+    let on = adblock && blocking;
+    if (adblock) {
+      const toggleNode = el("button", "switch shield__switch");
+      toggleNode.type = "button";
+      toggleNode.setAttribute("aria-label", "Блокировать рекламу на этом сайте");
+      const paintState = () => {
+        state.replaceChildren(document.createTextNode("Защита "), el("b", null, on ? "включена" : "выключена"), document.createTextNode(" для этого сайта"));
+        toggleNode.setAttribute("aria-checked", String(on));
+        bubble.dataset.state = on ? "on" : "off";
+        paintCount();
+        paintNote();
+      };
+      toggleNode.addEventListener("click", async () => {
+        toggleNode.disabled = true;
+        try {
+          const result = await invoke("adblock_site_set", { url, blocking: !on });
+          on = result.blocking;
+          paintState();
+          act("shield", "reload", {}, { keepOpen: true });
+        } catch {
+          // Страница не сайт или настройки не записались — переключатель как был.
+        } finally {
+          toggleNode.disabled = false;
+        }
+      });
+      main.append(state, toggleNode);
+      queueMicrotask(paintState);
+    } else {
+      state.textContent = "Блокировка рекламы выключена во всём браузере";
+      bubble.dataset.state = "off";
+      main.append(state, textButton("Включить", () => act("shield", "enable"), "btn btn--primary"));
+    }
+    bubble.append(main);
+
+    // Счёт заблокированного на странице — крупно, как главная цифра окна.
+    const count = el("div", "shield__count");
+    const number = el("span", "shield__number");
+    const label = el("span", "shield__label");
+    count.append(number, label);
+    let shown = blocked;
+    function paintCount() {
+      number.textContent = on ? String(shown) : "—";
+      label.textContent = on
+        ? `${plural(shown, "элемент заблокирован", "элемента заблокировано", "элементов заблокировано")}: реклама, трекеры и другое`
+        : "Реклама и трекеры на этом сайте не блокируются";
+    }
+    paintCount();
+    bubble.append(count);
+
+    // Дополнительные параметры — свёрнуты, как у Brave.
+    const more = el("button", "shield__more");
+    more.type = "button";
+    more.setAttribute("aria-expanded", "false");
+    more.append(icon("settings", 16), el("span", null, "Дополнительные параметры"), icon("chevron-down-16", 16));
+    const extra = el("div", "shield__extra");
+    extra.hidden = true;
+    more.addEventListener("click", () => {
+      extra.hidden = !extra.hidden;
+      more.setAttribute("aria-expanded", String(!extra.hidden));
+      requestAnimationFrame(fit);
+    });
+
+    const row = (label, hint, control) => {
+      const item = el(control ? "div" : "button", "shield__row");
+      const text = el("span", "shield__row-text");
+      text.append(el("span", null, label));
+      if (hint) text.append(el("span", "shield__hint", hint));
+      item.append(text);
+      if (control) item.append(control);
+      return item;
+    };
+    if (on) {
+      const pick = row("Скрыть элемент…", "Выбрать блок на странице и прятать его всегда");
+      pick.addEventListener("click", () => act("shield", "hide-element"));
+      extra.append(pick);
+    }
+    const aggressiveNode = el("button", "switch");
+    aggressiveNode.type = "button";
+    aggressiveNode.setAttribute("aria-label", "Агрессивная блокировка");
+    aggressiveNode.setAttribute("aria-checked", String(Boolean(aggressive)));
+    aggressiveNode.addEventListener("click", async () => {
+      const value = aggressiveNode.getAttribute("aria-checked") !== "true";
+      aggressiveNode.setAttribute("aria-checked", String(value));
+      await setPref("adblock_aggressive", value);
+      act("shield", "reload", {}, { keepOpen: true });
+    });
+    extra.append(row("Агрессивная блокировка", "Прятать и то, что сайт показывает со своего адреса", aggressiveNode));
+    const lists = row("Списки фильтров и мои правила", "Настройки блокировки");
+    lists.addEventListener("click", () => act("shield", "privacy"));
+    extra.append(lists);
+    bubble.append(more, extra);
+
+    const note = el("p", "shield__note");
+    const paintNote = () => {
+      note.textContent = !adblock
+        ? "Блокировка выключена на всех сайтах. Включить её можно здесь или в настройках."
+        : on
+          ? "Если сайт работает неправильно, выключите защиту для него — он откроется без блокировки."
+          : "Защита выключена только на этом сайте и его поддоменах, на остальных реклама блокируется.";
+    };
+    paintNote();
+    bubble.append(note);
+    root.append(bubble);
+
+    const off = listen("shield-count", (message) => {
+      if (message?.tab !== tab) return;
+      shown = Number(message.blocked) || 0;
+      paintCount();
+    });
+    return () => off.then((stop) => stop?.());
+  },
+
   /** Сведения о сайте из значка слева в адресной строке. */
   site({ url, host, secure, blocked, adblock, site, blocking = true, passwords }) {
     const bubble = el("div", "bubble");

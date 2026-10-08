@@ -146,7 +146,7 @@ export function initOmnibox() {
   document.addEventListener("browser:focus-omnibox", () => enterEdit({ suggest: false }));
 
   star.addEventListener("click", bookmarkCurrent);
-  shield.addEventListener("click", () => hooks.togglePanel("shield"));
+  shield.addEventListener("click", openShield);
   key.addEventListener("click", openAccounts);
   site.addEventListener("click", openSiteInfo);
   popupsChip.addEventListener("click", openBlockedPopups);
@@ -275,9 +275,21 @@ export function renderOmnibox() {
   }
   display.title = tab && !tab.internal && !isNewTabUrl(url) ? displayUrl(url) : "";
 
+  // Щит — у каждой страницы сайта, как у Brave: красный, пока блокировка на
+  // сайте работает, серый, когда она выключена здесь или везде.
   const blocked = tab?.blocked ?? 0;
-  shield.hidden = blocked === 0 || Boolean(tab?.internal);
+  const isSite = Boolean(tab && !tab.internal && /^https?:\/\//i.test(url));
+  const on = isSite && siteBlocking(url);
+  shield.hidden = !isSite;
+  shield.dataset.state = on ? "on" : "off";
+  shield.title = on ? "Блокировка рекламы на этом сайте включена" : "Блокировка рекламы на этом сайте выключена";
+  shieldCount.hidden = !on || blocked === 0;
   shieldCount.textContent = blocked > 999 ? "999+" : blocked;
+  // Окно щита открыто — счёт в нём растёт вместе со страницей.
+  if (shield.getAttribute("aria-expanded") === "true" && tab && shieldLive !== `${tab.id}:${blocked}`) {
+    shieldLive = `${tab.id}:${blocked}`;
+    Promise.resolve(emit("shield-count", { tab: tab.id, blocked })).catch(() => {});
+  }
 
   const popups = tab ? state.blockedPopups.get(tab.id)?.length ?? 0 : 0;
   popupsChip.hidden = popups === 0;
@@ -345,6 +357,64 @@ function openAccounts() {
 export function siteKey(url) {
   return hostOf(url).replace(/^www\./, "").toLowerCase();
 }
+
+/** Последний счёт, отправленный открытому окну щита. */
+let shieldLive = "";
+
+/**
+ * Работает ли блокировка на сайте адреса: включена вообще и сайт (или его
+ * родительский домен) не в исключениях — как `Guard::is_exempt` в Rust.
+ */
+function siteBlocking(url) {
+  if (!state.adblockOn) return false;
+  const exempt = pref("adblock_exempt_sites") ?? [];
+  let host = siteKey(url);
+  while (host) {
+    if (exempt.includes(host)) return false;
+    const dot = host.indexOf(".");
+    host = dot < 0 ? "" : host.slice(dot + 1);
+  }
+  return true;
+}
+
+/** Окно щита: блокировка на этом сайте, сколько закрыто, дополнительные параметры. */
+async function openShield() {
+  const tab = activeTab();
+  if (!tab || tab.internal) return;
+  const blocking = await invoke("adblock_site", { url: tab.url }).catch(() => null);
+  shieldLive = `${tab.id}:${tab.blocked ?? 0}`;
+  openPopup("shield", shield, {
+    width: 340,
+    align: "end",
+    payload: {
+      tab: tab.id,
+      url: tab.url,
+      host: hostOf(tab.url),
+      site: blocking?.site ?? siteKey(tab.url),
+      adblock: state.adblockOn,
+      blocking: Boolean(blocking?.blocking),
+      blocked: tab.blocked ?? 0,
+      aggressive: Boolean(pref("adblock_aggressive")),
+    },
+  }).catch(() => {});
+}
+
+onPopupAction("shield", async ({ action }) => {
+  const tab = activeTab();
+  if (action === "enable") {
+    state.adblockOn = true;
+    await invoke("adblock_set_enabled", { on: true }).catch(() => {});
+    tabAction("reload");
+  } else if (action === "reload") {
+    tabAction("reload");
+  } else if (action === "hide-element" && tab) {
+    // Без точки щелчка: выбор начинается с того, на что наведут.
+    invoke("adblock_pick", { id: tab.id, x: -1, y: -1 }).catch((error) => hooks.toast(String(error?.message ?? error)));
+  } else if (action === "privacy") {
+    openSettings("privacy");
+  }
+  renderOmnibox();
+});
 
 /**
  * Окна, которые сайт хотел открыть сам по себе. Chrome их тоже не пускает и

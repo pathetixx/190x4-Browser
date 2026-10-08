@@ -1153,3 +1153,153 @@ span.exts__pin {
 .palette__dot[data-color="slate"] {
   --dot: #6b7280;
 }
+
+/* ── Окно щита ─────────────────────────────────────────────── */
+
+.shield .bubble__head {
+  align-items: center;
+}
+
+.shield__mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bright) 30%, transparent);
+  color: var(--accent-bright);
+}
+
+.shield[data-state="off"] .shield__mark {
+  background: var(--overlay-2);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--text-lo);
+}
+
+.shield .bubble__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shield__main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.shield__state {
+  flex: 1;
+  color: var(--text-mid);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.shield__state b {
+  color: var(--text-hi);
+  font-weight: 600;
+}
+
+.shield__count {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 1px;
+  background: var(--overlay-2);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.shield__number {
+  min-width: 2ch;
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent-bright);
+}
+
+.shield[data-state="off"] .shield__number {
+  color: var(--text-lo);
+}
+
+.shield__label {
+  color: var(--text-mid);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.shield__more {
+  width: calc(100% + 16px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px -8px 0;
+  padding: 10px 8px;
+  border-radius: 1px;
+  color: var(--text-mid);
+  font-size: 13px;
+  text-align: start;
+}
+
+.shield__more:hover {
+  background: var(--overlay-3);
+  color: var(--text-hi);
+}
+
+.shield__more > span {
+  flex: 1;
+}
+
+.shield__more[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.shield__extra {
+  display: grid;
+  gap: 2px;
+  margin: 0 -8px;
+}
+
+.shield__extra[hidden] {
+  display: none;
+}
+
+.shield__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 1px;
+  color: var(--text-hi);
+  font-size: 13px;
+  text-align: start;
+}
+
+button.shield__row:hover {
+  background: var(--overlay-3);
+}
+
+.shield__row-text {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.shield__hint {
+  color: var(--text-lo);
+  font-size: 12px;
+}
+
+.shield__note {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-2);
+  color: var(--text-lo);
+  font-size: 12px;
+  line-height: 1.4;
+}

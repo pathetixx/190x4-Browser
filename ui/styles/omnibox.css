@@ -264,3 +264,33 @@
   color: var(--text-lo);
   white-space: nowrap;
 }
+
+/* ── Щит блокировки ────────────────────────────────────────── */
+
+/* У каждой страницы сайта: красный, пока блокировка на сайте работает, серый —
+   когда выключена. Счёт заблокированного — рядом со щитом, если он не ноль. */
+.omni__shield {
+  padding: 0 6px;
+}
+
+.omni__shield:has(#omni-shield-count:not([hidden])) {
+  padding: 0 8px 0 6px;
+}
+
+.omni__shield[data-state="on"] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-bright) 26%, transparent);
+  color: var(--accent-bright);
+  font-weight: 600;
+}
+
+.omni__shield[data-state="on"]:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-bright);
+}
+
+.omni__shield[data-state="off"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--text-lo);
+}

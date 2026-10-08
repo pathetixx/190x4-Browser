@@ -373,6 +373,10 @@ export function popupDemo(kind) {
       return { tab: 1, origin: "https://github.com", accounts: [{ id: 1, username: "pathetixx" }, { id: 2, username: "work@190x4.pw" }] };
     case "site":
       return { url: "https://habr.com/ru/", host: "habr.com", secure: true, blocked: 41, adblock: true, site: "habr.com", blocking: true, passwords: 1 };
+    case "shield":
+      return { tab: 1, url: "https://habr.com/ru/", host: "habr.com", site: "habr.com", adblock: true, blocking: true, blocked: 41, aggressive: false };
+    case "shield-off":
+      return { kind: "shield", payload: { tab: 1, url: "https://github.com/", host: "github.com", site: "github.com", adblock: true, blocking: false, blocked: 0, aggressive: false } };
     case "dialog-alert":
       return { kind: "dialog", payload: { tab: 1, tokens: [1], request: { type: "script", kind: "alert", url: "https://habr.com/ru/", message: "Сессия истекла. Войдите снова, чтобы не потерять черновик.", default_text: "" } } };
     case "dialog-confirm":
