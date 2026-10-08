@@ -1,5 +1,5 @@
 // Живая проверка блокировщика рекламы на пробе в отдельном профиле.
-// node scripts/probe/adblock.mjs [frames,redirect,sites] [адрес,адрес…]
+// node scripts/probe/adblock.mjs [frames,redirect,sites,windows] [адрес,адрес…]
 //
 // frames и redirect — страница `pages/adblock.html` (положить в E:\test\probe\t\):
 // плееры чужих сайтов во фреймах, правила с заглушками.
@@ -148,6 +148,56 @@ if (want("sites")) {
     console.log(`  ${url.padEnd(24)} ${cell(off)}  →  ${cell(on)}`);
   }
   console.log("статистика фильтра:", JSON.stringify(await invoke("adblock_stats")));
+}
+
+// 4. Рекламные окна и переходы — как у uBlock Origin: окно на домен рекламной
+//    сети (целиком или `$third-party`) не открывается, переход вкладки на него
+//    без щелчка отменяется, обычные окна открываются. Открывающая страница —
+//    настоящий сайт: `$third-party` и «уход» вкладки считаются от http-адреса.
+if (want("windows")) {
+  const tabsNow = () => ui(`${S} return [...state.tabs.values()].map(t => ({ id: t.id, url: String(t.url) }));`);
+  const opener = "https://example.com/";
+  const id = await openTab(opener);
+  const page = await connect(await waitTarget((t) => t.type === "page" && t.url.startsWith(opener)));
+  await sleep(2500);
+
+  for (const [label, url] of [
+    ["домен сети целиком", "https://www.popads.net/"],
+    ["домен сети по $third-party", "https://www.adsterra.com/"],
+  ]) {
+    await page.evaluate(`(() => { window.open(${JSON.stringify(url)}); return true; })()`, { gesture: true });
+    await sleep(2500);
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    const opened = (await tabsNow()).filter((t) => t.url.includes(host));
+    check(opened.length === 0, `окно со щелчком: ${label} — не открылось`, opened.map((t) => t.url).join(" "));
+    for (const t of opened) await closeTab(t.id);
+  }
+
+  await page.evaluate(`(() => { window.open("https://example.org/"); return true; })()`, { gesture: true });
+  await sleep(3000);
+  const normal = (await tabsNow()).filter((t) => t.url.includes("example.org"));
+  check(normal.length === 1, "обычное окно со щелчком — открылось", normal.map((t) => t.url).join(" "));
+  for (const t of normal) await closeTab(t.id);
+
+  // Скрипт уводит вкладку на рекламу (поп-андер): переход отменяется.
+  await page.evaluate(`(() => { setTimeout(() => { location.href = "https://www.popads.net/"; }, 50); return true; })()`);
+  await sleep(3500);
+  const stayed = (await tabsNow()).find((t) => t.id === id)?.url;
+  check(String(stayed).startsWith(opener), "переход вкладки на рекламу без щелчка — отменён", stayed);
+
+  // Обычный уход скриптом — работает.
+  await page.evaluate(`(() => { setTimeout(() => { location.href = "https://example.org/?moved"; }, 50); return true; })()`);
+  await sleep(3500);
+  const moved = (await tabsNow()).find((t) => t.id === id)?.url;
+  check(String(moved).includes("example.org/?moved"), "обычный переход скриптом — проходит", moved);
+  page.close();
+
+  // Сам набрал адрес рекламной сети — своя страница блокировки.
+  await invoke("tab_navigate", { id, url: "https://www.popads.net/" });
+  await sleep(3500);
+  const typed = await ui(`${S} const t = state.tabs.get(${id}); return { url: String(t?.url), title: String(t?.title) };`);
+  console.log("  адрес рекламной сети в адресной строке:", JSON.stringify(typed));
+  await closeTab(id);
 }
 
 chrome.close();

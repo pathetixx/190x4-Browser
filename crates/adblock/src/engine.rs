@@ -714,7 +714,6 @@ fn host_rule(line: &str) -> Option<String> {
         match option {
             "third-party" | "3p" => party = ",third-party",
             "badfilter" => bad = ",badfilter",
-            "doc" | "document" => {}
             _ => return None,
         }
     }
@@ -1393,9 +1392,10 @@ mod tests {
             Some("||adsterra.example^$document,third-party")
         );
         assert_eq!(
-            host_rule("||ads.example^$doc,badfilter").as_deref(),
+            host_rule("||ads.example^$badfilter").as_deref(),
             Some("||ads.example^$document,badfilter")
         );
+        assert_eq!(host_rule("||ads.example^$doc,badfilter"), None);
         assert_eq!(host_rule("||ads.example^$script"), None);
         assert_eq!(host_rule("||ads.example/x^"), None);
         assert_eq!(host_rule("||localhost^"), None);
