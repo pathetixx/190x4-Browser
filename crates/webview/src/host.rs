@@ -1433,7 +1433,7 @@ impl TabHost {
 
 /// Настройки контроллера приватной вкладки. `None` — обычное окно или движок
 /// старее 1.0.1518: приватного режима у него нет, окно будет обычным.
-fn private_options(
+pub(crate) fn private_options(
     env: &ICoreWebView2Environment,
     private: bool,
 ) -> windows_core::Result<

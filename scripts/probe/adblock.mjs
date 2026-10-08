@@ -165,8 +165,13 @@ if (want("windows")) {
     ["домен сети целиком", "https://www.popads.net/"],
     ["домен сети по $third-party", "https://www.adsterra.com/"],
   ]) {
-    await page.evaluate(`(() => { window.open(${JSON.stringify(url)}); return true; })()`, { gesture: true });
+    // Страница получает окно (заглушку), а не `null`: иначе рекламный слой
+    // плеера ловит щелчки снова и снова.
+    const got = await page.evaluate(`(() => { window.ad = window.open(${JSON.stringify(url)}); return window.ad !== null; })()`, { gesture: true });
+    check(got, `окно со щелчком: ${label} — странице вернулось окно`);
     await sleep(2500);
+    const closed = await page.evaluate("window.ad ? window.ad.closed : null");
+    check(closed === true, `окно со щелчком: ${label} — заглушка закрылась`, String(closed));
     const host = new URL(url).hostname.replace(/^www\./, "");
     const opened = (await tabsNow()).filter((t) => t.url.includes(host));
     check(opened.length === 0, `окно со щелчком: ${label} — не открылось`, opened.map((t) => t.url).join(" "));
@@ -184,6 +189,12 @@ if (want("windows")) {
   await sleep(3500);
   const stayed = (await tabsNow()).find((t) => t.id === id)?.url;
   check(String(stayed).startsWith(opener), "переход вкладки на рекламу без щелчка — отменён", stayed);
+
+  // То же из обработчика щелчка по плееру — тоже отменяется.
+  await page.evaluate(`(() => { location.href = "https://www.adsterra.com/"; return true; })()`, { gesture: true });
+  await sleep(3500);
+  const clicked = (await tabsNow()).find((t) => t.id === id)?.url;
+  check(String(clicked).startsWith(opener), "переход на рекламу из обработчика щелчка — отменён", clicked);
 
   // Обычный уход скриптом — работает.
   await page.evaluate(`(() => { setTimeout(() => { location.href = "https://example.org/?moved"; }, 50); return true; })()`);

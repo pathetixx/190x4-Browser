@@ -449,6 +449,90 @@ fn page_navigation(
     Some(user.as_bool())
 }
 
+/// Рекламное окно страницы — в невидимую заглушку вместо отказа, как у uBlock
+/// Origin (он открывает такую вкладку и тут же закрывает). Отказ даёт странице
+/// `null` из `window.open`, и рекламный скрипт плеера оставляет свой прозрачный
+/// слой поверх видео и пробует снова на каждом щелчке — перемотка не
+/// срабатывает. Заглушка — пустой вебвью того же профиля: страница получает
+/// окно, ни один переход в нём не начинается, через секунду оно закрывается.
+/// При ошибке окно отклоняют (`SetHandled`): `window.open` получит `null`.
+fn decoy_popup(
+    controller: &ICoreWebView2Controller,
+    core: &ICoreWebView2,
+    private: bool,
+    args: &ICoreWebView2NewWindowRequestedEventArgs,
+) -> windows_core::Result<()> {
+    use webview2_com::CreateCoreWebView2ControllerCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment10, ICoreWebView2_2,
+    };
+
+    let env = unsafe { core.cast::<ICoreWebView2_2>()?.Environment()? };
+    let mut parent = HWND::default();
+    unsafe { controller.ParentWindow(&mut parent)? };
+    let options = crate::host::private_options(&env, private)?;
+    let deferral = unsafe { args.GetDeferral()? };
+    let refuse = {
+        let (args, deferral) = (args.clone(), deferral.clone());
+        move || unsafe {
+            let _ = args.SetHandled(true);
+            let _ = deferral.Complete();
+        }
+    };
+    let args = args.clone();
+    let handler =
+        CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |code, decoy| {
+            let attached = (|| -> windows_core::Result<ICoreWebView2Controller> {
+                code?;
+                let decoy = decoy.ok_or_else(|| {
+                    windows_core::Error::from(windows::Win32::Foundation::E_POINTER)
+                })?;
+                unsafe {
+                    decoy.SetIsVisible(false)?;
+                    let page = decoy.CoreWebView2()?;
+                    let mut token = 0i64;
+                    page.add_NavigationStarting(
+                        &NavigationStartingEventHandler::create(Box::new(|_, args| {
+                            if let Some(args) = args {
+                                args.SetCancel(true)?;
+                            }
+                            Ok(())
+                        })),
+                        &mut token,
+                    )?;
+                    if let Err(err) = args.SetNewWindow(&page) {
+                        let _ = decoy.Close();
+                        return Err(err);
+                    }
+                }
+                Ok(decoy)
+            })();
+            match attached {
+                Ok(decoy) => crate::later::after(1000, move || unsafe {
+                    let _ = decoy.Close();
+                }),
+                Err(err) => {
+                    tracing::debug!(%err, "заглушка рекламного окна не встала");
+                    let _ = unsafe { args.SetHandled(true) };
+                }
+            }
+            let _ = unsafe { deferral.Complete() };
+            Ok(())
+        }));
+    let created = unsafe {
+        match options {
+            Some(options) => env.cast::<ICoreWebView2Environment10>().and_then(|env10| {
+                env10.CreateCoreWebView2ControllerWithOptions(parent, &options, &handler)
+            }),
+            None => env.CreateCoreWebView2Controller(parent, &handler),
+        }
+    };
+    if created.is_err() {
+        refuse();
+    }
+    created
+}
+
 /// Сколько окно страницы сверяется с правилами окон на каждом переходе:
 /// реклама уходит на рекламный адрес через пустую страницу и переадресации за
 /// секунды, а потом по окну ходит уже человек.
@@ -1988,6 +2072,9 @@ impl Tab {
             let s = sink.clone();
             let source = self.source.clone();
             let pip_expected = self.pip_expected.clone();
+            let controller = self.controller.clone();
+            let core_ref = core.clone();
+            let private = self.private;
             core.add_NewWindowRequested(
                 &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
                     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -2046,7 +2133,10 @@ impl Tab {
                         .any(|opener| guard.blocks_popup(&url, opener))
                     {
                         tracing::debug!(tab = id, "рекламное окно страницы не открыто");
-                        args.SetHandled(true)?;
+                        if let Err(err) = decoy_popup(&controller, &core_ref, private, &args) {
+                            tracing::debug!(%err, "заглушка рекламного окна не создана");
+                            let _ = args.SetHandled(true);
+                        }
                         return Ok(());
                     }
                     let deferral = args.GetDeferral()?;
