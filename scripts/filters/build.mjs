@@ -33,6 +33,8 @@ const BASE_LISTS = {
   "easylist.txt": "https://easylist.to/easylist/easylist.txt",
   "easyprivacy.txt": "https://easylist.to/easylist/easyprivacy.txt",
   "ruadlist.txt": "https://easylist-downloads.adblockplus.org/advblock+cssfixes.txt",
+  // AdGuard Russian в синтаксисе uBlock Origin — его выпускает сам AdGuard.
+  "adguard-russian.txt": "https://filters.adtidy.org/extension/ublock/filters/1.txt",
 };
 const REPO = "gorhill/uBlock";
 const TRUSTED = 1;
@@ -238,6 +240,9 @@ General Public License v3.0; the source is available at those addresses.
 easylist.txt, easyprivacy.txt and ruadlist.txt (RU AdList) come from EasyList
 (https://easylist.to/pages/licence.html) and are dual-licensed under the GNU
 General Public License v3.0 and Creative Commons Attribution-ShareAlike 3.0.
+adguard-russian.txt is AdGuard Russian filter in its uBlock Origin syntax
+(https://github.com/AdguardTeam/AdguardFilters), licensed under the GNU General
+Public License v3.0.
 The lists are preprocessed for 190x4 Browser: conditional directives resolved
 and includes inlined. The rules after "Исправления 190x4 Browser" at the end of
 ubo-unbreak.txt are 190x4 Browser's own.
