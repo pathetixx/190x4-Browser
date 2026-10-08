@@ -1,0 +1,35 @@
+<!doctype html>
+<!--
+  Страница пробы блокировщика (scripts/probe/adblock.mjs): кладётся в
+  E:\test\probe\t\ и открывается как file://. Всё рекламное здесь — во фреймах
+  чужих сайтов и в правилах с заглушками: ровно то, что прежняя обвязка
+  пропускала.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>adblock probe</title>
+  </head>
+  <body>
+    <!-- Плееры чужих сайтов со своими правилами в списках: им нужен свой скрипт косметики. -->
+    <iframe id="vk" width="480" height="270" src="https://vk.com/video_ext.php?oid=-22822305&id=456242836"></iframe>
+    <iframe id="yt" width="480" height="270" src="https://www.youtube.com/embed/jNQXAC9IVRw"></iframe>
+    <!-- Адблок-тест внутри чужого фрейма: его запросы раньше фильтр не видел. -->
+    <iframe id="tester" width="960" height="600" src="https://d3ward.github.io/toolz/adblock"></iframe>
+    <pre id="out"></pre>
+    <script>
+      // Заглушки правил $redirect=: успешный ответ вместо закрытого запроса.
+      window.__redirect = {};
+      const script = document.createElement("script");
+      script.src = "https://go.oclasrv.com/apu.php?zoneid=1";
+      script.onload = () => (window.__redirect.noopjs = "loaded");
+      script.onerror = () => (window.__redirect.noopjs = "error");
+      document.head.append(script);
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", "https://adblockanalytics.com/x4probe");
+      xhr.onload = () => (window.__redirect.nooptext = `status ${xhr.status}`);
+      xhr.onerror = () => (window.__redirect.nooptext = "error");
+      xhr.send();
+    </script>
+  </body>
+</html>
