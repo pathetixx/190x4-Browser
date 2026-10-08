@@ -287,8 +287,8 @@ const put = (name, content) => {
   files[name] = { size: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex") };
 };
 
-// Свои исправления поломок — в конец списка исправлений: браузер уже на него
-// подписан, и правка доходит обновлением фильтров.
+// Свои исправления поломок — в конец RU AdList (см. ниже): браузер на него
+// подписан всегда, и правка доходит обновлением фильтров.
 const FIXES = readFileSync(new URL("./190x4-fixes.txt", import.meta.url), "utf8");
 for (const name of LISTS) {
   const url = `${LIST_BASE}${name}.txt`;
@@ -300,14 +300,16 @@ for (const name of LISTS) {
       list += `\n${await preprocess(await text(extraUrl), extraUrl)}`;
     }
   }
-  put(`ubo-${name}.txt`, name === "unbreak" ? `${list}\n${FIXES}` : list);
+  put(`ubo-${name}.txt`, list);
 }
 for (const [name, urls] of Object.entries(BASE_LISTS)) {
   const parts = [];
   for (const url of urls) parts.push(await preprocess(await text(url), url));
   const list = parts.join("\n");
   if (list.split("\n").length < (MIN_LINES[name] ?? 1000)) throw new Error(`список ${name} подозрительно короткий`);
-  put(name, list);
+  // Свои исправления — в конец RU AdList: он без проверки «своё или чужое»,
+  // и скрытие отсюда действует сразу.
+  put(name, name === "ruadlist.txt" ? `${list}\n${FIXES}` : list);
 }
 const { tag, resources } = await scriptlets();
 put("resources.json", JSON.stringify(resources));
@@ -331,7 +333,7 @@ Attribution 3.0. urlhaus.txt is malware-filter's URLhaus list
 (https://gitlab.com/malware-filter), CC0 and MIT.
 The lists are preprocessed for 190x4 Browser: conditional directives resolved
 and includes inlined. The rules after "Исправления 190x4 Browser" at the end of
-ubo-unbreak.txt are 190x4 Browser's own.
+ruadlist.txt are 190x4 Browser's own.
 `
 );
 writeFileSync(
