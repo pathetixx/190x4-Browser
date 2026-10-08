@@ -10,7 +10,11 @@
 //     директив не понимает и применил бы обе ветки условий;
 //   - ресурсы: берёт модули скриптлетов последнего релиза uBlock Origin,
 //     импортирует их и выгружает функции с зависимостями и признаком
-//     доверенности (`permission`, тот же бит, что у доверенных списков).
+//     доверенности (`permission`, тот же бит, что у доверенных списков);
+//   - заглушки правил `$redirect=` (`noop.js`, пустой VAST, `google-ima.js`,
+//     беззвучный mp3) — файлы `web_accessible_resources` того же релиза с
+//     именами и псевдонимами из `redirect-resources.js`. Без них правило с
+//     заглушкой просто закрывало бы запрос, и плеер видел бы блокировщик.
 //
 // Использование: node scripts/filters/build.mjs <каталог>
 
@@ -32,6 +36,19 @@ const BASE_LISTS = {
 };
 const REPO = "gorhill/uBlock";
 const TRUSTED = 1;
+// Тип заглушки по расширению файла — те, что знает adblock-rust.
+const MIME = {
+  css: "text/css",
+  gif: "image/gif",
+  html: "text/html",
+  js: "application/javascript",
+  json: "application/json",
+  mp3: "audio/mp3",
+  mp4: "video/mp4",
+  png: "image/png",
+  txt: "text/plain",
+  xml: "text/xml",
+};
 
 // Окружение браузера для `!#if`. Неизвестные токены — ложь.
 const ENV = {
@@ -135,7 +152,6 @@ async function scriptlets() {
     }
   }
   const module = await import(pathToFileURL(join(tmp, "src/js/resources/scriptlets.js")).href);
-  rmSync(tmp, { recursive: true, force: true });
   const resources = module.builtinScriptlets.map((scriptlet) => ({
     name: scriptlet.name,
     aliases: scriptlet.aliases ?? [],
@@ -152,7 +168,41 @@ async function scriptlets() {
   for (const required of ["trusted-replace-xhr-response.js", "trusted-replace-fetch-response.js", "json-prune.js"]) {
     if (!names.has(required)) throw new Error(`нет скриптлета ${required}`);
   }
+  resources.push(...(await redirects(tag, tmp, names)));
+  rmSync(tmp, { recursive: true, force: true });
   return { tag, resources };
+}
+
+// Заглушки `$redirect=`. Записи с параметрами (`click2load.html`) — страницы
+// самого uBlock, а не заглушки; их нет.
+async function redirects(tag, tmp, taken) {
+  const path = "src/js/redirect-resources.js";
+  const file = join(tmp, path);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, await text(`https://raw.githubusercontent.com/${REPO}/${tag}/${path}`));
+  const { default: map } = await import(pathToFileURL(file).href);
+  const out = [];
+  for (const [name, details] of map) {
+    if (details.params || taken.has(name)) continue;
+    const extension = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
+    const mime = name === "empty" ? "text/plain" : MIME[extension];
+    if (!mime) continue;
+    const response = await get(`https://raw.githubusercontent.com/${REPO}/${tag}/src/web_accessible_resources/${name}`);
+    const aliases = [details.alias ?? []].flat().filter((alias) => !taken.has(alias));
+    out.push({
+      name,
+      aliases,
+      kind: { mime },
+      content: Buffer.from(await response.arrayBuffer()).toString("base64"),
+      dependencies: [],
+      permission: details.requiresTrust ? TRUSTED : 0,
+    });
+  }
+  const all = new Set(out.flatMap((resource) => [resource.name, ...resource.aliases]));
+  for (const required of ["noopjs", "google-ima.js", "noop-vast4.xml", "noopmp3-0.1s", "nooptext", "1x1.gif"]) {
+    if (!all.has(required)) throw new Error(`нет заглушки ${required}`);
+  }
+  return out;
 }
 
 rmSync(OUT, { recursive: true, force: true });
@@ -181,7 +231,7 @@ const { tag, resources } = await scriptlets();
 put("resources.json", JSON.stringify(resources));
 put(
   "NOTICE.txt",
-  `Filter lists and scriptlet resources in this package come from uBlock Origin
+  `Filter lists, scriptlet and redirect resources in this package come from uBlock Origin
 (https://github.com/gorhill/uBlock, release ${tag}) and uAssets
 (https://github.com/uBlockOrigin/uAssets). They are licensed under the GNU
 General Public License v3.0; the source is available at those addresses.
@@ -197,5 +247,5 @@ writeFileSync(
   join(OUT, "manifest.json"),
   JSON.stringify({ generated_at: new Date().toISOString(), ubo: tag, files }, null, 2)
 );
-console.log(`uBlock Origin ${tag}: ${resources.length} scriptlets, ${resources.filter((r) => r.permission).length} trusted`);
+console.log(`uBlock Origin ${tag}: ${resources.length} resources, ${resources.filter((r) => r.permission).length} trusted`);
 for (const [name, file] of Object.entries(files)) console.log(`  ${name} ${file.size}`);
