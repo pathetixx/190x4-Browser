@@ -1,8 +1,8 @@
 // Косметика 190x4: прячет рекламу, которую сайт отдаёт вместе с содержимым.
 //
-// Встраивается в каждый документ вкладки (и во фреймы её сайта) до скриптов
-// страницы; настройки подставляет браузер вместо __X4_CONFIG__
-// (crates/adblock/src/cosmetic.rs):
+// Встраивается в документы своего хоста — страницы вкладки и фреймов со своими
+// правилами (плеер чужого сайта) — до скриптов страницы; настройки подставляет
+// браузер вместо __X4_CONFIG__ (crates/adblock/src/cosmetic.rs):
 // * css — готовые правила скрытия сайта и общие сложные селекторы;
 // * procedural — правила, которые CSS не выразить: «элемент с таким текстом»,
 //   «подняться на два уровня», «убрать атрибут» (:has-text, :upward, :remove…);
@@ -23,37 +23,76 @@
 
   /* ── Стили ──────────────────────────────────────────────────── */
 
+  // Листы стилей — сконструированные (`adoptedStyleSheets`), как у Brave
+  // пользовательские: их нет ни в DOM, ни в `document.styleSheets`, и скрипт
+  // сайта, который ищет и удаляет чужие <style>, их не видит. Сайт, который
+  // сам присвоит `document.adoptedStyleSheets`, выкинет и наши — `attach`
+  // возвращает их на каждом проходе. Где таких листов нет, — обычный <style>.
+  const constructed = (() => {
+    try {
+      return "adoptedStyleSheets" in document && typeof new CSSStyleSheet().replaceSync === "function";
+    } catch (_) {
+      return false;
+    }
+  })();
   const sheets = [];
   const attach = () => {
+    if (constructed) {
+      try {
+        const current = document.adoptedStyleSheets;
+        const missing = sheets.filter((sheet) => !current.includes(sheet));
+        if (missing.length) document.adoptedStyleSheets = [...current, ...missing];
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
     const parent = document.head || document.documentElement;
     if (!parent) return false;
     for (const sheet of sheets) if (!sheet.isConnected) parent.append(sheet);
     return true;
   };
-  const addCss = (text) => {
-    if (!text) return;
+  const newSheet = (text) => {
+    if (constructed) {
+      const sheet = new CSSStyleSheet();
+      // Невалидное правило выбрасывается одно, остальные остаются — как в <style>.
+      sheet.replaceSync(text);
+      return sheet;
+    }
     const sheet = document.createElement("style");
     sheet.textContent = text;
-    sheets.push(sheet);
-    attach();
+    return sheet;
   };
-  addCss(config.css);
+  if (config.css) {
+    sheets.push(newSheet(config.css));
+    attach();
+  }
 
   // Ответы на классы и id страницы (общие правила) приходят пачками всю жизнь
-  // страницы. Все — в один лист: каждый новый <style> — это ещё один лист, и
-  // за долгую сессию их набегали бы сотни, а каждый пересчитывает стили всего
-  // документа.
+  // страницы. Все — в один лист: каждый новый лист пересчитывает стили всего
+  // документа, и за долгую сессию их набегали бы сотни.
   let genericSheet = null;
-  const addGeneric = (text) => {
-    if (!text) return;
+  const addGeneric = (selectors) => {
+    if (!selectors.length) return;
     if (!genericSheet) {
-      genericSheet = document.createElement("style");
+      genericSheet = newSheet("");
       sheets.push(genericSheet);
     }
-    genericSheet.appendChild(document.createTextNode(`${text}\n`));
+    for (const selector of selectors) {
+      const rule = `${selector}{display:none!important}`;
+      if (constructed) {
+        try {
+          genericSheet.insertRule(rule, genericSheet.cssRules.length);
+        } catch (_) {
+          // Селектор, которого браузер не знает, — пропустить только его.
+        }
+      } else {
+        genericSheet.appendChild(document.createTextNode(`${rule}\n`));
+      }
+    }
     attach();
   };
-  if (!document.documentElement) {
+  if (!constructed && !document.documentElement) {
     new MutationObserver((_, observer) => {
       if (attach()) observer.disconnect();
     }).observe(document, { childList: true });
@@ -338,7 +377,7 @@
       bridgeNow.addEventListener("message", (event) => {
         const data = event.data;
         if (!data || data.cmd !== "cosmetic_css" || data.origin !== location.origin || !Array.isArray(data.selectors)) return;
-        addGeneric(data.selectors.map((selector) => `${selector}{display:none!important}`).join("\n"));
+        addGeneric(data.selectors.filter((selector) => typeof selector === "string"));
       });
       return true;
     };

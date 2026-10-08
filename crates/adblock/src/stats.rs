@@ -24,7 +24,7 @@ impl Stats {
         self.nanos_total.fetch_add(nanos, Ordering::Relaxed);
         self.nanos_max.fetch_max(nanos, Ordering::Relaxed);
         match decision {
-            Decision::Block => {
+            Decision::Block | Decision::Redirect { .. } => {
                 self.blocked.fetch_add(1, Ordering::Relaxed);
             }
             Decision::Rewrite(_) => {

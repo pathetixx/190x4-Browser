@@ -73,6 +73,10 @@
         checks.matches_attr = !shown("ad-link") && shown("plain-link");
         checks.xpath = !shown("partner");
         checks.path_mismatch = shown("news-card");
+        // Стили не видны странице: ни в DOM, ни в document.styleSheets.
+        checks.hidden_from_page =
+          !Array.from(document.querySelectorAll("style")).some((sheet) => sheet.textContent.includes(".promo")) &&
+          !Array.from(document.styleSheets).some((sheet) => Array.from(sheet.cssRules).some((rule) => rule.cssText.includes(".promo")));
 
         // Общие правила: страница сообщила свои классы, браузер ответил селектором.
         const asked = __sent.filter((m) => m.evt === "cosmetic_ids");
@@ -97,7 +101,10 @@
         const inner = document.createElement("span");
         inner.className = "late-inner";
         wrap.append(inner);
+        // Сайт сам переписал свои листы — наши возвращаются на ближайшем проходе.
+        document.adoptedStyleSheets = [];
         await wait(900);
+        checks.sheets_restored = !shown("promo") && !shown("generic");
         checks.late_procedural = !shown("late");
         checks.late_survey = __sent.some((m) => m.evt === "cosmetic_ids" && m.classes.includes("fresh-class"));
         checks.late_nested = __sent.some((m) => m.evt === "cosmetic_ids" && m.classes.includes("late-wrap") && m.classes.includes("late-inner"));

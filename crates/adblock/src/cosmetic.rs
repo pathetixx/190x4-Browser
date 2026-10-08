@@ -51,11 +51,12 @@ pub fn document_host(url: &str) -> Option<String> {
 
 /// Скрипт документа для WebView2 или `None`, если делать нечего.
 ///
-/// Скрипт встраивается при создании документа во все его фреймы, а правила
-/// посчитаны для адреса вкладки — поэтому он сверяет хост. Стиль скрытия
-/// ставится, как только у документа появляется корневой элемент, остальное
-/// делает исполнитель (`cosmetic.js`). Скриптлеты с нулевым символом не
-/// встраиваются: WebView2 обрезал бы на нём весь скрипт.
+/// Движок встраивает скрипт во все документы и фреймы вкладки, а правила
+/// посчитаны для одного хоста — поэтому первой строкой он сверяет хост. Всё
+/// остальное лежит в функции без скобок вокруг: в документе чужого хоста V8
+/// её только просматривает, не компилируя. Стиль скрытия ставит исполнитель
+/// (`cosmetic.js`). Скриптлеты с нулевым символом не встраиваются: WebView2
+/// обрезал бы на нём весь скрипт.
 pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
     if cosmetics.is_empty() {
         return None;
@@ -88,11 +89,15 @@ pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
     let host = serde_json::to_string(host).ok()?;
     let runtime = RUNTIME.replace("__X4_CONFIG__", &config);
     Some(format!(
-        r#"(() => {{
-if (location.hostname !== {host}) return;
+        r#"if (location.hostname === {host}) {{
+const x4 = function () {{
+(() => {{
 {script}
 }})();
 {runtime}
+}};
+x4();
+}}
 "#
     ))
 }
@@ -136,7 +141,7 @@ mod tests {
             script: "mark();".into(),
         };
         let script = document_script("example.com", &cosmetics).unwrap();
-        assert!(script.contains(r#"location.hostname !== "example.com""#));
+        assert!(script.starts_with(r#"if (location.hostname === "example.com") {"#));
         assert!(script.contains("mark();"));
         assert!(script.contains(r#".promo{display:none!important}"#));
         assert!(script.contains(r#".banner{height: 0}"#));

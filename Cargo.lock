@@ -493,6 +493,7 @@ dependencies = [
  "adblock",
  "anyhow",
  "arc-swap",
+ "base64 0.22.1",
  "criterion",
  "parking_lot",
  "serde",

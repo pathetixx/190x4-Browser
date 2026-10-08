@@ -89,7 +89,10 @@ pub enum Decision {
     Allow,
     /// Ответить синтетическим 403 с пустым телом (`Response` создаёт вызывающий).
     Block,
-    /// Пропустить, но с урезанным URL — сработало `$removeparam`/redirect-правило.
+    /// Ответить заглушкой правила `$redirect=` (`noop.js`, пустой VAST, `google-ima.js`):
+    /// скрипт страницы получает то, что ждал, и не уходит в ветку «блокировщик найден».
+    Redirect { mime: String, body: Vec<u8> },
+    /// Пропустить, но с урезанным URL — сработало `$removeparam`.
     Rewrite(String),
 }
 
@@ -113,12 +116,18 @@ pub struct Guard {
     enabled: ArcSwap<bool>,
     /// Сайты, на которых пользователь выключил блокировку (ключи [`site_key`]).
     exempt: ArcSwap<HashSet<String>>,
-    /// Номер движка: растёт с каждой заменой, по нему устаревает кэш ниже.
+    /// Номер правки фильтра: растёт с каждой заменой движка, включением и
+    /// выключением и сменой исключений. По нему устаревают кэш ниже и скрипты
+    /// косметики, встроенные во вкладки ([`Guard::revision`]).
     generation: AtomicU64,
     /// Исключения общих правил и `$generichide` по адресу документа: страница
     /// спрашивает общие правила много раз, а собирать косметику сайта заново
     /// ради одних исключений дорого.
     generic_cache: parking_lot::Mutex<HashMap<String, (u64, Arc<GenericContext>)>>,
+    /// Общие сложные селекторы (`##div[id^="ad-"]`), которые движок кладёт в
+    /// косметику любого сайта, — по номеру правки. По ним видно, есть ли у
+    /// фрейма свои правила ([`Guard::frame_cosmetics`]).
+    generic_selectors: parking_lot::Mutex<Option<(u64, Arc<HashSet<String>>)>>,
 }
 
 /// Что нужно общим правилам по классам и id на странице.
@@ -137,12 +146,20 @@ impl Guard {
             exempt: ArcSwap::from_pointee(HashSet::new()),
             generation: AtomicU64::new(0),
             generic_cache: parking_lot::Mutex::new(HashMap::new()),
+            generic_selectors: parking_lot::Mutex::new(None),
         }
     }
 
     /// Заменить список сайтов без блокировки.
     pub fn set_exempt_sites(&self, sites: impl IntoIterator<Item = String>) {
         self.exempt.store(Arc::new(sites.into_iter().collect()));
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Номер правки фильтра. Сменился — всё, что посчитано по прежнему фильтру
+    /// (скрипты косметики во вкладках), надо считать заново.
+    pub fn revision(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// Выключена ли блокировка для документа по этому адресу. Сверяются хост и
@@ -275,6 +292,48 @@ impl Guard {
         }
     }
 
+    /// Косметика фрейма другого сайта (плеер, встроенный на страницу) или
+    /// `None`, если своего у его сайта ничего нет: ни правил скрытия сверх
+    /// общих, ни процедурных правил, ни скриптлетов. Таким фреймам отдельный
+    /// скрипт не нужен — общие правила там почти ничего не находят, а каждый
+    /// скрипт вкладки разбирается в каждом её документе.
+    pub fn frame_cosmetics(&self, url: &str, page_url: &str) -> Option<Cosmetics> {
+        if !self.filters(page_url) {
+            return None;
+        }
+        let cosmetics = self.cosmetics(url);
+        let generic = self.generic_selectors();
+        let specific = cosmetics
+            .hide
+            .iter()
+            .any(|selector| !generic.contains(selector));
+        (specific
+            || !cosmetics.styles.is_empty()
+            || !cosmetics.procedural.is_empty()
+            || !cosmetics.script.trim().is_empty())
+        .then_some(cosmetics)
+    }
+
+    /// Общие сложные селекторы текущего движка: косметика адреса, на который не
+    /// пишут ни правил сайта, ни исключений.
+    fn generic_selectors(&self) -> Arc<HashSet<String>> {
+        let generation = self.generation.load(Ordering::Acquire);
+        if let Some((at, selectors)) = &*self.generic_selectors.lock() {
+            if *at == generation {
+                return selectors.clone();
+            }
+        }
+        let selectors: Arc<HashSet<String>> = Arc::new(
+            self.engine
+                .load()
+                .main
+                .url_cosmetic_resources("https://generic.invalid/")
+                .hide_selectors,
+        );
+        *self.generic_selectors.lock() = Some((generation, selectors.clone()));
+        selectors
+    }
+
     /// Общие правила скрытия для классов и id, которые нашлись на странице:
     /// селекторы, которые ей нужно спрятать. Пусто, если фильтр на странице
     /// выключен или у неё `$generichide`. Звать не с главного потока.
@@ -330,6 +389,7 @@ impl Guard {
 
     pub fn set_enabled(&self, on: bool) {
         self.enabled.store(Arc::new(on));
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn stats(&self) -> &Stats {
@@ -364,7 +424,12 @@ impl Guard {
 
         let result = engine.main.check_network_request(&request);
         let decision = if result.should_block() {
-            Decision::Block
+            // Заглушка есть только у правил `$redirect=`/`$redirect-rule=`, и
+            // только если её ресурс пришёл с каналом фильтров.
+            match result.redirect.as_deref().and_then(decode_data_url) {
+                Some((mime, body)) => Decision::Redirect { mime, body },
+                None => Decision::Block,
+            }
         } else if let Some(rewritten) = result.rewritten_url {
             Decision::Rewrite(rewritten)
         } else {
@@ -377,6 +442,22 @@ impl Guard {
 }
 
 impl Guard {
+    /// Закроет ли фильтр такой запрос — тот же ответ, что у [`Guard::check`],
+    /// но без счёта в статистике: вопрос заранее, сам запрос ещё придёт.
+    pub fn blocks(&self, url: &str, source_url: &str, kind: ResourceKind) -> bool {
+        if !self.filters(source_url) {
+            return false;
+        }
+        let Ok(request) = Request::new(url, source_url, kind.as_str(), "GET") else {
+            return false;
+        };
+        self.engine
+            .load()
+            .main
+            .check_network_request(&request)
+            .should_block()
+    }
+
     /// Окно, которое страница `opener_url` открывает по адресу `url`, —
     /// реклама: его ловит правило `$popup` или `$all`. Основной движок здесь не
     /// спрашивается: у adblock-rust обычное правило (`||tracker.example^`)
@@ -397,6 +478,17 @@ impl Guard {
             .check_network_request(&request)
             .should_block()
     }
+}
+
+/// Заглушка движка — `data:<mime>;base64,<тело>` — в тип и байты ответа.
+fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+
+    let (mime, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    Some((mime.to_string(), body))
 }
 
 /// Типы ресурсов в опциях правила: у правила окна они не нужны, оно станет
@@ -797,6 +889,99 @@ mod tests {
             ),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn redirect_rules_answer_with_a_stub() {
+        let json = serde_json::json!([
+            {"name": "noop.js", "aliases": ["noopjs"], "kind": {"mime": "application/javascript"},
+             "content": b64("(function(){})();"), "dependencies": [], "permission": 0},
+            {"name": "noop-vast4.xml", "aliases": [], "kind": {"mime": "text/xml"},
+             "content": b64("<VAST version=\"4.0\"></VAST>"), "dependencies": [], "permission": 0},
+        ])
+        .to_string();
+        let guard = Guard::empty();
+        guard.swap(Guard::build(
+            vec![list(
+                "||ads.example^$script,redirect=noopjs\n\
+                 ||vast.example^$xhr,redirect=noop-vast4.xml\n\
+                 ||nostub.example^$script,redirect=missing.js",
+                false,
+            )],
+            Guard::parse_resources(&json).unwrap(),
+        ));
+        let page = "https://news.example/";
+        assert_eq!(
+            guard.check(
+                "https://ads.example/a.js",
+                page,
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Redirect {
+                mime: "application/javascript".into(),
+                body: b"(function(){})();".to_vec(),
+            }
+        );
+        assert!(matches!(
+            guard.check("https://vast.example/v?x=1", page, ResourceKind::Xhr, "GET"),
+            Decision::Redirect { ref mime, .. } if mime == "text/xml"
+        ));
+        // Ресурса заглушки нет — запрос просто закрывается.
+        assert_eq!(
+            guard.check(
+                "https://nostub.example/a.js",
+                page,
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
+        );
+    }
+
+    #[test]
+    fn only_frames_with_own_rules_get_cosmetics() {
+        let guard = guard_with(
+            "##div[id^=\"ad-\"]\n\
+             player.example##.overlay-ad\n\
+             proc.example##div:has-text(Реклама)",
+        );
+        let page = "https://news.example/";
+        assert!(guard
+            .frame_cosmetics("https://player.example/embed/1", page)
+            .is_some());
+        assert!(guard
+            .frame_cosmetics("https://proc.example/", page)
+            .is_some());
+        // Только общие правила — фрейму скрипт не нужен.
+        assert!(guard
+            .frame_cosmetics("https://plain.example/", page)
+            .is_none());
+        // Страница без блокировки — и её фреймы без косметики.
+        guard.set_exempt_sites(["news.example".to_string()]);
+        assert!(guard
+            .frame_cosmetics("https://player.example/embed/1", page)
+            .is_none());
+    }
+
+    #[test]
+    fn revision_follows_every_filter_change() {
+        let guard = Guard::empty();
+        let start = guard.revision();
+        guard.swap(Engines::default());
+        guard.set_enabled(false);
+        guard.set_exempt_sites(["news.example".to_string()]);
+        assert_eq!(guard.revision(), start + 3);
+    }
+
+    #[test]
+    fn data_urls_are_decoded() {
+        assert_eq!(
+            decode_data_url("data:text/plain;base64,MTkweDQ="),
+            Some(("text/plain".to_string(), b"190x4".to_vec()))
+        );
+        assert_eq!(decode_data_url("data:text/plain,190x4"), None);
+        assert_eq!(decode_data_url("https://example.com/"), None);
     }
 
     #[test]

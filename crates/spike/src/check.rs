@@ -26,6 +26,15 @@ pub fn run(page: &str, requests: &Path, bundled: &Path, downloaded: &Path) -> an
                 blocked += 1;
                 println!("BLOCK {:<10} {}", request.kind, request.url);
             }
+            Decision::Redirect { mime, body } => {
+                blocked += 1;
+                println!(
+                    "REDIRECT {:<10} {} -> {mime} ({} B)",
+                    request.kind,
+                    request.url,
+                    body.len()
+                );
+            }
             Decision::Rewrite(to) => println!("REWRITE {} -> {to}", request.url),
         }
     }

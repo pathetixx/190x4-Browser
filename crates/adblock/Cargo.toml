@@ -21,6 +21,7 @@ license.workspace = true
 # отбрасывал их невалидными, и реклама ВК, Яндекса и Mail.ru оставалась.
 adblock = { version = "0.13", default-features = false, features = ["full-regex-handling", "embedded-domain-resolver", "css-validation"] }
 arc-swap.workspace = true
+base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

@@ -110,7 +110,7 @@ pub fn run(url: &str, lists_dir: &std::path::Path) -> anyhow::Result<AdblockRepo
                         guard.check(&uri, &source.borrow(), map_context(context), &method);
                     samples.borrow_mut().push(t0.elapsed().as_nanos() as u64);
 
-                    if matches!(decision, Decision::Block) {
+                    if matches!(decision, Decision::Block | Decision::Redirect { .. }) {
                         *blocked.borrow_mut() += 1;
                     }
                     Ok(())

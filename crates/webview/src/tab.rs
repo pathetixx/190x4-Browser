@@ -548,6 +548,9 @@ pub struct Tab {
     /// Вкладка подписана на запросы для фильтра (`filter::set_filtering`).
     filtering: Rc<Cell<bool>>,
     guard: Arc<Guard>,
+    /// Скрипты косметики и скриптлетов по хостам. Обработчики движка держат
+    /// их слабой ссылкой, а живут они, пока поле держит вкладка.
+    _cosmetics: Rc<filter::CosmeticScripts>,
 }
 
 type IdentitySlot = Rc<Cell<Option<(Identity, u64)>>>;
@@ -922,7 +925,16 @@ fn wire_context_menu(id: TabId, core: &ICoreWebView2, sink: EventSink, slot: Men
 /// Сообщения из фреймов. Форма входа часто живёт во фрейме (вход в почту
 /// Mail.ru — фрейм VK ID): у каждого фрейма свой канал сообщений, и ответ
 /// уходит в тот же фрейм.
-fn wire_frames(id: TabId, core: &ICoreWebView2, sink: EventSink, frames: FrameMap) {
+/// Реестр косметики вкладки для фреймов: слабая ссылка, фреймы её не держат.
+type CosmeticsLink = std::rc::Weak<filter::CosmeticScripts>;
+
+fn wire_frames(
+    id: TabId,
+    core: &ICoreWebView2,
+    sink: EventSink,
+    frames: FrameMap,
+    cosmetics: CosmeticsLink,
+) {
     let Ok(core4) = core.cast::<ICoreWebView2_4>() else {
         return;
     };
@@ -932,7 +944,13 @@ fn wire_frames(id: TabId, core: &ICoreWebView2, sink: EventSink, frames: FrameMa
         core4.add_FrameCreated(
             &FrameCreatedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()) };
-                wire_frame(tab, args.Frame()?, sink.clone(), frames.clone());
+                wire_frame(
+                    tab,
+                    args.Frame()?,
+                    sink.clone(),
+                    frames.clone(),
+                    cosmetics.clone(),
+                );
                 Ok(())
             })),
             &mut token,
@@ -943,7 +961,13 @@ fn wire_frames(id: TabId, core: &ICoreWebView2, sink: EventSink, frames: FrameMa
     }
 }
 
-fn wire_frame(tab: u32, frame: ICoreWebView2Frame, sink: EventSink, frames: FrameMap) {
+fn wire_frame(
+    tab: u32,
+    frame: ICoreWebView2Frame,
+    sink: EventSink,
+    frames: FrameMap,
+    cosmetics: CosmeticsLink,
+) {
     let (Ok(frame2), Ok(frame5)) = (
         frame.cast::<ICoreWebView2Frame2>(),
         frame.cast::<ICoreWebView2Frame5>(),
@@ -978,8 +1002,16 @@ fn wire_frame(tab: u32, frame: ICoreWebView2Frame, sink: EventSink, frames: Fram
             &mut token,
         );
         let s = sink.clone();
+        let link = cosmetics.clone();
         let _ = frame2.add_NavigationStarting(
-            &FrameNavigationStartingEventHandler::create(Box::new(move |_, _| {
+            &FrameNavigationStartingEventHandler::create(Box::new(move |_, args| {
+                // Вложенный фрейм: его переход движок вкладке может не сообщить.
+                if let (Some(args), Some(cosmetics)) = (args, link.upgrade()) {
+                    let mut raw = PWSTR::null();
+                    if args.Uri(&mut raw).is_ok() {
+                        cosmetics.frame_navigation(&take_pwstr(raw));
+                    }
+                }
                 s(TabEvent::FrameStarted {
                     id: tab,
                     frame: frame_id,
@@ -1002,7 +1034,13 @@ fn wire_frame(tab: u32, frame: ICoreWebView2Frame, sink: EventSink, frames: Fram
             let _ = frame7.add_FrameCreated(
                 &FrameChildFrameCreatedEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
-                    wire_frame(tab, args.Frame()?, sink.clone(), nested.clone());
+                    wire_frame(
+                        tab,
+                        args.Frame()?,
+                        sink.clone(),
+                        nested.clone(),
+                        cosmetics.clone(),
+                    );
                     Ok(())
                 })),
                 &mut token,
@@ -1528,7 +1566,7 @@ impl Tab {
             sink.clone(),
             intercepts.clone(),
         )?;
-        filter::install_cosmetics(&core, guard.clone())?;
+        let cosmetics = filter::CosmeticScripts::install(&core, guard.clone())?;
         wire_accelerators(id, &controller, &core, fullscreen.clone(), sink.clone())?;
         downloads::wire(id, &core, downloads.clone(), sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
@@ -1536,7 +1574,13 @@ impl Tab {
         let menu = MenuSlot::default();
         wire_context_menu(id, &core, sink.clone(), menu.clone());
         let frames = FrameMap::default();
-        wire_frames(id, &core, sink.clone(), frames.clone());
+        wire_frames(
+            id,
+            &core,
+            sink.clone(),
+            frames.clone(),
+            Rc::downgrade(&cosmetics),
+        );
         let dialogs = Dialogs::default();
         dialogs::wire(id.0, &core, sink.clone(), dialogs.clone());
 
@@ -1570,6 +1614,7 @@ impl Tab {
             identity,
             filtering: Rc::new(Cell::new(true)),
             guard: guard.clone(),
+            _cosmetics: cosmetics,
         };
         tab.wire_events(sink.clone(), popups, guard)?;
         tab.wire_certificates();
