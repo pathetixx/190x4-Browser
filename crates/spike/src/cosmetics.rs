@@ -23,6 +23,7 @@ pub fn load_guard(bundled: &Path, downloaded: &Path) -> anyhow::Result<Guard> {
                 text,
                 trusted: spec.trusted,
                 protections: spec.protections,
+                ads: !spec.tracking,
             }),
             Err(err) => eprintln!("нет списка {}: {err}", path.display()),
         }

@@ -874,6 +874,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                     id: spec.id,
                     trusted: spec.trusted,
                     protections: spec.protections,
+                    ads: !spec.tracking,
                     optional,
                     path,
                 }
@@ -915,6 +916,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                             text,
                             trusted: list.trusted,
                             protections: list.protections,
+                            ads: list.ads,
                         }),
                         Err(err) => {
                             // Скачанного списка нет до первого обновления фильтров.
@@ -931,6 +933,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                         text: user,
                         trusted: false,
                         protections: false,
+                        ads: false,
                     });
                 }
                 Guard::build(texts, resources())
@@ -969,13 +972,14 @@ const SNAPSHOT_KEY: &str = "engine.key";
 /// Как собран движок: сменился разбор правил (процедурная косметика, правила
 /// окон `$popup`) — снимок прежней сборки не годится, даже если версия браузера
 /// та же.
-const SNAPSHOT_FORMAT: &str = "brave-engines-3";
+const SNAPSHOT_FORMAT: &str = "popup-hosts-4";
 
 /// Включённый список фильтров и файл, из которого он читается.
 struct ListFile {
     id: String,
     trusted: bool,
     protections: bool,
+    ads: bool,
     /// Скачиваемый список: до первого обновления фильтров его может не быть.
     optional: bool,
     path: std::path::PathBuf,

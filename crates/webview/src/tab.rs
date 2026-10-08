@@ -427,6 +427,27 @@ impl PendingPopup {
     }
 }
 
+/// Переход, который страница начала сама: новый документ (не перезагрузка и не
+/// «Назад»), не по щелчку человека.
+fn is_page_redirect(
+    args: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2NavigationStartingEventArgs,
+) -> bool {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2NavigationStartingEventArgs3, COREWEBVIEW2_NAVIGATION_KIND,
+        COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT,
+    };
+    let mut user = BOOL::default();
+    if unsafe { args.IsUserInitiated(&mut user) }.is_err() || user.as_bool() {
+        return false;
+    }
+    let Ok(args3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() else {
+        return false;
+    };
+    let mut kind = COREWEBVIEW2_NAVIGATION_KIND::default();
+    unsafe { args3.NavigationKind(&mut kind) }.is_ok()
+        && kind == COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT
+}
+
 /// Сколько окно страницы сверяется с правилами окон на каждом переходе:
 /// реклама уходит на рекламный адрес через пустую страницу и переадресации за
 /// секунды, а потом по окну ходит уже человек.
@@ -553,6 +574,8 @@ pub struct Tab {
     identity: IdentitySlot,
     /// Вкладка подписана на запросы для фильтра (`filter::set_filtering`).
     filtering: Rc<Cell<bool>>,
+    /// Следующий переход начал браузер (`Tab::navigate`), а не страница.
+    browser_navigation: Rc<Cell<bool>>,
     guard: Arc<Guard>,
     /// Скрипты косметики и скриптлетов по хостам. Обработчики движка держат
     /// их слабой ссылкой, а живут они, пока поле держит вкладка.
@@ -1619,6 +1642,7 @@ impl Tab {
             pip_expected: Rc::default(),
             identity,
             filtering: Rc::new(Cell::new(true)),
+            browser_navigation: Rc::default(),
             guard: guard.clone(),
             _cosmetics: cosmetics,
         };
@@ -1730,6 +1754,7 @@ impl Tab {
             let popup_watch = self.popup_watch.clone();
             let popup_guard = guard.clone();
             let filtering = self.filtering.clone();
+            let browser_navigation = self.browser_navigation.clone();
             core.add_NavigationStarting(
                 &NavigationStartingEventHandler::create(Box::new(move |_, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -1763,6 +1788,26 @@ impl Tab {
                             });
                             return Ok(());
                         }
+                    }
+                    // Подмена страницы (popunder): сайт открывает видео в новой
+                    // вкладке, а эту сам, без действия человека, уводит на
+                    // рекламный домен. Такой переход отменяется — вкладка
+                    // остаётся на месте, как у uBlock Origin. Переходы браузера
+                    // (адресная строка, перезагрузка, «Назад») и по щелчку не
+                    // трогаются.
+                    let from_browser = browser_navigation.replace(false);
+                    let current = source.borrow().clone();
+                    if !from_browser
+                        && current.starts_with("http")
+                        && is_page_redirect(&args)
+                        && popup_guard.blocks_popup(&url, &current)
+                    {
+                        args.SetCancel(true)?;
+                        tracing::debug!(
+                            tab = id,
+                            "страница увела вкладку на рекламу — переход отменён"
+                        );
+                        return Ok(());
                     }
                     // Сайт представляется иначе, чем прежний, — подмена до того,
                     // как его скрипты спросят, что за браузер.
@@ -2051,6 +2096,8 @@ impl Tab {
     }
 
     pub fn navigate(&self, url: &str) -> windows_core::Result<()> {
+        // Переход браузера, а не страницы: защита от подмены его не трогает.
+        self.browser_navigation.set(true);
         unsafe { self.core.Navigate(&HSTRING::from(url)) }
     }
 

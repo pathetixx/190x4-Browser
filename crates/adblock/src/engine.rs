@@ -93,6 +93,11 @@ pub struct FilterList {
     /// Список без неё — региональные, First Party, cookie, свои правила —
     /// работает всегда и сразу.
     pub protections: bool,
+    /// Список рекламы, а не слежки: его правила домена целиком (`||host^`)
+    /// закрывают и окна, которые открывает страница, и переходы на этот домен
+    /// — как «строгая блокировка» uBlock Origin. У EasyPrivacy и подобных —
+    /// нет: ссылка на домен счётчика не реклама.
+    pub ads: bool,
 }
 
 /// Права доверенного списка. Скриптлеты `trusted-*` помечены в ресурсах тем же
@@ -294,6 +299,9 @@ impl Guard {
         let mut popup_rules = Vec::new();
         for list in lists {
             popup_rules.extend(list.text.lines().filter_map(popup_rule));
+            if list.ads {
+                popup_rules.extend(list.text.lines().filter_map(host_rule));
+            }
             let permissions = if list.trusted {
                 TRUSTED
             } else {
@@ -589,7 +597,7 @@ impl Guard {
             // Невалидный URL (blob:, data:, кривая схема) — не наше дело.
             return Decision::Allow;
         };
-        let verdict = self.verdict(&request, url, source_url);
+        let verdict = self.verdict(&request, url, source_url, kind);
         let decision = if verdict.block {
             // Заглушка есть только у правил `$redirect=`/`$redirect-rule=`, и
             // только если её ресурс пришёл с каналом фильтров.
@@ -616,7 +624,7 @@ impl Guard {
         let Ok(request) = Request::new(url, source_url, kind.as_str(), "GET") else {
             return false;
         };
-        self.verdict(&request, url, source_url).block
+        self.verdict(&request, url, source_url, kind).block
     }
 
     /// Решение по запросу — как `AdBlockEngineWrapper::ShouldStartRequest` у
@@ -624,10 +632,24 @@ impl Guard {
     /// закрывает (его исключение при этом в силе); `$removeparam` его не
     /// применяется. Дополнительный спрашивается всегда и знает, что основной
     /// уже нашёл: его исключение снимает блокировку основного.
-    fn verdict(&self, request: &Request, url: &str, source_url: &str) -> Verdict {
+    ///
+    /// Главный документ вкладки «своим» не бывает: у Brave инициатор перехода —
+    /// прежняя страница или ссылка, открывшая окно, а не сам адрес. Переход на
+    /// рекламный домен закрывается своей страницей, как «строгая блокировка»
+    /// uBlock Origin.
+    fn verdict(
+        &self,
+        request: &Request,
+        url: &str,
+        source_url: &str,
+        kind: ResourceKind,
+    ) -> Verdict {
         let engines = self.engine.load();
         let mut first = engines.main.check_network_request(request);
-        if !self.aggressive_on(source_url) && same_site(url, source_url) {
+        if kind != ResourceKind::Document
+            && !self.aggressive_on(source_url)
+            && same_site(url, source_url)
+        {
             first.filter = None;
             first.important = false;
             first.redirect = None;
@@ -652,7 +674,8 @@ impl Guard {
     }
 
     /// Окно, которое страница `opener_url` открывает по адресу `url`, —
-    /// реклама: его ловит правило `$popup` или `$all`. Основной движок здесь не
+    /// реклама: его ловит правило `$popup` или `$all` либо правило рекламного
+    /// домена целиком (`||host^` из списков рекламы, [`host_rule`]). Основной движок здесь не
     /// спрашивается: у adblock-rust обычное правило (`||tracker.example^`)
     /// действует и на документ, и ссылка на любой домен из EasyPrivacy
     /// закрывалась бы молча. Звать на открытие окна и на переходы в нём, пока
@@ -671,6 +694,25 @@ impl Guard {
             .check_network_request(&request)
             .should_block()
     }
+}
+
+/// Правило домена целиком из списка рекламы (`||popads.net^`, `@@||ok.example^`)
+/// — как правило документа для движка окон. Так uBlock Origin решает, что
+/// переход на домен — реклама («строгая блокировка»): правила с путём или
+/// опциями здесь не участвуют, они про ресурсы страниц, а не про окна.
+fn host_rule(line: &str) -> Option<String> {
+    let line = line.trim();
+    let (exception, rest) = match line.strip_prefix("@@") {
+        Some(rest) => (true, rest),
+        None => (false, line),
+    };
+    let host = rest.strip_prefix("||")?.strip_suffix('^')?;
+    let plain = !host.is_empty()
+        && host.contains('.')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    plain.then(|| format!("{}||{host}^$document", if exception { "@@" } else { "" }))
 }
 
 /// Заглушка движка — `data:<mime>;base64,<тело>` — в тип и байты ответа.
@@ -755,6 +797,7 @@ mod tests {
             text: text.to_string(),
             trusted,
             protections: true,
+            ads: true,
         }
     }
 
@@ -764,6 +807,7 @@ mod tests {
             text: text.to_string(),
             trusted: false,
             protections: false,
+            ads: false,
         }
     }
 
@@ -1062,14 +1106,25 @@ mod tests {
 
     #[test]
     fn ad_popups_are_blocked() {
-        let guard = guard_with(
-            "||ads.example^$popup\n\
-             $popup,third-party,domain=player.example\n\
-             @@||ok.example^$popup,domain=player.example\n\
-             ||malware.example^$all\n\
-             ||phishing.example^$document\n\
-             ||tracker.example^",
-        );
+        let guard = Guard::empty();
+        guard.swap(Guard::build(
+            vec![
+                list(
+                    "||ads.example^$popup\n\
+                     $popup,third-party,domain=player.example\n\
+                     @@||ok.example^$popup,domain=player.example\n\
+                     ||malware.example^$all\n\
+                     ||phishing.example^$document",
+                    false,
+                ),
+                // Список слежки: его домены — не реклама для окон.
+                FilterList {
+                    ads: false,
+                    ..list("||tracker.example^", false)
+                },
+            ],
+            Vec::new(),
+        ));
         let page = "https://news.example/";
         assert!(guard.blocks_popup("https://ads.example/click?id=1", page));
         assert!(guard.blocks_popup("https://malware.example/", page));
@@ -1263,6 +1318,56 @@ mod tests {
         );
         assert_eq!(found.hide, vec![".list-ad".to_string()]);
         assert_eq!(found.force, vec![".everywhere".to_string()]);
+    }
+
+    #[test]
+    fn ad_hosts_close_windows_and_navigations() {
+        let guard = Guard::empty();
+        guard.swap(Guard::build(
+            vec![
+                list(
+                    "||popads.example^\n||adserver.example/path^\n||cdn.example^$script\n@@||ok.popads.example^",
+                    false,
+                ),
+                FilterList {
+                    ads: false,
+                    ..list("||counter.example^", false)
+                },
+            ],
+            Vec::new(),
+        ));
+        let page = "https://video.example/watch/1";
+        // Домен рекламы целиком — окно не открывается.
+        assert!(guard.blocks_popup("https://popads.example/go?z=1", page));
+        assert!(guard.blocks_popup("https://www.popads.example/", page));
+        // Исключение, правило с путём или типом и домен из списка слежки — открываются.
+        assert!(!guard.blocks_popup("https://ok.popads.example/", page));
+        assert!(!guard.blocks_popup("https://adserver.example/path", page));
+        assert!(!guard.blocks_popup("https://cdn.example/", page));
+        assert!(!guard.blocks_popup("https://counter.example/", page));
+        // Переход вкладки на рекламный домен закрывается своей страницей, хотя
+        // адрес документа и есть «страница»: главный документ своим не бывает.
+        let ad = "https://popads.example/landing";
+        assert_eq!(
+            guard.check(ad, ad, ResourceKind::Document, "GET"),
+            Decision::Block
+        );
+    }
+
+    #[test]
+    fn host_rules_are_plain_domains_only() {
+        assert_eq!(
+            host_rule("||ads.example^").as_deref(),
+            Some("||ads.example^$document")
+        );
+        assert_eq!(
+            host_rule("@@||ok.example^").as_deref(),
+            Some("@@||ok.example^$document")
+        );
+        assert_eq!(host_rule("||ads.example^$third-party"), None);
+        assert_eq!(host_rule("||ads.example/x^"), None);
+        assert_eq!(host_rule("||localhost^"), None);
+        assert_eq!(host_rule("example.com##.ad"), None);
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub fn run(url: &str, lists_dir: &std::path::Path) -> anyhow::Result<AdblockRepo
                 text,
                 trusted: false,
                 protections: true,
+                ads: true,
             }),
             Err(err) => eprintln!("нет списка {name}: {err}"),
         }

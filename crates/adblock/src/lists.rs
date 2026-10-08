@@ -27,6 +27,10 @@ pub struct ListSpec {
     /// у региональных, First Party, cookie и промо приложений.
     #[serde(default)]
     pub protections: bool,
+    /// Список слежки (EasyPrivacy и подобные), а не рекламы: его правила
+    /// домена целиком не закрывают окна и переходы (`FilterList::ads`).
+    #[serde(default)]
+    pub tracking: bool,
     /// Версия набора списков, в которой список появился. У того, кто уже
     /// выбирал списки в более старом наборе, новый список включается сам —
     /// иначе он остался бы выключенным молча (`enabled_lists` в браузере).
@@ -55,6 +59,7 @@ impl Default for Subscriptions {
             enabled: true,
             trusted: false,
             protections: true,
+            tracking: false,
             since: 1,
         };
         let downloaded = |id: &str, title: &str, file: &str| ListSpec {
@@ -64,12 +69,16 @@ impl Default for Subscriptions {
             enabled: true,
             trusted: true,
             protections: true,
+            tracking: false,
             since: 2,
         };
         Self {
             lists: vec![
                 bundled("easylist", "EasyList", "easylist.txt"),
-                bundled("easyprivacy", "EasyPrivacy", "easyprivacy.txt"),
+                ListSpec {
+                    tracking: true,
+                    ..bundled("easyprivacy", "EasyPrivacy", "easyprivacy.txt")
+                },
                 // Региональный список: у Brave — без защиты своего содержимого.
                 ListSpec {
                     protections: false,
@@ -77,7 +86,10 @@ impl Default for Subscriptions {
                 },
                 downloaded("extended", "Расширенные фильтры", "ubo-filters.txt"),
                 downloaded("quick-fixes", "Быстрые исправления", "ubo-quick-fixes.txt"),
-                downloaded("privacy", "Защита от слежки", "ubo-privacy.txt"),
+                ListSpec {
+                    tracking: true,
+                    ..downloaded("privacy", "Защита от слежки", "ubo-privacy.txt")
+                },
                 downloaded("unbreak", "Исправления поломок сайтов", "ubo-unbreak.txt"),
                 // Списки Brave и те, что он включает по умолчанию. Недоверенные:
                 // так их подключает и Brave.
