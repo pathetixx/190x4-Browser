@@ -25,6 +25,7 @@ mod newtab;
 mod nonstop;
 mod page_messages;
 mod passwords;
+mod picker;
 mod pip;
 mod popup;
 mod resources;
@@ -108,6 +109,7 @@ pub fn run() {
     #[cfg(windows)]
     browser190x4_webview::dialogs::set_leave_quiet_sites(ipc::leave_quiet_sites(&store));
     guard.set_enabled(store.setting_bool("adblock_enabled", true));
+    guard.set_aggressive(store.setting_bool("adblock_aggressive", false));
     guard.set_exempt_sites(ipc::exempt_sites(&store));
     if !secondary {
         if let Err(err) = store.fail_interrupted_downloads() {
@@ -185,6 +187,7 @@ pub fn run() {
             ipc::adblock_lists,
             ipc::adblock_site,
             ipc::adblock_site_set,
+            picker::adblock_pick,
             ipc::settings_get,
             ipc::settings_set,
             ipc::engine_hints,
@@ -491,6 +494,9 @@ fn route_message(
         "cosmetic_ids" => {
             cosmetic::handle_message(app, id, frame, source, payload);
         }
+        name if name.starts_with("picker_") => {
+            picker::handle_message(app, label, id, frame, source, payload);
+        }
         name if name.starts_with("sponsorblock_") => {
             sponsorblock::handle_message(app, id, frame, source, payload);
         }
@@ -777,8 +783,9 @@ fn init_logging() {
     }
 }
 
-/// Какие списки фильтров включены. `adblock_lists` хранит включённые списки;
-/// в сохранённом до версии 2 наборе нет списков, появившихся позже, и они не
+/// Какие списки фильтров включены. `adblock_lists` хранит включённые списки, а
+/// `adblock_lists_version` — версию набора, из которого их выбирали: списков,
+/// появившихся позже (`ListSpec::since`), в сохранённом наборе нет, и они не
 /// должны оказаться выключенными молча.
 pub(crate) fn enabled_lists(store: &Store) -> Vec<String> {
     let defaults = browser190x4_adblock::Subscriptions::default().lists;
@@ -794,15 +801,12 @@ pub(crate) fn enabled_lists(store: &Store) -> Vec<String> {
                 .flatten()
                 .and_then(|value| value.as_u64())
                 .unwrap_or(1);
-            if version < 2 {
-                const FIRST: [&str; 3] = ["easylist", "easyprivacy", "ruadlist"];
-                for spec in defaults
-                    .iter()
-                    .filter(|spec| spec.enabled && !FIRST.contains(&spec.id.as_str()))
-                {
-                    if !enabled.contains(&spec.id) {
-                        enabled.push(spec.id.clone());
-                    }
+            for spec in defaults
+                .iter()
+                .filter(|spec| spec.enabled && u64::from(spec.since) > version)
+            {
+                if !enabled.contains(&spec.id) {
+                    enabled.push(spec.id.clone());
                 }
             }
             enabled
@@ -885,7 +889,14 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
 
         let started = std::time::Instant::now();
         let count = lists.iter().filter(|list| list.path.exists()).count();
-        let key = snapshot_key(&lists);
+        // Свои правила («Скрыть элемент») — отдельным движком (`Engines::user`);
+        // в отпечатке снимка — их текст целиком.
+        let user = picker::user_rules(&store).join("\n");
+        let key = format!(
+            "{}\nuser {}",
+            snapshot_key(&lists),
+            filters::sha256_hex(user.as_bytes())
+        );
         let snapshot = downloaded.join(SNAPSHOT);
         let restored = std::fs::read_to_string(downloaded.join(SNAPSHOT_KEY))
             .ok()
@@ -911,7 +922,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                         }
                     }
                 }
-                Guard::build(texts, resources())
+                Guard::build(texts, user, resources())
             }
         };
         if FILTER_BUILD.load(Ordering::SeqCst) != build {
@@ -947,7 +958,7 @@ const SNAPSHOT_KEY: &str = "engine.key";
 /// Как собран движок: сменился разбор правил (процедурная косметика, правила
 /// окон `$popup`) — снимок прежней сборки не годится, даже если версия браузера
 /// та же.
-const SNAPSHOT_FORMAT: &str = "popups-1";
+const SNAPSHOT_FORMAT: &str = "user-engine-2";
 
 /// Включённый список фильтров и файл, из которого он читается.
 struct ListFile {

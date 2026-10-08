@@ -22,6 +22,8 @@ license.workspace = true
 adblock = { version = "0.13", default-features = false, features = ["full-regex-handling", "embedded-domain-resolver", "css-validation"] }
 arc-swap.workspace = true
 base64 = "0.22"
+# Регистрируемый домен (eTLD+1): свой и чужой сайт — как у Brave.
+psl = "2"
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

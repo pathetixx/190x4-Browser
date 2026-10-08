@@ -20,7 +20,15 @@ pub struct ListSpec {
     /// и трогают cookies (`trusted-*`).
     #[serde(default)]
     pub trusted: bool,
+    /// Версия набора списков, в которой список появился. У того, кто уже
+    /// выбирал списки в более старом наборе, новый список включается сам —
+    /// иначе он остался бы выключенным молча (`enabled_lists` в браузере).
+    #[serde(default)]
+    pub since: u32,
 }
+
+/// Версия набора списков по умолчанию: наибольшая `since`.
+pub const LISTS_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriptions {
@@ -39,6 +47,7 @@ impl Default for Subscriptions {
             source: ListSource::Bundled(file.into()),
             enabled: true,
             trusted: false,
+            since: 1,
         };
         let downloaded = |id: &str, title: &str, file: &str| ListSpec {
             id: id.into(),
@@ -46,6 +55,7 @@ impl Default for Subscriptions {
             source: ListSource::Downloaded(file.into()),
             enabled: true,
             trusted: true,
+            since: 2,
         };
         Self {
             lists: vec![
@@ -56,7 +66,35 @@ impl Default for Subscriptions {
                 downloaded("quick-fixes", "Быстрые исправления", "ubo-quick-fixes.txt"),
                 downloaded("privacy", "Защита от слежки", "ubo-privacy.txt"),
                 downloaded("unbreak", "Исправления поломок сайтов", "ubo-unbreak.txt"),
+                // Команда AdGuard правит рунет каждый день — Яндекс, Дзен,
+                // Mail.ru, ВК, — в том числе их защиту от блокировщиков, а
+                // RU AdList за ней не успевает. Вариант списка в синтаксисе
+                // uBlock Origin, его понимает adblock-rust; скриптлеты из
+                // недоверенного списка — только обычные, как в uBlock Origin.
+                ListSpec {
+                    trusted: false,
+                    since: 3,
+                    ..downloaded("adguard-russian", "AdGuard Russian", "adguard-russian.txt")
+                },
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_version_follows_the_newest_list() {
+        let lists = Subscriptions::default().lists;
+        assert_eq!(
+            lists.iter().map(|spec| spec.since).max(),
+            Some(LISTS_VERSION)
+        );
+        let mut ids: Vec<&str> = lists.iter().map(|spec| spec.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), lists.len(), "id списков не повторяются");
     }
 }

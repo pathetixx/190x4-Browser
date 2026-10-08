@@ -105,12 +105,13 @@ export async function invoke(command, args = {}) {
     case "tab_close":
       return null;
     case "adblock_stats":
-      return { checked: 2480, blocked: 143, rewritten: 12, avg_micros: 18.4, max_micros: 92.1 };
+      return { checked: 2480, blocked: 143, avg_micros: 18.4, max_micros: 92.1 };
     case "adblock_lists":
       return [
         { id: "easylist", title: "EasyList", enabled: true },
         { id: "easyprivacy", title: "EasyPrivacy", enabled: true },
-        { id: "ruadlist", title: "RU AdList", enabled: true },
+        { id: "ruadlist", title: "RU AdList", enabled: true, version: 3 },
+        { id: "adguard-russian", title: "AdGuard Russian", enabled: true, version: 3 },
       ];
     case "settings_get":
       return { ...settings };

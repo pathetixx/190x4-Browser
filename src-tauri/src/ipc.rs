@@ -1022,6 +1022,8 @@ pub struct FilterList {
     id: String,
     title: String,
     enabled: bool,
+    /// Версия набора списков, которую интерфейс сохраняет вместе с выбором.
+    version: u32,
 }
 
 #[tauri::command(async)]
@@ -1034,6 +1036,7 @@ pub fn adblock_lists(state: State<'_, App>) -> Vec<FilterList> {
             enabled: enabled.contains(&spec.id),
             id: spec.id,
             title: spec.title,
+            version: browser190x4_adblock::LISTS_VERSION,
         })
         .collect()
 }
@@ -1093,6 +1096,11 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
                 .set_enabled(state.store.setting_bool("adblock_enabled", true));
             apply_filtering(app, state);
         }
+        "adblock_aggressive" => {
+            state
+                .guard
+                .set_aggressive(state.store.setting_bool("adblock_aggressive", false));
+        }
         "adblock_exempt_sites" => {
             state.guard.set_exempt_sites(exempt_sites(&state.store));
             apply_filtering(app, state);
@@ -1100,7 +1108,7 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
         "leave_quiet_sites" => {
             browser190x4_webview::dialogs::set_leave_quiet_sites(leave_quiet_sites(&state.store))
         }
-        "adblock_lists" => {
+        "adblock_lists" | "adblock_user_rules" => {
             crate::rebuild_filter(state.guard.clone(), state.store.clone(), app.clone())
         }
         "smartscreen" => {

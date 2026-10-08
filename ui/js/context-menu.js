@@ -80,7 +80,7 @@ export function initContextMenu(options) {
 /** Движок прислал правый щелчок. */
 export async function openContextMenu({ id, menu, x, y, target, items }) {
   answer(null);
-  current = { tab: id, menu, target, site: null, answered: false };
+  current = { tab: id, menu, target, site: null, answered: false, x, y };
   const menuState = current;
 
   // Меню бывает только у страницы на экране: активной или второй половины
@@ -203,8 +203,11 @@ function buildRows(target, items, site) {
       id: "adblock",
       label: site.blocking ? "Не блокировать рекламу на сайте" : "Блокировать рекламу на сайте",
     };
+    // «Скрыть элемент» — там, где блокировка работает: правило сайта без неё
+    // не действует.
+    const hide = site.blocking ? [{ id: "hide-element", label: "Скрыть элемент…" }] : [];
     const inspect = rows.findIndex((row) => row.name === "inspectElement");
-    rows.splice(inspect >= 0 ? inspect : rows.length, 0, { separator: true }, row);
+    rows.splice(inspect >= 0 ? inspect : rows.length, 0, { separator: true }, ...hide, row);
   }
 
   return tidySeparators(rows);
@@ -254,6 +257,13 @@ async function runAction(action, menu) {
     invoke("pip_toggle", { id: menu.tab }).catch((error) => hooks.toast(String(error?.message ?? error)));
   } else if (action === "media" && target.source_url) {
     openMediaExtension(target.source_url);
+  } else if (action === "hide-element") {
+    // Точка щелчка — в пикселях вкладки, а странице нужны её CSS-пиксели:
+    // при масштабе страницы они другие.
+    const zoom = state.tabs.get(menu.tab)?.zoom || 1;
+    invoke("adblock_pick", { id: menu.tab, x: menu.x / zoom, y: menu.y / zoom }).catch((error) =>
+      hooks.toast(String(error?.message ?? error))
+    );
   } else if (action === "adblock" && menu.site?.site) {
     const blocking = !menu.site.blocking;
     try {

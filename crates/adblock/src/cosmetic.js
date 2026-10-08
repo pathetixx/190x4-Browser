@@ -3,7 +3,12 @@
 // Встраивается в документы своего хоста — страницы вкладки и фреймов со своими
 // правилами (плеер чужого сайта) — до скриптов страницы; настройки подставляет
 // браузер вместо __X4_CONFIG__ (crates/adblock/src/cosmetic.rs):
-// * css — готовые правила скрытия сайта и общие сложные селекторы;
+// * hide — селекторы скрытия из списков: в обычном режиме они прячут сразу, а
+//   потом снимаются с блоков, которые оказались своим содержимым сайта, — как
+//   у Brave (components/cosmetic_filters/resources/data/content_cosmetic.ts);
+//   в агрессивном (aggressive) — просто прячут;
+// * css — то, что прячется всегда: свои правила и :style() списков;
+// * site — регистрируемый домен документа: свой ресурс или чужой;
 // * procedural — правила, которые CSS не выразить: «элемент с таким текстом»,
 //   «подняться на два уровня», «убрать атрибут» (:has-text, :upward, :remove…);
 // * generic — искать общие правила по классам и id: страница сообщает браузеру
@@ -68,30 +73,215 @@
     attach();
   }
 
-  // Ответы на классы и id страницы (общие правила) приходят пачками всю жизнь
-  // страницы. Все — в один лист: каждый новый лист пересчитывает стили всего
+  // Лист из многих правил, которые приходят пачками всю жизнь страницы
+  // (общие правила по классам и id). Каждое правило помнится, чтобы его можно
+  // было снять; новый лист на каждую пачку пересчитывал бы стили всего
   // документа, и за долгую сессию их набегали бы сотни.
-  let genericSheet = null;
-  const addGeneric = (selectors) => {
-    if (!selectors.length) return;
-    if (!genericSheet) {
-      genericSheet = newSheet("");
-      sheets.push(genericSheet);
-    }
-    for (const selector of selectors) {
-      const rule = `${selector}{display:none!important}`;
-      if (constructed) {
-        try {
-          genericSheet.insertRule(rule, genericSheet.cssRules.length);
-        } catch (_) {
-          // Селектор, которого браузер не знает, — пропустить только его.
+  const ruleSheet = () => {
+    const sheet = newSheet("");
+    sheets.push(sheet);
+    const rules = new Map();
+    return {
+      add(selector) {
+        if (rules.has(selector)) return false;
+        const text = `${selector}{display:none!important}`;
+        if (constructed) {
+          try {
+            sheet.insertRule(text, sheet.cssRules.length);
+            rules.set(selector, sheet.cssRules[sheet.cssRules.length - 1]);
+          } catch (_) {
+            // Селектор, которого браузер не знает, — пропустить только его.
+            return false;
+          }
+        } else {
+          const node = document.createTextNode(`${text}\n`);
+          sheet.appendChild(node);
+          rules.set(selector, node);
         }
-      } else {
-        genericSheet.appendChild(document.createTextNode(`${rule}\n`));
-      }
-    }
+        return true;
+      },
+      remove(selector) {
+        const rule = rules.get(selector);
+        if (!rule) return;
+        rules.delete(selector);
+        if (!constructed) {
+          rule.remove();
+          return;
+        }
+        const index = Array.prototype.indexOf.call(sheet.cssRules, rule);
+        if (index >= 0) sheet.deleteRule(index);
+      },
+    };
+  };
+  const forced = ruleSheet();
+  const listed = ruleSheet();
+  const addForced = (selectors) => {
+    for (const selector of selectors) forced.add(selector);
     attach();
   };
+
+  /* ── Свой или чужой: правила списков в обычном режиме ──────────── */
+
+  // Перенос логики Brave (content_cosmetic.ts, обычный режим Shields): правило
+  // списка прячет сразу, а в простое страницы блоки, которые оно спрятало,
+  // проверяются. Блок со ссылкой на свой сайт, без внешних ресурсов вообще или
+  // с заметным текстом — содержимое сайта, и правило снимается насовсем;
+  // остальное остаётся спрятанным. Три прохода — для того, что догрузилось.
+  // Так блокировщик не трогает приманки и пустые места, по которым сайты
+  // (Дзен) его замечают, а реклама с чужих адресов остаётся спрятанной.
+  const maxTimeMSBeforeStart = 2500;
+  const minAdTextChars = 30;
+  const minAdTextWords = 5;
+  const pumpIntervalMinMs = 40;
+  const pumpIntervalMaxMs = 1000;
+  const maxWorkSize = 60;
+
+  const queues = [new Set(), new Set(), new Set()];
+  const alreadyUnhiddenSelectors = new Set();
+  const alreadyKnownFirstPartySubtrees = new WeakSet();
+  let hasDelayOccurred = false;
+  let startCheckingId;
+  let queueIsSleeping = false;
+
+  const site = String(config.site || location.hostname).toLowerCase();
+  const isRelativeUrl = (url) => !url.startsWith("//") && !url.startsWith("http://") && !url.startsWith("https://");
+  const isFirstPartyUrl = (url) => {
+    if (isRelativeUrl(url)) return true;
+    try {
+      const host = new URL(url, location.href).hostname.toLowerCase();
+      return host === site || host.endsWith(`.${site}`);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const stripChildTagsFromText = (elm, tagName, text) => {
+    let localText = text;
+    for (const child of Array.from(elm.getElementsByTagName(tagName))) localText = localText.replaceAll(child.innerText, "");
+    return localText;
+  };
+  const showsSignificantText = (elm) => {
+    if (!("innerText" in elm)) return false;
+    let currentText = elm.innerText;
+    for (const tagName of ["script", "style"]) currentText = stripChildTagsFromText(elm, tagName, currentText);
+    const trimmed = currentText.trim();
+    if (trimmed.length < minAdTextChars) return false;
+    let wordCount = 0;
+    for (const word of trimmed.split(" ")) if (word.trim().length) wordCount += 1;
+    return wordCount >= minAdTextWords;
+  };
+
+  // Обход в том же порядке, что у Brave (сам узел, его потомки, затем следующие
+  // за ним соседи — у Brave это рекурсия по firstChild и nextSibling, и
+  // верхний узел тоже идёт к соседям), но без рекурсии: длинный список соседей
+  // не переполнит стек.
+  const isSubTreeFirstParty = (elm) => {
+    let foundThirdPartyResource = false;
+    const stack = [elm];
+    while (stack.length) {
+      const node = stack.pop();
+      if (node.getAttribute) {
+        const id = node.getAttribute("id");
+        if (id && (id.startsWith("google_ads_iframe_") || id.startsWith("div-gpt-ad") || id.startsWith("adfox_"))) return false;
+        const src = node.getAttribute("src");
+        if (src !== null) {
+          if (isFirstPartyUrl(src)) return true;
+          foundThirdPartyResource = true;
+        }
+        const style = node.getAttribute("style");
+        if (style !== null && (style.includes("url(") || style.includes("//"))) foundThirdPartyResource = true;
+        const srcdoc = node.getAttribute("srcdoc");
+        if (srcdoc !== null && srcdoc.trim() === "") foundThirdPartyResource = true;
+      }
+      if (node.nextSibling) stack.push(node.nextSibling);
+      if (node.firstChild) stack.push(node.firstChild);
+    }
+    return !foundThirdPartyResource;
+  };
+
+  const pumpCosmeticFilterQueues = () => {
+    if (queueIsSleeping) return;
+    let didPumpAnything = false;
+    for (let queueIndex = 0; queueIndex < queues.length; queueIndex += 1) {
+      const currentQueue = queues[queueIndex];
+      const nextQueue = queues[queueIndex + 1];
+      if (currentQueue.size === 0) continue;
+      const currentWorkLoad = Array.from(currentQueue.values()).slice(0, maxWorkSize);
+      let matchingElms = [];
+      try {
+        matchingElms = document.querySelectorAll(currentWorkLoad.join(","));
+      } catch (_) {
+        // Селектор в листе встал, а в querySelectorAll не разбирается — пачка
+        // остаётся спрятанной, как и была.
+      }
+      const newlyIdentifiedFirstPartySelectors = new Set();
+      for (const matchingElm of matchingElms) {
+        if (alreadyKnownFirstPartySubtrees.has(matchingElm)) continue;
+        if (!(isSubTreeFirstParty(matchingElm) || showsSignificantText(matchingElm))) continue;
+        for (const selector of currentWorkLoad) {
+          let matches = false;
+          try {
+            matches = matchingElm.matches(selector);
+          } catch (_) {
+            // Как выше: такой селектор не снимается.
+          }
+          if (!matches || alreadyUnhiddenSelectors.has(selector)) continue;
+          newlyIdentifiedFirstPartySelectors.add(selector);
+          alreadyUnhiddenSelectors.add(selector);
+        }
+        alreadyKnownFirstPartySubtrees.add(matchingElm);
+      }
+      for (const selector of newlyIdentifiedFirstPartySelectors) listed.remove(selector);
+      for (const usedSelector of currentWorkLoad) {
+        currentQueue.delete(usedSelector);
+        if (nextQueue && !newlyIdentifiedFirstPartySelectors.has(usedSelector)) nextQueue.add(usedSelector);
+      }
+      didPumpAnything = true;
+      break;
+    }
+    if (didPumpAnything) {
+      queueIsSleeping = true;
+      setTimeout(() => {
+        queueIsSleeping = false;
+        pumpOnIdle();
+      }, pumpIntervalMinMs);
+    }
+  };
+  const whenIdle = (fn, timeout) =>
+    typeof requestIdleCallback === "function" ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 0);
+  let pumpIdleId;
+  const pumpOnIdle = () => {
+    if (pumpIdleId !== undefined) return;
+    pumpIdleId = whenIdle(() => {
+      pumpIdleId = undefined;
+      pumpCosmeticFilterQueues();
+    }, pumpIntervalMaxMs);
+  };
+  const schedulePump = () => {
+    if (hasDelayOccurred) {
+      pumpOnIdle();
+      return;
+    }
+    if (startCheckingId !== undefined) return;
+    startCheckingId = whenIdle(() => {
+      hasDelayOccurred = true;
+      pumpOnIdle();
+    }, maxTimeMSBeforeStart);
+  };
+
+  /** Селекторы из списков: спрятать, а в обычном режиме — поставить в очередь проверки. */
+  const addListed = (selectors) => {
+    let queued = false;
+    for (const selector of selectors) {
+      if (!listed.add(selector) || config.aggressive) continue;
+      queues[0].add(selector);
+      queued = true;
+    }
+    attach();
+    if (queued) schedulePump();
+  };
+  addListed(Array.isArray(config.hide) ? config.hide.filter((selector) => typeof selector === "string") : []);
+
   if (!constructed && !document.documentElement) {
     new MutationObserver((_, observer) => {
       if (attach()) observer.disconnect();
@@ -376,8 +566,10 @@
       if (!bridgeNow) return false;
       bridgeNow.addEventListener("message", (event) => {
         const data = event.data;
-        if (!data || data.cmd !== "cosmetic_css" || data.origin !== location.origin || !Array.isArray(data.selectors)) return;
-        addGeneric(data.selectors.filter((selector) => typeof selector === "string"));
+        if (!data || data.cmd !== "cosmetic_css" || data.origin !== location.origin) return;
+        const strings = (list) => (Array.isArray(list) ? list.filter((selector) => typeof selector === "string") : []);
+        addForced(strings(data.force));
+        addListed(strings(data.selectors));
       });
       return true;
     };

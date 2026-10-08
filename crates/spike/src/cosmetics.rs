@@ -38,7 +38,7 @@ pub fn load_guard(bundled: &Path, downloaded: &Path) -> anyhow::Result<Guard> {
     let count = lists.len();
     let scriptlets = resources.len();
     let guard = Guard::empty();
-    guard.swap(Guard::build(lists, resources));
+    guard.swap(Guard::build(lists, String::new(), resources));
     println!(
         "lists {count}, scriptlets {scriptlets}, build {} ms",
         started.elapsed().as_millis()

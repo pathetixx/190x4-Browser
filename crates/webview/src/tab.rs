@@ -73,6 +73,12 @@ static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
 static PIP_SCRIPT: LazyLock<String> =
     LazyLock::new(|| engine_script(include_str!("inject/pip.js")));
 
+/// «Скрыть элемент»: выбор блока на странице для правила «Мои правила»
+/// (`src-tauri/src/picker.rs`). Выполняется по пункту меню, не встраивается;
+/// настройки подставляются вместо `__X4_PICKER__`.
+static PICKER_SCRIPT: LazyLock<String> =
+    LazyLock::new(|| engine_script(include_str!("inject/picker.js")));
+
 /// Защищённое видео (EME): прячет Widevine от сайтов, где он выключен, и
 /// сообщает браузеру, что видео не пошло (`src-tauri/src/drm.rs`). В каждом
 /// документе и фрейме; настройки подставляются вместо `__X4_DRM__`.
@@ -2217,6 +2223,26 @@ impl Tab {
 
     /// Вернуть видео из мини-плеера на его место на странице. `pause` —
     /// поставить его на паузу.
+    /// Открыть на странице выбор элемента для «Скрыть элемент». `config` —
+    /// JSON `{token, x, y}`: номер выбора и точка щелчка в CSS-пикселях.
+    pub fn start_picker(&self, config: &str) {
+        let script = PICKER_SCRIPT.replace("__X4_PICKER__", config);
+        let sent = unsafe {
+            self.core.ExecuteScript(
+                &HSTRING::from(script),
+                &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|code, _| {
+                    if let Err(err) = code {
+                        tracing::debug!(%err, "выбор элемента не открылся");
+                    }
+                    Ok(())
+                })),
+            )
+        };
+        if let Err(err) = sent {
+            tracing::debug!(%err, "выбор элемента не открылся");
+        }
+    }
+
     pub(crate) fn pip_exit_script(&self, pause: bool) {
         run_script(
             &self.core,

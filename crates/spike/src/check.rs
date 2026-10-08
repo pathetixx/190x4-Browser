@@ -35,7 +35,6 @@ pub fn run(page: &str, requests: &Path, bundled: &Path, downloaded: &Path) -> an
                     body.len()
                 );
             }
-            Decision::Rewrite(to) => println!("REWRITE {} -> {to}", request.url),
         }
     }
     println!("checked {}, blocked {blocked}", captured.len());

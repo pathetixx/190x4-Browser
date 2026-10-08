@@ -742,6 +742,11 @@ const BUILDERS = {
             state.adblockOn = on;
           },
         }),
+        switchSetting(
+          "adblock_aggressive",
+          "Агрессивная блокировка",
+          "Прятать и то, что сайт показывает со своего адреса. Блокирует больше, но чаще ломает сайты, а Дзен и другие замечают блокировщик и начинают прятать рекламу хитрее"
+        ),
         lists,
       ],
       { title: "Блокировка рекламы" }
@@ -755,6 +760,7 @@ const BUILDERS = {
       "quick-fixes": "Свежие правила против новых видов рекламы",
       privacy: "Скрытые счётчики и слежка между сайтами",
       unbreak: "Исключения, чтобы фильтры не ломали сайты",
+      "adguard-russian": "Реклама Яндекса, Дзена, Mail.ru, ВК и их защита от блокировщиков",
     };
     invoke("adblock_lists")
       .then((items) => {
@@ -767,7 +773,7 @@ const BUILDERS = {
               item.enabled = !item.enabled;
               node.setAttribute("aria-checked", String(item.enabled));
               const enabled = items.filter((list) => list.enabled).map((list) => list.id);
-              await setPref("adblock_lists_version", 2);
+              await setPref("adblock_lists_version", item.version ?? 2);
               await setPref("adblock_lists", enabled);
               hooks.toast("Списки фильтров пересобираются");
             });
@@ -812,6 +818,31 @@ const BUILDERS = {
           ),
         ];
     const exemptGroup = group(exemptRows, { title: "Сайты без блокировки" });
+
+    // Свои правила появляются из «Скрыть элемент» в меню страницы.
+    const userRules = pref("adblock_user_rules") ?? [];
+    const userRuleRows = userRules.length
+      ? userRules.map((rule) => {
+          const [site, selector] = String(rule).split("##");
+          return setting(
+            site,
+            selector ?? rule,
+            iconButton("delete-16", "Удалить правило — элемент снова будет виден", () =>
+              setPref(
+                "adblock_user_rules",
+                userRules.filter((entry) => entry !== rule)
+              )
+            )
+          );
+        })
+      : [
+          setting(
+            "Своих правил пока нет",
+            "Рекламу, которую пропустили списки, можно убрать самому: правый щелчок по ней → «Скрыть элемент…»",
+            el("span")
+          ),
+        ];
+    const userRulesGroup = group(userRuleRows, { title: "Мои правила" });
 
     // Разрешения хранит движок: список приходит асинхронно и перечитывается после
     // каждого сброса.
@@ -1018,6 +1049,7 @@ const BUILDERS = {
       appsGroup,
       adblockGroup,
       exemptGroup,
+      userRulesGroup,
     ];
   },
 

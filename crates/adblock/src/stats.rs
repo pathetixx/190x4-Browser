@@ -12,7 +12,6 @@ use crate::engine::Decision;
 pub struct Stats {
     checked: AtomicU64,
     blocked: AtomicU64,
-    rewritten: AtomicU64,
     nanos_total: AtomicU64,
     nanos_max: AtomicU64,
 }
@@ -27,9 +26,6 @@ impl Stats {
             Decision::Block | Decision::Redirect { .. } => {
                 self.blocked.fetch_add(1, Ordering::Relaxed);
             }
-            Decision::Rewrite(_) => {
-                self.rewritten.fetch_add(1, Ordering::Relaxed);
-            }
             Decision::Allow => {}
         }
     }
@@ -40,7 +36,6 @@ impl Stats {
         Snapshot {
             checked,
             blocked: self.blocked.load(Ordering::Relaxed),
-            rewritten: self.rewritten.load(Ordering::Relaxed),
             avg_micros: if checked == 0 {
                 0.0
             } else {
@@ -53,7 +48,6 @@ impl Stats {
     pub fn reset(&self) {
         self.checked.store(0, Ordering::Relaxed);
         self.blocked.store(0, Ordering::Relaxed);
-        self.rewritten.store(0, Ordering::Relaxed);
         self.nanos_total.store(0, Ordering::Relaxed);
         self.nanos_max.store(0, Ordering::Relaxed);
     }
@@ -63,7 +57,6 @@ impl Stats {
 pub struct Snapshot {
     pub checked: u64,
     pub blocked: u64,
-    pub rewritten: u64,
     /// Среднее время одного `check`, микросекунды.
     pub avg_micros: f64,
     /// Худший `check` за сессию — именно он виден как фриз.

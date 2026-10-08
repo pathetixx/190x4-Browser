@@ -59,15 +59,20 @@ pub fn handle_message(
     let (app, source) = (app.clone(), source.to_string());
     // Сообщение пришло на главный поток, а подбор правил ему не нужен.
     tauri::async_runtime::spawn_blocking(move || {
-        let selectors = app
+        let found = app
             .state::<App>()
             .guard
             .generic_hide(&source, &classes, &ids);
-        if selectors.is_empty() {
+        if found.is_empty() {
             return;
         }
-        let message =
-            json!({ "cmd": "cosmetic_css", "origin": origin, "selectors": selectors }).to_string();
+        let message = json!({
+            "cmd": "cosmetic_css",
+            "origin": origin,
+            "selectors": found.hide,
+            "force": found.force,
+        })
+        .to_string();
         crate::state::later(&app, tab, move |host| {
             host.with_tab(browser190x4_webview::TabId(tab), |view| {
                 if let Err(err) = view.post_to(frame, &message) {

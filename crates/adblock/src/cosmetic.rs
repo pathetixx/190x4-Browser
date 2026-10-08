@@ -6,8 +6,13 @@ use std::sync::LazyLock;
 /// Что сделать с документом.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Cosmetics {
-    /// CSS-селекторы элементов, которые прячутся.
+    /// Селекторы скрытия из списков. В обычном режиме исполнитель прячет их
+    /// сразу, но снимает с блоков, которые признал своим содержимым сайта, —
+    /// как Brave (`content_cosmetic.ts`).
     pub hide: Vec<String>,
+    /// Селекторы, которые прячутся всегда: свои правила и правила списков,
+    /// выраженные чистым CSS из процедурных.
+    pub force: Vec<String>,
     /// Правила `:style()`, которые выражаются чистым CSS: селектор и объявления.
     pub styles: Vec<(String, String)>,
     /// Процедурные правила (`:has-text`, `:upward`, `:remove()`…) — JSON движка;
@@ -17,11 +22,17 @@ pub struct Cosmetics {
     pub generic: bool,
     /// Скриптлеты вместе с зависимостями — готовый JavaScript.
     pub script: String,
+    /// Регистрируемый домен документа: по нему исполнитель отличает ресурсы
+    /// своего сайта от чужих.
+    pub site: String,
+    /// Агрессивная блокировка: правила списков прячут сразу и без проверки.
+    pub aggressive: bool,
 }
 
 impl Cosmetics {
     pub fn is_empty(&self) -> bool {
         self.hide.is_empty()
+            && self.force.is_empty()
             && self.styles.is_empty()
             && self.procedural.is_empty()
             && !self.generic
@@ -67,7 +78,7 @@ pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
         cosmetics.script.as_str()
     };
     let mut css: String = cosmetics
-        .hide
+        .force
         .iter()
         .map(|selector| format!("{selector}{{display:none!important}}\n"))
         .collect();
@@ -81,6 +92,9 @@ pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
         .collect();
     let config = serde_json::json!({
         "host": host,
+        "site": cosmetics.site,
+        "aggressive": cosmetics.aggressive,
+        "hide": cosmetics.hide,
         "css": css,
         "procedural": procedural,
         "generic": cosmetics.generic,
@@ -133,17 +147,22 @@ mod tests {
     fn script_checks_host_and_hides_selectors() {
         let cosmetics = Cosmetics {
             hide: vec![".promo".into()],
+            force: vec![".mine".into()],
             styles: vec![(".banner".into(), "height: 0".into())],
             procedural: vec![
                 r#"{"selector":[{"type":"css-selector","arg":"div"},{"type":"has-text","arg":"Реклама"}]}"#.into(),
             ],
             generic: true,
             script: "mark();".into(),
+            site: "example.com".into(),
+            aggressive: false,
         };
         let script = document_script("example.com", &cosmetics).unwrap();
         assert!(script.starts_with(r#"if (location.hostname === "example.com") {"#));
         assert!(script.contains("mark();"));
-        assert!(script.contains(r#".promo{display:none!important}"#));
+        assert!(script.contains(r#""hide":[".promo"]"#));
+        assert!(script.contains(r#".mine{display:none!important}"#));
+        assert!(script.contains(r#""site":"example.com""#));
         assert!(script.contains(r#".banner{height: 0}"#));
         assert!(script.contains(r#""type":"has-text""#));
         assert!(script.contains(r#""generic":true"#));
@@ -164,7 +183,7 @@ mod tests {
     #[test]
     fn scriptlets_with_nul_are_dropped_but_css_stays() {
         let cosmetics = Cosmetics {
-            hide: vec![".promo".into()],
+            force: vec![".promo".into()],
             script: "bad(\"\0\");".into(),
             ..Cosmetics::default()
         };

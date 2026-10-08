@@ -427,9 +427,6 @@ pub(crate) fn install(
                         )?;
                         args.SetResponse(&response)?;
                     }
-                    Decision::Rewrite(clean) => {
-                        request.SetUri(&HSTRING::from(clean))?;
-                    }
                 }
 
                 Ok(())

@@ -58,7 +58,7 @@ pub fn run(url: &str, lists_dir: &std::path::Path) -> anyhow::Result<AdblockRepo
     let started = std::time::Instant::now();
     let guard = Arc::new(Guard::empty());
     let lists_count = raw.len();
-    guard.swap(Guard::build(raw, Vec::new()));
+    guard.swap(Guard::build(raw, String::new(), Vec::new()));
     let build_ms = started.elapsed().as_millis();
 
     let mut host = Host::create(r".\spike-userdata-adblock")?;

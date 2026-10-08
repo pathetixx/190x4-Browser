@@ -1,0 +1,31 @@
+<!doctype html>
+<!--
+  Страница для проверки «Скрыть элемент» (crates/webview/src/inject/picker.js)
+  без Windows: мост chrome.webview — заглушка, щелчки — настоящие, через CDP
+  (scripts/test/picker.mjs).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>picker</title>
+    <script>
+      window.__sent = [];
+      window.__pageClicks = 0;
+      window.chrome = window.chrome || {};
+      window.chrome.webview = { postMessage: (message) => window.__sent.push(JSON.parse(JSON.stringify(message))) };
+    </script>
+    <style>
+      body { margin: 0; font: 14px sans-serif; }
+      .feed { display: grid; grid-template-columns: repeat(3, 200px); gap: 16px; padding: 16px; }
+      .card { height: 120px; background: #ddd; }
+      .promo-box { height: 120px; background: #f99; }
+    </style>
+  </head>
+  <body>
+    <div class="feed">
+      <div class="card"><a href="#news" onclick="window.__pageClicks++">новость</a></div>
+      <div class="promo-box" id="ad"><span class="promo-label">Реклама</span></div>
+      <div class="card">новость</div>
+    </div>
+  </body>
+</html>
