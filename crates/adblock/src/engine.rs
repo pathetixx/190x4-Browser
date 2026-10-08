@@ -696,23 +696,34 @@ impl Guard {
     }
 }
 
-/// Правило домена целиком из списка рекламы (`||popads.net^`, `@@||ok.example^`)
-/// — как правило документа для движка окон. Так uBlock Origin решает, что
-/// переход на домен — реклама («строгая блокировка»): правила с путём или
-/// опциями здесь не участвуют, они про ресурсы страниц, а не про окна.
+/// Правило домена целиком из списка рекламы (`||popads.net^`, `@@||ok.example^`,
+/// `||adsterra.com^$third-party`) — как правило документа для движка окон. Так
+/// uBlock Origin решает, что переход на домен — реклама («строгая блокировка»);
+/// `$third-party` здесь считается от страницы, открывшей окно. Правила с путём
+/// или другими опциями не участвуют: они про ресурсы страниц, а не про окна.
 fn host_rule(line: &str) -> Option<String> {
     let line = line.trim();
     let (exception, rest) = match line.strip_prefix("@@") {
         Some(rest) => (true, rest),
         None => (false, line),
     };
-    let host = rest.strip_prefix("||")?.strip_suffix('^')?;
+    let (pattern, party) = match rest.split_once('$') {
+        Some((pattern, "third-party" | "3p")) => (pattern, ",third-party"),
+        Some(_) => return None,
+        None => (rest, ""),
+    };
+    let host = pattern.strip_prefix("||")?.strip_suffix('^')?;
     let plain = !host.is_empty()
         && host.contains('.')
         && host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    plain.then(|| format!("{}||{host}^$document", if exception { "@@" } else { "" }))
+    plain.then(|| {
+        format!(
+            "{}||{host}^$document{party}",
+            if exception { "@@" } else { "" }
+        )
+    })
 }
 
 /// Заглушка движка — `data:<mime>;base64,<тело>` — в тип и байты ответа.
@@ -1326,7 +1337,7 @@ mod tests {
         guard.swap(Guard::build(
             vec![
                 list(
-                    "||popads.example^\n||adserver.example/path^\n||cdn.example^$script\n@@||ok.popads.example^",
+                    "||popads.example^\n||adsterra.example^$third-party\n||adserver.example/path^\n||cdn.example^$script\n@@||ok.popads.example^",
                     false,
                 ),
                 FilterList {
@@ -1337,8 +1348,11 @@ mod tests {
             Vec::new(),
         ));
         let page = "https://video.example/watch/1";
-        // Домен рекламы целиком — окно не открывается.
+        // Домен рекламы целиком — окно не открывается; `$third-party` — от
+        // страницы, открывшей окно.
         assert!(guard.blocks_popup("https://popads.example/go?z=1", page));
+        assert!(guard.blocks_popup("https://net.adsterra.example/", page));
+        assert!(!guard.blocks_popup("https://adsterra.example/next", "https://adsterra.example/"));
         assert!(guard.blocks_popup("https://www.popads.example/", page));
         // Исключение, правило с путём или типом и домен из списка слежки — открываются.
         assert!(!guard.blocks_popup("https://ok.popads.example/", page));
@@ -1364,7 +1378,11 @@ mod tests {
             host_rule("@@||ok.example^").as_deref(),
             Some("@@||ok.example^$document")
         );
-        assert_eq!(host_rule("||ads.example^$third-party"), None);
+        assert_eq!(
+            host_rule("||adsterra.example^$third-party").as_deref(),
+            Some("||adsterra.example^$document,third-party")
+        );
+        assert_eq!(host_rule("||ads.example^$script"), None);
         assert_eq!(host_rule("||ads.example/x^"), None);
         assert_eq!(host_rule("||localhost^"), None);
         assert_eq!(host_rule("example.com##.ad"), None);
