@@ -87,6 +87,12 @@ fn is_vetted_search_engine(url: &str) -> bool {
 pub struct FilterList {
     pub text: String,
     pub trusted: bool,
+    /// Защита своего содержимого сайта (`first_party_protections` в каталоге
+    /// Brave): правила списка не закрывают запросы страницы к её же сайту, а
+    /// правила скрытия проверяются, не своё ли содержимое сайта они прячут.
+    /// Список без неё — региональные, First Party, cookie, свои правила —
+    /// работает всегда и сразу.
+    pub protections: bool,
 }
 
 /// Права доверенного списка. Скриптлеты `trusted-*` помечены в ресурсах тем же
@@ -145,12 +151,15 @@ pub enum Decision {
     Redirect { mime: String, body: Vec<u8> },
 }
 
-/// Собранный фильтр: движок списков (запросы и косметика), движок окон, которые
-/// открывают страницы, и движок своих правил («Скрыть элемент»).
+/// Собранный фильтр: два движка списков, как у Brave, и движок окон, которые
+/// открывают страницы.
 ///
-/// Свои правила — отдельно, как дополнительный движок у Brave: правила списков
-/// в обычном режиме прячут только то, что исполнитель признал чужим
-/// (`cosmetic.js`), а свои — всегда и сразу.
+/// Основной (`main`, `default_engine` у Brave) — списки с защитой своего
+/// содержимого сайта: в обычном режиме их правила не трогают запросы к самому
+/// сайту, а их скрытие проверяет исполнитель (`cosmetic.js`). Дополнительный
+/// (`additional`, `additional_filters_engine`) — остальные списки и свои
+/// правила: закрывают и прячут всегда, его исключения действуют и на
+/// совпадения основного.
 ///
 /// Правила `$popup` («реклама, открывающаяся новой вкладкой») adblock-rust не
 /// понимает и выбрасывает целиком — а в EasyList и RU AdList их тысячи. Поэтому
@@ -160,7 +169,7 @@ pub enum Decision {
 pub struct Engines {
     main: Engine,
     popups: Engine,
-    user: Engine,
+    additional: Engine,
 }
 
 /// Точка входа горячего пути.
@@ -186,6 +195,12 @@ pub struct Guard {
     /// сайту, а правила скрытия из списков применять сразу, без проверки,
     /// своё ли это содержимое сайта.
     aggressive: AtomicBool,
+}
+
+/// Что решили оба движка о запросе.
+struct Verdict {
+    block: bool,
+    redirect: Option<String>,
 }
 
 /// Общие правила по классам и id страницы.
@@ -273,9 +288,9 @@ impl Guard {
     ///
     /// Берёт `Vec<String>` по значению: `FilterSet::add_filter_list` требует
     /// владения текстом, и лишний `clone` здесь — это лишние мегабайты.
-    /// `user` — свои правила, отдельным движком.
-    pub fn build(lists: Vec<FilterList>, user: String, resources: Vec<Resource>) -> Engines {
-        let mut set = FilterSet::new(false);
+    pub fn build(lists: Vec<FilterList>, resources: Vec<Resource>) -> Engines {
+        let mut protected = FilterSet::new(false);
+        let mut forced = FilterSet::new(false);
         let mut popup_rules = Vec::new();
         for list in lists {
             popup_rules.extend(list.text.lines().filter_map(popup_rule));
@@ -283,6 +298,11 @@ impl Guard {
                 TRUSTED
             } else {
                 PermissionMask::default()
+            };
+            let set = if list.protections {
+                &mut protected
+            } else {
+                &mut forced
             };
             set.add_filter_list(
                 list.text,
@@ -292,16 +312,16 @@ impl Guard {
                 },
             );
         }
-        let mut main = Engine::new_with_filter_set(set);
-        main.use_resources(resources);
+        let mut main = Engine::new_with_filter_set(protected);
+        main.use_resources(resources.clone());
+        let mut additional = Engine::new_with_filter_set(forced);
+        additional.use_resources(resources);
         let mut popups = FilterSet::new(false);
         popups.add_filter_list(popup_rules.join("\n"), ParseOptions::default());
-        let mut own = FilterSet::new(false);
-        own.add_filter_list(user, ParseOptions::default());
         Engines {
             main,
             popups: Engine::new_with_filter_set(popups),
-            user: Engine::new_with_filter_set(own),
+            additional,
         }
     }
 
@@ -309,13 +329,13 @@ impl Guard {
     /// [`Guard::restore`], не разбирая списки заново: разбор сотен тысяч
     /// правил стоит сотен миллисекунд процессора на каждом старте.
     ///
-    /// Формат: снимки движков списков, окон и своих правил подряд, перед
-    /// каждым — его длина (u32, little-endian).
+    /// Формат: снимки основного движка, движка окон и дополнительного подряд,
+    /// перед каждым — его длина (u32, little-endian).
     pub fn snapshot(engines: &Engines) -> Vec<u8> {
         let parts = [
             engines.main.serialize(),
             engines.popups.serialize(),
-            engines.user.serialize(),
+            engines.additional.serialize(),
         ];
         let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len() + 4).sum());
         for part in parts {
@@ -344,12 +364,17 @@ impl Guard {
         };
         let mut main = next()?;
         let popups = next()?;
-        let user = next()?;
+        let mut additional = next()?;
         if !rest.is_empty() {
             return None;
         }
-        main.use_resources(resources);
-        Some(Engines { main, popups, user })
+        main.use_resources(resources.clone());
+        additional.use_resources(resources);
+        Some(Engines {
+            main,
+            popups,
+            additional,
+        })
     }
 
     /// Ресурсы скриптлетов из `resources.json`.
@@ -373,13 +398,20 @@ impl Guard {
         let aggressive = self.aggressive_on(url);
         let engines = self.engine.load();
         let resources = engines.main.url_cosmetic_resources(url);
-        let own = engines.user.url_cosmetic_resources(url);
+        let own = engines.additional.url_cosmetic_resources(url);
         let mut hide: Vec<String> = if aggressive || !is_vetted_search_engine(url) {
             resources.hide_selectors.into_iter().collect()
         } else {
             Vec::new()
         };
         let mut force: Vec<String> = own.hide_selectors.into_iter().collect();
+        // Скриптлеты — из обоих: JS Fixes RU AdList, например, в дополнительном.
+        let mut script = resources.injected_script;
+        if !own.injected_script.trim().is_empty() {
+            script.push('\n');
+            script.push_str(&own.injected_script);
+        }
+        let generic = !(resources.generichide || own.generichide);
         let mut styles = Vec::new();
         let mut procedural = Vec::new();
         for raw in resources
@@ -406,8 +438,8 @@ impl Guard {
             force,
             styles,
             procedural,
-            generic: !resources.generichide,
-            script: resources.injected_script,
+            generic,
+            script,
             site: host_slice(url)
                 .map(|host| registrable_domain(host).to_ascii_lowercase())
                 .unwrap_or_default(),
@@ -485,9 +517,12 @@ impl Guard {
             Some(context) => context,
             None => {
                 let resources = engine.main.url_cosmetic_resources(document_url);
+                let own = engine.additional.url_cosmetic_resources(document_url);
+                let mut exceptions = resources.exceptions;
+                exceptions.extend(own.exceptions);
                 let context = Arc::new(GenericContext {
-                    exceptions: resources.exceptions,
-                    generichide: resources.generichide,
+                    exceptions,
+                    generichide: resources.generichide || own.generichide,
                 });
                 let mut cache = self.generic_cache.lock();
                 if cache.len() >= 64 {
@@ -510,7 +545,7 @@ impl Guard {
                 Vec::new()
             },
             force: engine
-                .user
+                .additional
                 .hidden_class_id_selectors(classes, ids, &context.exceptions),
         }
     }
@@ -550,28 +585,15 @@ impl Guard {
         }
 
         let started = std::time::Instant::now();
-
-        // Обычный режим Brave: запросы страницы к её же сайту списки не
-        // закрывают — сайт показывает своё, а блокировщик не ломает и не
-        // выдаёт себя. Агрессивный режим и YouTube — закрывают.
-        if !self.aggressive_on(source_url) && same_site(url, source_url) {
-            self.stats.record(started.elapsed(), &Decision::Allow);
-            return Decision::Allow;
-        }
-
-        let engine = self.engine.load();
         let Ok(request) = Request::new(url, source_url, kind.as_str(), method) else {
             // Невалидный URL (blob:, data:, кривая схема) — не наше дело.
             return Decision::Allow;
         };
-
-        // `$removeparam` списков Brave не применяет (адрес, переписанный
-        // посреди загрузки, ломает сайты чаще, чем защищает), и мы — тоже.
-        let result = engine.main.check_network_request(&request);
-        let decision = if result.should_block() {
+        let verdict = self.verdict(&request, url, source_url);
+        let decision = if verdict.block {
             // Заглушка есть только у правил `$redirect=`/`$redirect-rule=`, и
             // только если её ресурс пришёл с каналом фильтров.
-            match result.redirect.as_deref().and_then(decode_data_url) {
+            match verdict.redirect.as_deref().and_then(decode_data_url) {
                 Some((mime, body)) => Decision::Redirect { mime, body },
                 None => Decision::Block,
             }
@@ -588,19 +610,45 @@ impl Guard {
     /// Закроет ли фильтр такой запрос — тот же ответ, что у [`Guard::check`],
     /// но без счёта в статистике: вопрос заранее, сам запрос ещё придёт.
     pub fn blocks(&self, url: &str, source_url: &str, kind: ResourceKind) -> bool {
-        if !self.filters(source_url)
-            || (!self.aggressive_on(source_url) && same_site(url, source_url))
-        {
+        if !self.filters(source_url) {
             return false;
         }
         let Ok(request) = Request::new(url, source_url, kind.as_str(), "GET") else {
             return false;
         };
-        self.engine
-            .load()
-            .main
-            .check_network_request(&request)
-            .should_block()
+        self.verdict(&request, url, source_url).block
+    }
+
+    /// Решение по запросу — как `AdBlockEngineWrapper::ShouldStartRequest` у
+    /// Brave. Основной движок в обычном режиме запросы к своему сайту не
+    /// закрывает (его исключение при этом в силе); `$removeparam` его не
+    /// применяется. Дополнительный спрашивается всегда и знает, что основной
+    /// уже нашёл: его исключение снимает блокировку основного.
+    fn verdict(&self, request: &Request, url: &str, source_url: &str) -> Verdict {
+        let engines = self.engine.load();
+        let mut first = engines.main.check_network_request(request);
+        if !self.aggressive_on(source_url) && same_site(url, source_url) {
+            first.filter = None;
+            first.important = false;
+            first.redirect = None;
+        } else if first.important {
+            return Verdict {
+                block: true,
+                redirect: first.redirect,
+            };
+        }
+        let second = engines.additional.check_network_request_subset(
+            request,
+            first.filter.is_some(),
+            first.exception.is_some(),
+        );
+        let important = second.important;
+        let matched = first.filter.is_some() || second.filter.is_some();
+        let exception = first.exception.is_some() || second.exception.is_some();
+        Verdict {
+            block: important || (matched && !exception),
+            redirect: second.redirect.or(first.redirect),
+        }
     }
 
     /// Окно, которое страница `opener_url` открывает по адресу `url`, —
@@ -706,16 +754,22 @@ mod tests {
         FilterList {
             text: text.to_string(),
             trusted,
+            protections: true,
+        }
+    }
+
+    /// Список без защиты своего содержимого сайта: региональный, свои правила.
+    fn forced(text: &str) -> FilterList {
+        FilterList {
+            text: text.to_string(),
+            trusted: false,
+            protections: false,
         }
     }
 
     fn guard_with(rules: &str) -> Guard {
         let guard = Guard::empty();
-        guard.swap(Guard::build(
-            vec![list(rules, false)],
-            String::new(),
-            Vec::new(),
-        ));
+        guard.swap(Guard::build(vec![list(rules, false)], Vec::new()));
         guard
     }
 
@@ -756,7 +810,6 @@ mod tests {
                 "example.com##+js(mark, 1)\nexample.com##+js(trusted-mark, 2)",
                 trusted,
             )],
-            String::new(),
             resources,
         ));
         guard
@@ -954,8 +1007,8 @@ mod tests {
             vec![list(
                 "||ads.example.com^\nexample.com##.promo\nexample.com##+js(mark, 1)\n||pop.example^$popup",
                 false,
-            )],
-            "example.com##.mine".to_string(),
+            ),
+            forced("example.com##.mine")],
             resources,
         );
         let bytes = Guard::snapshot(&engine);
@@ -1062,7 +1115,6 @@ mod tests {
                  ||nostub.example^$script,redirect=missing.js",
                 false,
             )],
-            String::new(),
             Guard::parse_resources(&json).unwrap(),
         ));
         let page = "https://news.example/";
@@ -1195,8 +1247,10 @@ mod tests {
     fn user_rules_always_hide() {
         let guard = Guard::empty();
         guard.swap(Guard::build(
-            vec![list("##.list-ad", false)],
-            "dzen.ru##.mine\n##.everywhere".to_string(),
+            vec![
+                list("##.list-ad", false),
+                forced("dzen.ru##.mine\n##.everywhere"),
+            ],
             Vec::new(),
         ));
         let cosmetics = guard.cosmetics("https://dzen.ru/");
@@ -1209,6 +1263,56 @@ mod tests {
         );
         assert_eq!(found.hide, vec![".list-ad".to_string()]);
         assert_eq!(found.force, vec![".everywhere".to_string()]);
+    }
+
+    #[test]
+    fn additional_lists_work_like_brave() {
+        let guard = Guard::empty();
+        guard.swap(Guard::build(
+            vec![
+                list("||ads.example^\n||cdn.example^", false),
+                forced(
+                    "@@||cdn.example^$domain=news.example\n\
+                     ||promo.news.example^\n\
+                     news.example##.tgb-wrapper",
+                ),
+            ],
+            Vec::new(),
+        ));
+        let page = "https://news.example/";
+        // Исключение дополнительного снимает блокировку основного.
+        assert_eq!(
+            guard.check(
+                "https://cdn.example/a.js",
+                page,
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            guard.check(
+                "https://ads.example/a.js",
+                page,
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
+        );
+        // Дополнительный закрывает и запросы к самому сайту.
+        assert_eq!(
+            guard.check(
+                "https://promo.news.example/b.js",
+                page,
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
+        );
+        // Его скрытие — сразу, без проверки исполнителем.
+        let cosmetics = guard.cosmetics(page);
+        assert_eq!(cosmetics.force, vec![".tgb-wrapper".to_string()]);
+        assert!(cosmetics.hide.is_empty());
     }
 
     #[test]

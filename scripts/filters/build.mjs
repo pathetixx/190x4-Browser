@@ -26,15 +26,63 @@ import { pathToFileURL } from "node:url";
 const OUT = resolve(process.argv[2] ?? "filters-out");
 const LISTS = ["filters", "quick-fixes", "privacy", "unbreak"];
 const LIST_BASE = "https://ublockorigin.github.io/uAssets/filters/";
+// Набор списков — как каталог Brave (brave/adblock-resources,
+// filter_lists/list_catalog.json) для русского языка: те же источники, тот же
+// состав в каждом списке. Свои правила под отдельные сайты не пишутся — это
+// дело авторов списков.
+//
 // Основные списки вшиты и в установщик, но обновлять их только с выпуском
 // браузера — значит неделями жить со старыми правилами. Здесь они свежие, и
-// браузер берёт скачанную копию вместо вшитой. RU AdList — без EasyList внутри.
+// браузер берёт скачанную копию вместо вшитой. Список из нескольких
+// источников склеивается в один файл.
+const UASSETS = "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/";
+const BRAVE = "https://raw.githubusercontent.com/brave/adblock-lists/master/";
 const BASE_LISTS = {
-  "easylist.txt": "https://easylist.to/easylist/easylist.txt",
-  "easyprivacy.txt": "https://easylist.to/easylist/easyprivacy.txt",
-  "ruadlist.txt": "https://easylist-downloads.adblockplus.org/advblock+cssfixes.txt",
-  // AdGuard Russian в синтаксисе uBlock Origin — его выпускает сам AdGuard.
-  "adguard-russian.txt": "https://filters.adtidy.org/extension/ublock/filters/1.txt",
+  "easylist.txt": ["https://easylist.to/easylist/easylist.txt"],
+  "easyprivacy.txt": ["https://easylist.to/easylist/easyprivacy.txt"],
+  // RU AdList у Brave: без EasyList и без «cssfixes» (его правила-приманки
+  // Дзена будят защиту от блокировщиков), зато с JS Fixes — скриптлетами,
+  // которые эту защиту и снимают.
+  "ruadlist.txt": [
+    "https://easylist-downloads.adblockplus.org/advblock.txt",
+    "https://raw.githubusercontent.com/easylist/ruadlist/master/js-fixes-experimental.txt",
+  ],
+  // Списки самого Brave из его «Default» (без iOS и Android) и отдельно
+  // «First Party» — у Brave он без защиты своего содержимого сайта.
+  "brave.txt": [
+    `${BRAVE}brave-unbreak.txt`,
+    `${BRAVE}brave-lists/brave-specific.txt`,
+    `${BRAVE}brave-lists/brave-social.txt`,
+    `${BRAVE}brave-lists/brave-unbreak.txt`,
+    `${BRAVE}brave-lists/brave-sugarcoat.txt`,
+  ],
+  "brave-firstparty.txt": [
+    `${BRAVE}brave-lists/brave-firstparty.txt`,
+    `${BRAVE}brave-lists/brave-firstparty-regional.txt`,
+  ],
+  // «Cookie notice blocker» и «Mobile app promo blocker» — у Brave включены по умолчанию.
+  "cookies.txt": [
+    "https://secure.fanboy.co.nz/fanboy-cookiemonster_ubo.txt",
+    `${UASSETS}annoyances-cookies.txt`,
+    `${BRAVE}brave-lists/brave-cookie-specific.txt`,
+  ],
+  "mobile-promo.txt": ["https://secure.fanboy.co.nz/fanboy-mobile-notifications.txt"],
+  "urlhaus.txt": ["https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-agh-online.txt"],
+  // AdGuard Russian в синтаксисе uBlock Origin — его выпускает сам AdGuard. У
+  // Brave его нет; в браузере он по выбору, выключен.
+  "adguard-russian.txt": ["https://filters.adtidy.org/extension/ublock/filters/1.txt"],
+};
+// Из «Default» Brave, чего нет в filters.txt uBlock Origin (годовые файлы и
+// ubo-link-shorteners он подключает сам).
+const UBO_EXTRA = ["badware", "resource-abuse"];
+// Пороги «список подозрительно короткий»: обрыв выкладки не должен молча
+// превратиться в пустой фильтр.
+const MIN_LINES = {
+  "mobile-promo.txt": 20,
+  "brave.txt": 200,
+  "brave-firstparty.txt": 200,
+  "cookies.txt": 200,
+  "urlhaus.txt": 50,
 };
 const REPO = "gorhill/uBlock";
 const TRUSTED = 1;
@@ -171,8 +219,32 @@ async function scriptlets() {
     if (!names.has(required)) throw new Error(`нет скриптлета ${required}`);
   }
   resources.push(...(await redirects(tag, tmp, names)));
+  resources.push(...(await braveScriptlets(new Set(resources.flatMap((r) => [r.name, ...r.aliases])))));
   rmSync(tmp, { recursive: true, force: true });
   return { tag, resources };
+}
+
+// Скриптлеты самого Brave (brave/adblock-resources): на них ссылаются его
+// списки (`brave-fix`, `de-amp`, `vaft-ublock-origin`…), и без них эти правила
+// не работают. Описание — в их metadata.json, в формате adblock-rust.
+async function braveScriptlets(taken) {
+  const base = "https://raw.githubusercontent.com/brave/adblock-resources/master/";
+  const metadata = JSON.parse(await text(`${base}metadata.json`));
+  const out = [];
+  for (const entry of metadata) {
+    if (taken.has(entry.name) || entry.kind?.mime !== "application/javascript") continue;
+    const source = await text(`${base}resources/${entry.resourcePath}`);
+    out.push({
+      name: entry.name,
+      aliases: (entry.aliases ?? []).filter((alias) => !taken.has(alias)),
+      kind: { mime: "application/javascript" },
+      content: Buffer.from(source).toString("base64"),
+      dependencies: entry.dependencies ?? [],
+      permission: entry.permission ?? 0,
+    });
+  }
+  if (!out.some((resource) => resource.name === "brave-fix.js")) throw new Error("нет скриптлетов Brave");
+  return out;
 }
 
 // Заглушки `$redirect=`. Записи с параметрами (`click2load.html`) — страницы
@@ -220,13 +292,21 @@ const put = (name, content) => {
 const FIXES = readFileSync(new URL("./190x4-fixes.txt", import.meta.url), "utf8");
 for (const name of LISTS) {
   const url = `${LIST_BASE}${name}.txt`;
-  const list = await preprocess(await text(url), url);
+  let list = await preprocess(await text(url), url);
   if (list.split("\n").length < 50) throw new Error(`список ${name} подозрительно короткий`);
+  if (name === "filters") {
+    for (const extra of UBO_EXTRA) {
+      const extraUrl = `${LIST_BASE}${extra}.txt`;
+      list += `\n${await preprocess(await text(extraUrl), extraUrl)}`;
+    }
+  }
   put(`ubo-${name}.txt`, name === "unbreak" ? `${list}\n${FIXES}` : list);
 }
-for (const [name, url] of Object.entries(BASE_LISTS)) {
-  const list = await preprocess(await text(url), url);
-  if (list.split("\n").length < 1000) throw new Error(`список ${name} подозрительно короткий`);
+for (const [name, urls] of Object.entries(BASE_LISTS)) {
+  const parts = [];
+  for (const url of urls) parts.push(await preprocess(await text(url), url));
+  const list = parts.join("\n");
+  if (list.split("\n").length < (MIN_LINES[name] ?? 1000)) throw new Error(`список ${name} подозрительно короткий`);
   put(name, list);
 }
 const { tag, resources } = await scriptlets();
@@ -240,9 +320,15 @@ General Public License v3.0; the source is available at those addresses.
 easylist.txt, easyprivacy.txt and ruadlist.txt (RU AdList) come from EasyList
 (https://easylist.to/pages/licence.html) and are dual-licensed under the GNU
 General Public License v3.0 and Creative Commons Attribution-ShareAlike 3.0.
+ruadlist.txt also includes RU AdList JS Fixes (https://github.com/easylist/ruadlist).
 adguard-russian.txt is AdGuard Russian filter in its uBlock Origin syntax
 (https://github.com/AdguardTeam/AdguardFilters), licensed under the GNU General
 Public License v3.0.
+brave.txt and parts of cookies.txt come from Brave (https://github.com/brave/adblock-lists),
+licensed under the Mozilla Public License 2.0. cookies.txt and mobile-promo.txt
+include Fanboy's lists (https://secure.fanboy.co.nz), Creative Commons
+Attribution 3.0. urlhaus.txt is malware-filter's URLhaus list
+(https://gitlab.com/malware-filter), CC0 and MIT.
 The lists are preprocessed for 190x4 Browser: conditional directives resolved
 and includes inlined. The rules after "Исправления 190x4 Browser" at the end of
 ubo-unbreak.txt are 190x4 Browser's own.

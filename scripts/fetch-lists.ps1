@@ -13,9 +13,9 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 $lists = @{
     "easylist.txt"    = "https://easylist.to/easylist/easylist.txt"
     "easyprivacy.txt" = "https://easylist.to/easylist/easyprivacy.txt"
-    # Без EasyList внутри: он и так идёт отдельным списком, а вдвоём его
-    # правила разбирались и хранились дважды.
-    "ruadlist.txt"    = "https://easylist-downloads.adblockplus.org/advblock+cssfixes.txt"
+    # RU AdList так, как его берёт Brave: без EasyList внутри (он идёт
+    # отдельным списком) и без «cssfixes». JS Fixes приходят с каналом фильтров.
+    "ruadlist.txt"    = "https://easylist-downloads.adblockplus.org/advblock.txt"
 }
 
 foreach ($name in $lists.Keys) {

@@ -873,6 +873,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                 ListFile {
                     id: spec.id,
                     trusted: spec.trusted,
+                    protections: spec.protections,
                     optional,
                     path,
                 }
@@ -889,8 +890,8 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
 
         let started = std::time::Instant::now();
         let count = lists.iter().filter(|list| list.path.exists()).count();
-        // Свои правила («Скрыть элемент») — отдельным движком (`Engines::user`);
-        // в отпечатке снимка — их текст целиком.
+        // Свои правила («Скрыть элемент») — в дополнительный движок; в
+        // отпечатке снимка — их текст целиком.
         let user = picker::user_rules(&store).join("\n");
         let key = format!(
             "{}\nuser {}",
@@ -913,6 +914,7 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                         Ok(text) => texts.push(FilterList {
                             text,
                             trusted: list.trusted,
+                            protections: list.protections,
                         }),
                         Err(err) => {
                             // Скачанного списка нет до первого обновления фильтров.
@@ -922,7 +924,16 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                         }
                     }
                 }
-                Guard::build(texts, user, resources())
+                // Свои правила — как у Brave: в дополнительный движок, без
+                // защиты своего содержимого сайта.
+                if !user.is_empty() {
+                    texts.push(FilterList {
+                        text: user,
+                        trusted: false,
+                        protections: false,
+                    });
+                }
+                Guard::build(texts, resources())
             }
         };
         if FILTER_BUILD.load(Ordering::SeqCst) != build {
@@ -958,12 +969,13 @@ const SNAPSHOT_KEY: &str = "engine.key";
 /// Как собран движок: сменился разбор правил (процедурная косметика, правила
 /// окон `$popup`) — снимок прежней сборки не годится, даже если версия браузера
 /// та же.
-const SNAPSHOT_FORMAT: &str = "user-engine-2";
+const SNAPSHOT_FORMAT: &str = "brave-engines-3";
 
 /// Включённый список фильтров и файл, из которого он читается.
 struct ListFile {
     id: String,
     trusted: bool,
+    protections: bool,
     /// Скачиваемый список: до первого обновления фильтров его может не быть.
     optional: bool,
     path: std::path::PathBuf,

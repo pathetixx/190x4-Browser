@@ -22,6 +22,7 @@ pub fn load_guard(bundled: &Path, downloaded: &Path) -> anyhow::Result<Guard> {
             Ok(text) => lists.push(FilterList {
                 text,
                 trusted: spec.trusted,
+                protections: spec.protections,
             }),
             Err(err) => eprintln!("нет списка {}: {err}", path.display()),
         }
@@ -38,7 +39,7 @@ pub fn load_guard(bundled: &Path, downloaded: &Path) -> anyhow::Result<Guard> {
     let count = lists.len();
     let scriptlets = resources.len();
     let guard = Guard::empty();
-    guard.swap(Guard::build(lists, String::new(), resources));
+    guard.swap(Guard::build(lists, resources));
     println!(
         "lists {count}, scriptlets {scriptlets}, build {} ms",
         started.elapsed().as_millis()
