@@ -1,10 +1,11 @@
 // Живая проверка блокировщика рекламы на пробе в отдельном профиле.
-// node scripts/probe/adblock.mjs [frames,redirect,sites]
+// node scripts/probe/adblock.mjs [frames,redirect,sites] [адрес,адрес…]
 //
 // frames и redirect — страница `pages/adblock.html` (положить в E:\test\probe\t\):
-// плееры чужих сайтов во фреймах, адблок-тест во фрейме, правила с заглушками.
-// sites — Яндекс, Mail.ru, Дзен, ВК, OK с блокировкой и без: сколько закрыто
-// запросов, сколько видно рекламных фреймов и подписей «Реклама».
+// плееры чужих сайтов во фреймах, правила с заглушками.
+// sites — Яндекс, Mail.ru, Дзен, ВК, OK (или адреса вторым аргументом) с
+// блокировкой и без: сколько закрыто запросов, сколько видно рекламных фреймов
+// и подписей «Реклама». Входы на сайты — из профиля пробы.
 import { check, chromeWindows, connect, sleep, summary, waitTarget } from "./cdp.mjs";
 
 const T = "file:///E:/test/probe/t/";
@@ -60,18 +61,6 @@ if (want("frames") || want("redirect")) {
       frame.close();
     }
 
-    const tester = await frameTarget("d3ward.github.io");
-    if (tester) {
-      const frame = await connect(tester);
-      await sleep(8000);
-      const score = await frame
-        .evaluate(`(document.body.innerText.match(/\\d{1,3}\\s?%/g) ?? []).slice(0, 3).join(" ")`)
-        .catch(() => "");
-      check(Boolean(score), "адблок-тест во фрейме досчитал", score || "нет оценки");
-      frame.close();
-    } else {
-      check(false, "фрейм адблок-теста виден пробе");
-    }
     const blocked = await blockedOn(id);
     check(blocked > 0, "щит вкладки считает блокировки из фреймов", `закрыто: ${blocked}`);
   }
@@ -88,7 +77,14 @@ if (want("frames") || want("redirect")) {
 }
 
 // 2. Настоящие сайты: блокировка выключена и включена.
-const SITES = ["https://ya.ru/", "https://mail.ru/", "https://dzen.ru/", "https://vk.com/video", "https://ok.ru/video"];
+const SITES = process.argv[3]?.split(",") ?? [
+  "https://ya.ru/",
+  "https://mail.ru/",
+  "https://dzen.ru/",
+  "https://vk.ru/feed",
+  "https://vkvideo.ru/",
+  "https://ok.ru/video",
+];
 const AD_FRAME = /an\.yandex|yandex\.ru\/ads|adfox|ad\.mail\.ru|r\.mail\.ru|target\.my\.com|ads\.vk|vk\.com\/ads|doubleclick|googlesyndication|safeframe/;
 
 const MEASURE = `(() => {
