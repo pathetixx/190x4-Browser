@@ -32,9 +32,9 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
     COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
 };
@@ -99,24 +99,6 @@ pub fn map_context(context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT, main_frame: bool)
     }
 }
 
-/// Типы запросов, которые разбирает фильтр. Медиа — тоже: рекламный ролик
-/// плеер берёт обычным `<video>` с рекламного сервера, и правила `$media` с
-/// заглушками (`noop-1s.mp4`, беззвучный mp3) написаны ровно про это. Цена —
-/// поход через главный поток на каждый range-запрос ролика, микросекунды.
-const FILTERED: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 11] = [
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
-];
-
 /// Подписать вкладку на запросы для фильтра или снять подписку.
 ///
 /// Каждый запрос, попавший под подписку, движок отдаёт главному потоку и ждёт
@@ -125,34 +107,33 @@ const FILTERED: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 11] = [
 /// выключенной блокировке её нет вовсе. Плейлисты Twitch подписаны отдельно
 /// и всегда (`install`).
 ///
-/// Подписка — на все источники запросов (`ICoreWebView2_22`). Движок старше
-/// 1.0.2365 этого не умеет: тогда — прежняя, только главный документ и фреймы
-/// его сайта. Снимается подписка тем же способом, каким ставилась.
+/// Подписка одна — на все типы ресурсов (`CONTEXT_ALL`), медиа тоже: рекламный
+/// ролик плеер берёт обычным `<video>`, и правила `$media` с заглушками
+/// написаны про это. Подписки на отдельные типы (`DOCUMENT`, `SCRIPT`…) движок
+/// принимает без ошибки, но событий по ним не присылает вовсе — так в 0.9.0
+/// фильтр не видел ни одного запроса (проверено пробой на рантайме 154).
+///
+/// И на все источники запросов (`ICoreWebView2_22`): главный документ, фреймы
+/// любых сайтов, service worker и shared worker. Движок старше 1.0.2365 этого
+/// не умеет: тогда — прежняя подписка, только главный документ и фреймы его
+/// сайта. Снимается подписка тем же способом, каким ставилась.
 pub(crate) fn set_filtering(core: &ICoreWebView2, on: bool) -> windows_core::Result<()> {
-    let all_sources = core.cast::<ICoreWebView2_22>().ok();
-    let mut result = Ok(());
-    for context in FILTERED {
-        let done = unsafe {
-            match (&all_sources, on) {
-                (Some(core), true) => core.AddWebResourceRequestedFilterWithRequestSourceKinds(
-                    h!("*"),
-                    context,
-                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-                ),
-                (Some(core), false) => core.RemoveWebResourceRequestedFilterWithRequestSourceKinds(
-                    h!("*"),
-                    context,
-                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-                ),
-                (None, true) => core.AddWebResourceRequestedFilter(h!("*"), context),
-                (None, false) => core.RemoveWebResourceRequestedFilter(h!("*"), context),
+    let context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+    let sources = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL;
+    unsafe {
+        match (core.cast::<ICoreWebView2_22>().ok(), on) {
+            (Some(core), true) => {
+                core.AddWebResourceRequestedFilterWithRequestSourceKinds(h!("*"), context, sources)
             }
-        };
-        if result.is_ok() {
-            result = done;
+            (Some(core), false) => core.RemoveWebResourceRequestedFilterWithRequestSourceKinds(
+                h!("*"),
+                context,
+                sources,
+            ),
+            (None, true) => core.AddWebResourceRequestedFilter(h!("*"), context),
+            (None, false) => core.RemoveWebResourceRequestedFilter(h!("*"), context),
         }
     }
-    result
 }
 
 /// Счётчик заблокированного на вкладке: его показывает щит в адресной строке.
