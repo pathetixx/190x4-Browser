@@ -427,25 +427,26 @@ impl PendingPopup {
     }
 }
 
-/// Переход, который страница начала сама: новый документ (не перезагрузка и не
-/// «Назад»), не по щелчку человека.
-fn is_page_redirect(
+/// Переход страницы на новый документ (не перезагрузка и не «Назад»):
+/// `Some(true)` — после щелчка человека, `Some(false)` — страница сама.
+fn page_navigation(
     args: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2NavigationStartingEventArgs,
-) -> bool {
+) -> Option<bool> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2NavigationStartingEventArgs3, COREWEBVIEW2_NAVIGATION_KIND,
         COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT,
     };
-    let mut user = BOOL::default();
-    if unsafe { args.IsUserInitiated(&mut user) }.is_err() || user.as_bool() {
-        return false;
-    }
-    let Ok(args3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() else {
-        return false;
-    };
+    let args3 = args
+        .cast::<ICoreWebView2NavigationStartingEventArgs3>()
+        .ok()?;
     let mut kind = COREWEBVIEW2_NAVIGATION_KIND::default();
-    unsafe { args3.NavigationKind(&mut kind) }.is_ok()
-        && kind == COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT
+    unsafe { args3.NavigationKind(&mut kind) }.ok()?;
+    if kind != COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT {
+        return None;
+    }
+    let mut user = BOOL::default();
+    unsafe { args.IsUserInitiated(&mut user) }.ok()?;
+    Some(user.as_bool())
 }
 
 /// Сколько окно страницы сверяется с правилами окон на каждом переходе:
@@ -1790,18 +1791,22 @@ impl Tab {
                         }
                     }
                     // Подмена страницы (popunder): сайт открывает видео в новой
-                    // вкладке, а эту сам, без действия человека, уводит на
-                    // рекламный домен. Такой переход отменяется — вкладка
-                    // остаётся на месте, как у uBlock Origin. Переходы браузера
-                    // (адресная строка, перезагрузка, «Назад») и по щелчку не
-                    // трогаются.
+                    // вкладке, а эту уводит на рекламу — сам или из обработчика
+                    // щелчка по плееру. Такой переход отменяется, вкладка
+                    // остаётся на месте. Без щелчка — по всем правилам окон, со
+                    // щелчком — только на домен рекламной сети целиком: обычные
+                    // ссылки сайта работают. Переходы браузера (адресная строка,
+                    // перезагрузка, «Назад») не трогаются.
                     let from_browser = browser_navigation.replace(false);
                     let current = source.borrow().clone();
-                    if !from_browser
+                    let ad = !from_browser
                         && current.starts_with("http")
-                        && is_page_redirect(&args)
-                        && popup_guard.blocks_popup(&url, &current)
-                    {
+                        && match page_navigation(&args) {
+                            Some(false) => popup_guard.blocks_popup(&url, &current),
+                            Some(true) => popup_guard.blocks_ad_host(&url, &current),
+                            None => false,
+                        };
+                    if ad {
                         args.SetCancel(true)?;
                         tracing::debug!(
                             tab = id,

@@ -972,7 +972,7 @@ const SNAPSHOT_KEY: &str = "engine.key";
 /// Как собран движок: сменился разбор правил (процедурная косметика, правила
 /// окон `$popup`) — снимок прежней сборки не годится, даже если версия браузера
 /// та же.
-const SNAPSHOT_FORMAT: &str = "popup-hosts-4";
+const SNAPSHOT_FORMAT: &str = "ad-hosts-5";
 
 /// Включённый список фильтров и файл, из которого он читается.
 struct ListFile {

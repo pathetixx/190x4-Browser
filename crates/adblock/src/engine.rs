@@ -174,6 +174,9 @@ pub enum Decision {
 pub struct Engines {
     main: Engine,
     popups: Engine,
+    /// Только домены рекламных сетей целиком ([`host_rule`]): на них вкладку
+    /// не уводит даже скрипт из обработчика щелчка.
+    ad_hosts: Engine,
     additional: Engine,
 }
 
@@ -297,10 +300,11 @@ impl Guard {
         let mut protected = FilterSet::new(false);
         let mut forced = FilterSet::new(false);
         let mut popup_rules = Vec::new();
+        let mut host_rules = Vec::new();
         for list in lists {
             popup_rules.extend(list.text.lines().filter_map(popup_rule));
             if list.ads {
-                popup_rules.extend(list.text.lines().filter_map(host_rule));
+                host_rules.extend(list.text.lines().filter_map(host_rule));
             }
             let permissions = if list.trusted {
                 TRUSTED
@@ -324,11 +328,16 @@ impl Guard {
         main.use_resources(resources.clone());
         let mut additional = Engine::new_with_filter_set(forced);
         additional.use_resources(resources);
+        let hosts = host_rules.join("\n");
         let mut popups = FilterSet::new(false);
         popups.add_filter_list(popup_rules.join("\n"), ParseOptions::default());
+        popups.add_filter_list(hosts.clone(), ParseOptions::default());
+        let mut ad_hosts = FilterSet::new(false);
+        ad_hosts.add_filter_list(hosts, ParseOptions::default());
         Engines {
             main,
             popups: Engine::new_with_filter_set(popups),
+            ad_hosts: Engine::new_with_filter_set(ad_hosts),
             additional,
         }
     }
@@ -337,12 +346,14 @@ impl Guard {
     /// [`Guard::restore`], не разбирая списки заново: разбор сотен тысяч
     /// правил стоит сотен миллисекунд процессора на каждом старте.
     ///
-    /// Формат: снимки основного движка, движка окон и дополнительного подряд,
+    /// Формат: снимки основного движка, движка окон, доменов рекламных сетей и
+    /// дополнительного подряд,
     /// перед каждым — его длина (u32, little-endian).
     pub fn snapshot(engines: &Engines) -> Vec<u8> {
         let parts = [
             engines.main.serialize(),
             engines.popups.serialize(),
+            engines.ad_hosts.serialize(),
             engines.additional.serialize(),
         ];
         let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len() + 4).sum());
@@ -372,6 +383,7 @@ impl Guard {
         };
         let mut main = next()?;
         let popups = next()?;
+        let ad_hosts = next()?;
         let mut additional = next()?;
         if !rest.is_empty() {
             return None;
@@ -381,6 +393,7 @@ impl Guard {
         Some(Engines {
             main,
             popups,
+            ad_hosts,
             additional,
         })
     }
@@ -691,6 +704,25 @@ impl Guard {
         self.engine
             .load()
             .popups
+            .check_network_request(&request)
+            .should_block()
+    }
+
+    /// Адрес `url` — домен рекламной сети целиком (`||popads.net^`,
+    /// `||adsterra.com^$third-party` от страницы `from_url`). На такой домен
+    /// страница не уводит вкладку даже из обработчика щелчка: так реклама
+    /// подменяет плеер, по которому щёлкнули. Правила `$popup` сюда не входят —
+    /// они про окна, а ссылки сайта по щелчку должны работать.
+    pub fn blocks_ad_host(&self, url: &str, from_url: &str) -> bool {
+        if !self.filters(from_url) {
+            return false;
+        }
+        let Ok(request) = Request::new(url, from_url, "document", "GET") else {
+            return false;
+        };
+        self.engine
+            .load()
+            .ad_hosts
             .check_network_request(&request)
             .should_block()
     }
@@ -1152,6 +1184,9 @@ mod tests {
         // Плеер, который открывает чужие окна, — только его окна.
         let player = "https://player.example/watch/1";
         assert!(guard.blocks_popup("https://any.example/", player));
+        // Ссылки плеера по щелчку — не домены рекламных сетей.
+        assert!(!guard.blocks_ad_host("https://any.example/", player));
+        assert!(!guard.blocks_ad_host("https://ads.example/", page));
         assert!(!guard.blocks_popup("https://ok.example/", player));
         assert!(!guard.blocks_popup("https://player.example/next", player));
         // Сайт в исключениях — как с выключенной блокировкой.
@@ -1360,6 +1395,11 @@ mod tests {
         assert!(guard.blocks_popup("https://net.adsterra.example/", page));
         assert!(!guard.blocks_popup("https://adsterra.example/next", "https://adsterra.example/"));
         assert!(guard.blocks_popup("https://www.popads.example/", page));
+        // Домены сетей уводят вкладку и по щелчку — переход отменяется.
+        assert!(guard.blocks_ad_host("https://popads.example/go", page));
+        assert!(guard.blocks_ad_host("https://net.adsterra.example/", page));
+        assert!(!guard.blocks_ad_host("https://ok.popads.example/", page));
+        assert!(!guard.blocks_ad_host("https://counter.example/", page));
         // `$badfilter` снимает правило целиком, остаётся только `$3p`.
         assert!(guard.blocks_popup("https://exo.example/", page));
         assert!(!guard.blocks_popup("https://exo.example/next", "https://exo.example/"));
