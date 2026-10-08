@@ -699,19 +699,25 @@ impl Guard {
 /// Правило домена целиком из списка рекламы (`||popads.net^`, `@@||ok.example^`,
 /// `||adsterra.com^$third-party`) — как правило документа для движка окон. Так
 /// uBlock Origin решает, что переход на домен — реклама («строгая блокировка»);
-/// `$third-party` здесь считается от страницы, открывшей окно. Правила с путём
-/// или другими опциями не участвуют: они про ресурсы страниц, а не про окна.
+/// `$third-party` здесь считается от страницы, открывшей окно, а `$badfilter`
+/// отменяет такое же правило другого списка. Правила с путём или другими
+/// опциями не участвуют: они про ресурсы страниц, а не про окна.
 fn host_rule(line: &str) -> Option<String> {
     let line = line.trim();
     let (exception, rest) = match line.strip_prefix("@@") {
         Some(rest) => (true, rest),
         None => (false, line),
     };
-    let (pattern, party) = match rest.split_once('$') {
-        Some((pattern, "third-party" | "3p")) => (pattern, ",third-party"),
-        Some(_) => return None,
-        None => (rest, ""),
-    };
+    let (pattern, options) = rest.split_once('$').unwrap_or((rest, ""));
+    let (mut party, mut bad) = ("", "");
+    for option in options.split(',').filter(|o| !o.is_empty()) {
+        match option {
+            "third-party" | "3p" => party = ",third-party",
+            "badfilter" => bad = ",badfilter",
+            "doc" | "document" => {}
+            _ => return None,
+        }
+    }
     let host = pattern.strip_prefix("||")?.strip_suffix('^')?;
     let plain = !host.is_empty()
         && host.contains('.')
@@ -720,7 +726,7 @@ fn host_rule(line: &str) -> Option<String> {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     plain.then(|| {
         format!(
-            "{}||{host}^$document{party}",
+            "{}||{host}^$document{party}{bad}",
             if exception { "@@" } else { "" }
         )
     })
@@ -1340,6 +1346,7 @@ mod tests {
                     "||popads.example^\n||adsterra.example^$third-party\n||adserver.example/path^\n||cdn.example^$script\n@@||ok.popads.example^",
                     false,
                 ),
+                list("||exo.example^\n||exo.example^$badfilter\n||exo.example^$3p", false),
                 FilterList {
                     ads: false,
                     ..list("||counter.example^", false)
@@ -1354,6 +1361,9 @@ mod tests {
         assert!(guard.blocks_popup("https://net.adsterra.example/", page));
         assert!(!guard.blocks_popup("https://adsterra.example/next", "https://adsterra.example/"));
         assert!(guard.blocks_popup("https://www.popads.example/", page));
+        // `$badfilter` снимает правило целиком, остаётся только `$3p`.
+        assert!(guard.blocks_popup("https://exo.example/", page));
+        assert!(!guard.blocks_popup("https://exo.example/next", "https://exo.example/"));
         // Исключение, правило с путём или типом и домен из списка слежки — открываются.
         assert!(!guard.blocks_popup("https://ok.popads.example/", page));
         assert!(!guard.blocks_popup("https://adserver.example/path", page));
@@ -1381,6 +1391,10 @@ mod tests {
         assert_eq!(
             host_rule("||adsterra.example^$third-party").as_deref(),
             Some("||adsterra.example^$document,third-party")
+        );
+        assert_eq!(
+            host_rule("||ads.example^$doc,badfilter").as_deref(),
+            Some("||ads.example^$document,badfilter")
         );
         assert_eq!(host_rule("||ads.example^$script"), None);
         assert_eq!(host_rule("||ads.example/x^"), None);
