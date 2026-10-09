@@ -95,6 +95,42 @@
     );
   }
 
+  /* ── Прозрачный слой поверх страницы ─────────────────────── */
+
+  // Реклама «по щелчку» держит над плеером или страницей пустые прозрачные
+  // блоки с огромным z-index и время от времени растягивает их поверх видео:
+  // щелчок по такому блоку открывает рекламу, а до плеера не доходит. Такой
+  // блок — без содержимого, фона и картинки, поверх большой части окна —
+  // пропускает мышь насквозь. Во фрейме чужого сайта (плеер) порог z-index
+  // ниже, на странице — только «поверх всего».
+  const catcherZ = config.popups ? 100 : 1e6;
+  const transparent = (style) =>
+    +style.opacity < 0.05 || style.backgroundColor === "transparent" || /^rgba\(.*,\s*0(?:\.0+)?\)$/.test(style.backgroundColor);
+  const catcher = (el) => {
+    if (!(el instanceof HTMLElement) || el === document.body || el === document.documentElement) return false;
+    if (el.childElementCount || el.textContent.trim()) return false;
+    if (/^(?:IMG|VIDEO|AUDIO|CANVAS|IFRAME|EMBED|OBJECT|INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName)) return false;
+    const style = getComputedStyle(el);
+    if (style.position !== "absolute" && style.position !== "fixed") return false;
+    if ((parseInt(style.zIndex, 10) || 0) < catcherZ) return false;
+    if (style.backgroundImage !== "none" || !transparent(style)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width * rect.height >= 0.2 * innerWidth * innerHeight;
+  };
+  const passThrough = (event) => {
+    const el = event.target;
+    if (!catcher(el)) return;
+    el.style.setProperty("pointer-events", "none", "important");
+    // Мышь уже нажата на слое: этот щелчок не отдаём ни слою, ни рекламе.
+    if (event.type !== "pointerover") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  };
+  for (const type of ["pointerover", "pointerdown", "mousedown", "click"]) {
+    window.addEventListener(type, passThrough, true);
+  }
+
   /* ── Стили ──────────────────────────────────────────────────── */
 
   // Листы стилей — сконструированные (`adoptedStyleSheets`), как у Brave

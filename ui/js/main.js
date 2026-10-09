@@ -321,6 +321,7 @@ listen("tab", (event) => {
       // а посещение всё равно записать нужно.
       const tab = state.tabs.get(event.id);
       if (event.ok && tab) recordVisit(event.id, tab.url, tab.title);
+      if (heldPopups.has(event.id)) settlePopup(event.id);
       break;
     }
     case "title":
@@ -498,11 +499,40 @@ function onPagePopup({ opener, url, token, user_initiated: userInitiated, backgr
   // Щелчок по target=_blank переключает на вкладку, а Ctrl+щелчок и «Открыть
   // ссылку в новой вкладке» из меню оставляют её в фоне.
   // Место в строке — за страницей-родителем и открытыми ею раньше (tabs.js).
-  open(url, {
-    background: background || fromMenu || middle,
-    popup: token,
-    opener,
-  }).catch(() => invoke("tab_popup_deny", { opener, token }).catch(() => {}));
+  const behind = background || fromMenu || middle;
+  open(url, { background: true, popup: token, opener })
+    .then((id) => {
+      if (!behind) holdPopup(id, opener);
+    })
+    .catch(() => invoke("tab_popup_deny", { opener, token }).catch(() => {}));
+}
+
+/**
+ * Окно страницы показывается не сразу, а когда его страница загрузилась и
+ * никуда не ушла: реклама уходит на рекламный адрес переадресацией (и
+ * скриптом сразу после загрузки), и такое окно браузер закрывает ещё фоном
+ * (`PopupWatch`) — вкладка с плеером остаётся на экране. Окно, которое так и
+ * не загрузилось за 2 с, — тогда.
+ */
+const heldPopups = new Map();
+
+function holdPopup(id, opener) {
+  heldPopups.set(id, opener);
+  setTimeout(() => revealPopup(id), 2000);
+}
+
+function settlePopup(id) {
+  setTimeout(() => {
+    if (state.tabs.get(id)?.loading === false) revealPopup(id);
+  }, 400);
+}
+
+function revealPopup(id) {
+  if (!heldPopups.has(id)) return;
+  const opener = heldPopups.get(id);
+  heldPopups.delete(id);
+  // Человек уже ушёл со страницы, открывшей окно, — не выдёргиваем его.
+  if (state.tabs.has(id) && state.activeId === opener) activate(id);
 }
 
 /**
