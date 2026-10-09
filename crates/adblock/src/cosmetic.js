@@ -26,6 +26,75 @@
     return;
   }
 
+  /* ── Окна фрейма чужого сайта ──────────────────────────────── */
+
+  // Плеер на чужом домене открывает рекламу в новой вкладке скриптом по
+  // щелчку: `window.open` на третий сайт или невидимая ссылка с `target`,
+  // по которой «щёлкает» сам скрипт. Домены такой рекламы меняются каждый
+  // день, и правил на них нет. Поэтому во фрейме чужого сайта (popups) окно
+  // на чужой сайт скрипт не открывает: ему достаётся пустое окно-заглушка,
+  // которое через секунду закрывается, — на отказ (`null`) реклама отвечает
+  // новыми попытками на каждом щелчке. Ссылки, по которым щёлкнул человек,
+  // работают как обычно, окна на свой сайт (вход через Google, VK, Telegram) —
+  // тоже.
+  if (config.popups && window !== window.top) {
+    const own = (host) => host === config.site || host.endsWith("." + config.site);
+    const foreign = (raw) => {
+      try {
+        const url = new URL(String(raw), location.href);
+        return /^https?:$/.test(url.protocol) && !own(url.hostname);
+      } catch (_) {
+        return false;
+      }
+    };
+    const decoy = () => {
+      const frame = document.createElement("iframe");
+      frame.style.display = "none";
+      (document.body || document.documentElement).append(frame);
+      const opened = frame.contentWindow;
+      setTimeout(() => frame.remove(), 1000);
+      return opened;
+    };
+    const open = window.open;
+    const guarded = new Proxy(open, {
+      apply(target, self, args) {
+        if (args.length && foreign(args[0])) return decoy();
+        return Reflect.apply(target, window, args);
+      },
+    });
+    const install = (win) => {
+      try {
+        if (win && win.open !== guarded) {
+          Object.defineProperty(win, "open", { value: guarded, writable: true, configurable: true });
+        }
+      } catch (_) {}
+    };
+    install(window);
+    // Свежий пустой фрейм — обход: его `open` ещё родной.
+    const frameWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
+    if (frameWindow && frameWindow.get) {
+      Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+        ...frameWindow,
+        get() {
+          const win = frameWindow.get.call(this);
+          install(win);
+          return win;
+        },
+      });
+    }
+    // Ссылку на чужой сайт в новом окне «нажал» скрипт (`a.click()`,
+    // `dispatchEvent`) — не человек.
+    window.addEventListener(
+      "click",
+      (event) => {
+        if (event.isTrusted) return;
+        const link = event.target instanceof Element && event.target.closest("a[href], area[href]");
+        if (link && link.target && link.target !== "_self" && foreign(link.href)) event.preventDefault();
+      },
+      true
+    );
+  }
+
   /* ── Стили ──────────────────────────────────────────────────── */
 
   // Листы стилей — сконструированные (`adoptedStyleSheets`), как у Brave

@@ -27,6 +27,10 @@ pub struct Cosmetics {
     pub site: String,
     /// Агрессивная блокировка: правила списков прячут сразу и без проверки.
     pub aggressive: bool,
+    /// Документ — фрейм чужого сайта на странице (плеер на другом домене):
+    /// его скрипты не открывают окон на третьи сайты, страница получает
+    /// заглушку. Так реклама «по щелчку» в плеерах открывает новые вкладки.
+    pub popups: bool,
 }
 
 impl Cosmetics {
@@ -36,6 +40,7 @@ impl Cosmetics {
             && self.styles.is_empty()
             && self.procedural.is_empty()
             && !self.generic
+            && !self.popups
             && self.script.trim().is_empty()
     }
 }
@@ -98,6 +103,7 @@ pub fn document_script(host: &str, cosmetics: &Cosmetics) -> Option<String> {
         "css": css,
         "procedural": procedural,
         "generic": cosmetics.generic,
+        "popups": cosmetics.popups,
     })
     .to_string();
     let host = serde_json::to_string(host).ok()?;
@@ -156,6 +162,7 @@ mod tests {
             script: "mark();".into(),
             site: "example.com".into(),
             aggressive: false,
+            popups: false,
         };
         let script = document_script("example.com", &cosmetics).unwrap();
         assert!(script.starts_with(r#"if (location.hostname === "example.com") {"#));
@@ -178,6 +185,17 @@ mod tests {
         };
         assert!(!cosmetics.is_empty());
         assert!(document_script("example.com", &cosmetics).is_some());
+    }
+
+    #[test]
+    fn foreign_frames_get_a_script_for_windows() {
+        let cosmetics = Cosmetics {
+            popups: true,
+            site: "player.example".into(),
+            ..Cosmetics::default()
+        };
+        let script = document_script("player.example", &cosmetics).unwrap();
+        assert!(script.contains(r#""popups":true"#));
     }
 
     #[test]

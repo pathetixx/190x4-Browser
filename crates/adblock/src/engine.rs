@@ -483,12 +483,27 @@ impl Guard {
             .hide
             .iter()
             .any(|selector| !generic.contains(selector));
-        (specific
+        let rules = specific
             || !cosmetics.force.is_empty()
             || !cosmetics.styles.is_empty()
             || !cosmetics.procedural.is_empty()
-            || !cosmetics.script.trim().is_empty())
-        .then_some(cosmetics)
+            || !cosmetics.script.trim().is_empty();
+        // Фрейм чужого сайта скрипт получает всегда — ради окон (`popups`).
+        let popups = !same_site(url, page_url);
+        if rules {
+            Some(Cosmetics {
+                popups,
+                ..cosmetics
+            })
+        } else if popups {
+            Some(Cosmetics {
+                popups,
+                site: cosmetics.site,
+                ..Cosmetics::default()
+            })
+        } else {
+            None
+        }
     }
 
     /// Общие сложные селекторы текущего движка: косметика адреса, на который не
@@ -1253,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn only_frames_with_own_rules_get_cosmetics() {
+    fn frames_get_own_rules_and_window_guard() {
         let guard = guard_with(
             "##div[id^=\"ad-\"]\n\
              player.example##.overlay-ad\n\
@@ -1266,9 +1281,18 @@ mod tests {
         assert!(guard
             .frame_cosmetics("https://proc.example/", page)
             .is_some());
-        // Только общие правила — фрейму скрипт не нужен.
         assert!(guard
+            .frame_cosmetics("https://player.example/embed/1", page)
+            .is_some_and(|c| c.popups));
+        // Только общие правила: чужому фрейму — лишь защита окон, без
+        // косметики; своему — ничего.
+        let plain = guard
             .frame_cosmetics("https://plain.example/", page)
+            .unwrap();
+        assert!(plain.popups && plain.hide.is_empty() && !plain.generic);
+        assert_eq!(plain.site, "plain.example");
+        assert!(guard
+            .frame_cosmetics("https://cdn.news.example/embed", page)
             .is_none());
         // Страница без блокировки — и её фреймы без косметики.
         guard.set_exempt_sites(["news.example".to_string()]);
