@@ -1,5 +1,5 @@
 // Живая проверка блокировщика рекламы на пробе в отдельном профиле.
-// node scripts/probe/adblock.mjs [frames,redirect,sites,windows] [адрес,адрес…]
+// node scripts/probe/adblock.mjs [frames,redirect,sites,windows,overlay] [адрес,адрес…]
 //
 // frames и redirect — страница `pages/adblock.html` (положить в E:\test\probe\t\):
 // плееры чужих сайтов во фреймах, правила с заглушками.
@@ -208,6 +208,48 @@ if (want("windows")) {
   await sleep(3500);
   const typed = await ui(`${S} const t = state.tabs.get(${id}); return { url: String(t?.url), title: String(t?.title) };`);
   console.log("  адрес рекламной сети в адресной строке:", JSON.stringify(typed));
+  await closeTab(id);
+}
+
+// 5. Рекламный слой и показ окон: пустой прозрачный блок «поверх всего»
+//    пропускает щелчок насквозь; окно страницы показывается, когда загрузилось.
+if (want("overlay")) {
+  const tabsNow = () => ui(`${S} return { active: state.activeId, urls: [...state.tabs.values()].map(t => String(t.url)) };`);
+  const opener = "https://example.com/?overlay";
+  const id = await openTab(opener);
+  const page = await connect(await waitTarget((t) => t.type === "page" && t.url.startsWith(opener)));
+  await sleep(2500);
+  await page.evaluate(`(() => {
+    window.hits = { layer: 0, page: 0 };
+    const layer = document.createElement("div");
+    layer.id = "layer";
+    layer.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483646;cursor:pointer";
+    layer.addEventListener("click", () => { window.hits.layer++; window.open("https://example.org/?overlay-ad"); });
+    document.body.append(layer);
+    document.addEventListener("click", (e) => { if (e.target !== layer) window.hits.page++; });
+    return true;
+  })()`);
+  for (const [type, extra] of [["mouseMoved", {}], ["mousePressed", { button: "left", clickCount: 1 }], ["mouseReleased", { button: "left", clickCount: 1 }]]) {
+    await page.send("Input.dispatchMouseEvent", { type, x: 200, y: 200, ...extra });
+  }
+  await sleep(2500);
+  const hits = JSON.parse(await page.evaluate("JSON.stringify(window.hits)"));
+  const pe = await page.evaluate(`getComputedStyle(document.getElementById("layer")).pointerEvents`);
+  check(hits.layer === 0 && hits.page === 1, "щелчок прошёл сквозь рекламный слой к странице", JSON.stringify(hits));
+  check(pe === "none", "слой пропускает мышь", pe);
+  check(!(await tabsNow()).urls.some((u) => u.includes("overlay-ad")), "окно слоя не открылось");
+
+  // Окно страницы: сначала фоном, потом — на экране.
+  await page.evaluate(`(() => { document.getElementById("layer").remove(); window.open("https://example.org/?held"); return true; })()`, { gesture: true });
+  await sleep(150);
+  const early = await tabsNow();
+  check(early.active === id, "окно страницы сначала открывается фоном", String(early.active));
+  await sleep(3000);
+  const late = await tabsNow();
+  const held = await ui(`${S} return [...state.tabs.values()].find(t => String(t.url).includes("?held"))?.id ?? null;`);
+  check(held !== null && late.active === held, "загрузившееся окно показано", `${late.active} vs ${held}`);
+  if (held !== null) await closeTab(held);
+  page.close();
   await closeTab(id);
 }
 
