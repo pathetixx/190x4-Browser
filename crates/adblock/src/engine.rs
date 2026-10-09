@@ -465,6 +465,7 @@ impl Guard {
                 .map(|host| registrable_domain(host).to_ascii_lowercase())
                 .unwrap_or_default(),
             aggressive,
+            popups: false,
         }
     }
 
