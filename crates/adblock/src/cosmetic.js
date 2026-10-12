@@ -26,74 +26,158 @@
     return;
   }
 
-  /* ── Окна фрейма чужого сайта ──────────────────────────────── */
+  /* ── Окна рекламы «по щелчку» ─────────────────────────────── */
 
-  // Плеер на чужом домене открывает рекламу в новой вкладке скриптом по
-  // щелчку: `window.open` на третий сайт или невидимая ссылка с `target`,
-  // по которой «щёлкает» сам скрипт. Домены такой рекламы меняются каждый
-  // день, и правил на них нет. Поэтому во фрейме чужого сайта (popups) окно
-  // на чужой сайт скрипт не открывает: ему достаётся пустое окно-заглушка,
-  // которое через секунду закрывается, — на отказ (`null`) реклама отвечает
-  // новыми попытками на каждом щелчке. Ссылки, по которым щёлкнул человек,
-  // работают как обычно, окна на свой сайт (вход через Google, VK, Telegram) —
-  // тоже.
-  if (config.popups && window !== window.top) {
-    const own = (host) => host === config.site || host.endsWith("." + config.site);
-    const foreign = (raw) => {
-      try {
-        const url = new URL(String(raw), location.href);
-        return /^https?:$/.test(url.protocol) && !own(url.hostname);
-      } catch (_) {
-        return false;
+  // Плеер открывает рекламу в новом окне скриптом по щелчку: `window.open` на
+  // третий сайт, пустое окно, куда адрес рекламы ставят следом, или невидимая
+  // ссылка с `target`, по которой «щёлкает» сам скрипт. Домены такой рекламы
+  // меняются каждый день, и правил на них нет. Поэтому такие окна скрипт не
+  // открывает: во фрейме чужого сайта (popups) — всегда, на странице — в
+  // первые полторы секунды после щелчка по видео или плееру. Ссылки, по
+  // которым щёлкнул человек, работают как обычно, окна на свой сайт (вход
+  // через Google, VK, Telegram) — тоже.
+  //
+  // Вместо окна скрипт получает заглушку, которая остаётся «открытой»: на
+  // отказ (`null`) и на закрытое окно реклама отвечает новой попыткой на
+  // каждом щелчке, и до плеера щелчок не доходит.
+  const frameDocument = config.popups && window !== window.top;
+  const own = (host) => host === config.site || host.endsWith("." + config.site);
+  // Куда окно: "foreign" — чужой сайт, "blank" — пустое окно, "" — своё.
+  const destination = (raw) => {
+    const text = raw == null ? "" : String(raw).trim();
+    if (!text || /^about:blank$/i.test(text)) return "blank";
+    try {
+      const url = new URL(text, location.href);
+      return /^https?:$/.test(url.protocol) && !own(url.hostname) ? "foreign" : "";
+    } catch (_) {
+      return "";
+    }
+  };
+  const PLAYER =
+    "video, .jwplayer, .jw-wrapper, .plyr, .video-js, .mejs__container, .fp-player, .art-video-player, " +
+    "[class*='player' i], [id*='player' i]";
+  let playerClickUntil = 0;
+  const onVideo = (x, y) => {
+    for (const video of document.getElementsByTagName("video")) {
+      const r = video.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom && r.width > 100) return true;
+    }
+    return false;
+  };
+  const playerClick = (event) => {
+    if (!event.isTrusted) return;
+    const el = event.target instanceof Element ? event.target : null;
+    if (el && el.closest("a[href], area[href]")) {
+      playerClickUntil = 0;
+      return;
+    }
+    // Щелчок мимо плеера (кнопка «Поделиться» под ним) снимает защиту сразу.
+    playerClickUntil = (el && el.closest(PLAYER)) || onVideo(event.clientX, event.clientY) ? performance.now() + 1500 : 0;
+  };
+  for (const type of ["pointerdown", "mousedown", "click", "touchstart"]) {
+    window.addEventListener(type, playerClick, true);
+  }
+  const guarded = (kind) => kind !== "" && (frameDocument || performance.now() < playerClickUntil);
+  const decoy = () => {
+    let closed = false;
+    const noop = () => {};
+    const place = new Proxy(
+      {},
+      {
+        get: (_, key) =>
+          key === "href" ? "about:blank" : key === "assign" || key === "replace" || key === "reload" ? noop : key === "toString" ? () => "about:blank" : undefined,
+        set: () => true,
       }
-    };
-    const decoy = () => {
-      const frame = document.createElement("iframe");
-      frame.style.display = "none";
-      (document.body || document.documentElement).append(frame);
-      const opened = frame.contentWindow;
-      setTimeout(() => frame.remove(), 1000);
-      return opened;
-    };
-    const open = window.open;
-    const guarded = new Proxy(open, {
-      apply(target, self, args) {
-        if (args.length && foreign(args[0])) return decoy();
-        return Reflect.apply(target, window, args);
+    );
+    const page = new Proxy(
+      {},
+      {
+        get: (_, key) => (key === "write" || key === "writeln" || key === "open" || key === "close" ? noop : key === "location" ? place : undefined),
+        set: () => true,
+      }
+    );
+    const opened = new Proxy(
+      {},
+      {
+        get(_, key) {
+          switch (key) {
+            case "closed":
+              return closed;
+            case "close":
+              return () => {
+                closed = true;
+              };
+            case "location":
+              return place;
+            case "document":
+              return page;
+            case "opener":
+              return null;
+            case "window":
+            case "self":
+            case "top":
+            case "parent":
+              return opened;
+            case "focus":
+            case "blur":
+            case "postMessage":
+            case "moveTo":
+            case "moveBy":
+            case "resizeTo":
+            case "resizeBy":
+            case "scrollTo":
+            case "addEventListener":
+            case "removeEventListener":
+              return noop;
+            default:
+              return undefined;
+          }
+        },
+        set: () => true,
+      }
+    );
+    return opened;
+  };
+  const open = window.open;
+  const openGuarded = new Proxy(open, {
+    apply(target, self, args) {
+      if (guarded(destination(args[0]))) return decoy();
+      return Reflect.apply(target, window, args);
+    },
+  });
+  // Документ со своим исполнителем (фрейм другого сайта) защищён своими
+  // правилами — его `open` не трогаем.
+  const install = (win) => {
+    try {
+      if (win && win.open !== openGuarded && (win === window || !win[MARK])) {
+        Object.defineProperty(win, "open", { value: openGuarded, writable: true, configurable: true });
+      }
+    } catch (_) {}
+  };
+  install(window);
+  // Свежий пустой фрейм — обход: его `open` ещё родной.
+  const frameWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
+  if (frameWindow && frameWindow.get) {
+    Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+      ...frameWindow,
+      get() {
+        const win = frameWindow.get.call(this);
+        install(win);
+        return win;
       },
     });
-    const install = (win) => {
-      try {
-        if (win && win.open !== guarded) {
-          Object.defineProperty(win, "open", { value: guarded, writable: true, configurable: true });
-        }
-      } catch (_) {}
-    };
-    install(window);
-    // Свежий пустой фрейм — обход: его `open` ещё родной.
-    const frameWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
-    if (frameWindow && frameWindow.get) {
-      Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
-        ...frameWindow,
-        get() {
-          const win = frameWindow.get.call(this);
-          install(win);
-          return win;
-        },
-      });
-    }
-    // Ссылку на чужой сайт в новом окне «нажал» скрипт (`a.click()`,
-    // `dispatchEvent`) — не человек.
-    window.addEventListener(
-      "click",
-      (event) => {
-        if (event.isTrusted) return;
-        const link = event.target instanceof Element && event.target.closest("a[href], area[href]");
-        if (link && link.target && link.target !== "_self" && foreign(link.href)) event.preventDefault();
-      },
-      true
-    );
   }
+  // Ссылку на чужой сайт в новом окне «нажал» скрипт (`a.click()`,
+  // `dispatchEvent`) — не человек.
+  window.addEventListener(
+    "click",
+    (event) => {
+      if (event.isTrusted) return;
+      const link = event.target instanceof Element && event.target.closest("a[href], area[href]");
+      if (link && link.target && link.target !== "_self" && guarded(destination(link.href))) event.preventDefault();
+    },
+    true
+  );
 
   /* ── Прозрачный слой поверх страницы ─────────────────────── */
 

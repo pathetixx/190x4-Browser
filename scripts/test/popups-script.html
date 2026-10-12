@@ -1,0 +1,38 @@
+<!doctype html>
+<!--
+  Окна рекламы «по щелчку» в исполнителе косметики (crates/adblock/src/cosmetic.js):
+  node scripts/test/popups-script.mjs — щелчки настоящие, через CDP.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script>
+      window.chrome = window.chrome || {};
+      window.chrome.webview = { postMessage() {}, addEventListener() {} };
+      var __X4_CONFIG__ = { host: location.hostname, site: "films.example", aggressive: false, hide: [], css: "", generic: false, procedural: [], popups: false };
+    </script>
+    <script src="../../crates/adblock/src/cosmetic.js"></script>
+    <style>
+      #player { position: absolute; left: 0; top: 0; width: 400px; height: 300px; background: #222; }
+      #share { position: absolute; left: 0; top: 320px; width: 200px; height: 40px; }
+      #link { position: absolute; left: 0; top: 380px; }
+    </style>
+  </head>
+  <body>
+    <div class="jwplayer" id="player"><div class="jw-icon" role="button" id="play" style="width:100px;height:100px"></div></div>
+    <button id="share">Поделиться</button>
+    <a id="link" href="https://partner.example/" target="_blank">ссылка</a>
+    <iframe id="frame" src="popups-frame.html" style="position:absolute;left:500px;top:0"></iframe>
+    <script>
+      // Заглушку видно по `name`: у настоящего окна это строка.
+      window.decoy = (w) => w !== null && typeof w === "object" && w.name === undefined && w.closed === false;
+      window.log = [];
+      const open = (url) => window.log.push(window.decoy(window.open(url, "_blank", "width=10,height=10")) ? "decoy" : "window");
+      document.addEventListener("click", (e) => {
+        if (e.target.id === "play") open("https://ads.example/x");
+        if (e.target.id === "player") open("about:blank");
+        if (e.target.id === "share") open("https://social.example/share");
+      });
+    </script>
+  </body>
+</html>

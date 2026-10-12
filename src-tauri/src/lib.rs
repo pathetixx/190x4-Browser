@@ -518,6 +518,18 @@ fn route_message(
         name if top && name.starts_with("newtab_") => {
             newtab::handle_message(app, id, source, payload);
         }
+        // «Всё равно перейти» на своей странице предупреждения SmartScreen
+        // (`errors::smartscreen_script`). Источник у сообщения — адрес, куда
+        // шёл переход, а не `chrome-error://`, поэтому вкладка сама спрашивает
+        // документ, что на экране предупреждение (`Tab::pass_smartscreen`).
+        "smartscreen_proceed" if top => {
+            let label = label.to_string();
+            let _ = state::with_host(app, &label, move |host| {
+                if let Err(err) = host.pass_smartscreen(browser190x4_webview::TabId(id)) {
+                    tracing::debug!(%err, "сайт мимо SmartScreen не открыт");
+                }
+            });
+        }
         // Остальное ждёт интерфейс окна; другие сообщения туда не идут:
         // страница, шлющая `postMessage` в цикле, загружала бы его событиями.
         "navigate" | "middle_click" | "media_found" if top => {

@@ -742,6 +742,24 @@ impl Guard {
             .check_network_request(&request)
             .should_block()
     }
+
+    /// Пустое окно (`about:blank`), которое открывает фрейм чужого сайта на
+    /// странице `page_url`: так реклама в плеерах открывает окно по щелчку, а
+    /// адрес рекламной сети, которой нет в списках, ставит в него следом.
+    /// Вход через Google, VK ID и Telegram открывает окно сразу со своим
+    /// адресом.
+    pub fn blank_popup_from_foreign_frame(
+        &self,
+        url: &str,
+        page_url: &str,
+        frame_url: &str,
+    ) -> bool {
+        let blank = url.is_empty() || url.eq_ignore_ascii_case("about:blank");
+        blank
+            && self.filters(page_url)
+            && frame_url.starts_with("http")
+            && !same_site(frame_url, page_url)
+    }
 }
 
 /// Правило домена целиком из списка рекламы (`||popads.net^`, `@@||ok.example^`,
@@ -1166,6 +1184,25 @@ mod tests {
         assert_eq!(popup_rule("||x.example^$script"), None);
         assert_eq!(popup_rule("example.com##.popup"), None);
         assert_eq!(popup_rule("! $popup"), None);
+    }
+
+    #[test]
+    fn blank_popups_of_foreign_frames_are_ads() {
+        let guard = guard_with("||ads.example^");
+        let page = "https://films.example/watch/1";
+        let player = "https://player.example/e/1";
+        assert!(guard.blank_popup_from_foreign_frame("about:blank", page, player));
+        assert!(guard.blank_popup_from_foreign_frame("", page, player));
+        // Свой фрейм сайта, сама страница и окно с адресом — не заглушка.
+        assert!(!guard.blank_popup_from_foreign_frame(
+            "about:blank",
+            page,
+            "https://cdn.films.example/p"
+        ));
+        assert!(!guard.blank_popup_from_foreign_frame("about:blank", page, page));
+        assert!(!guard.blank_popup_from_foreign_frame("https://accounts.example/", page, player));
+        guard.set_exempt_sites(["films.example".to_string()]);
+        assert!(!guard.blank_popup_from_foreign_frame("about:blank", page, player));
     }
 
     #[test]

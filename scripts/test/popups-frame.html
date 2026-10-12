@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- Фрейм чужого сайта для popups-script.html: окна на чужой сайт и пустые — заглушка. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script>
+      window.chrome = window.chrome || {};
+      window.chrome.webview = { postMessage() {}, addEventListener() {} };
+      var __X4_CONFIG__ = { host: location.hostname, site: "player.example", aggressive: false, hide: [], css: "", generic: false, procedural: [], popups: true };
+    </script>
+    <script src="../../crates/adblock/src/cosmetic.js"></script>
+  </head>
+  <body></body>
+</html>

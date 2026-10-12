@@ -1108,6 +1108,16 @@ impl TabHost {
         tab.find(&state.env, query)
     }
 
+    /// «Всё равно перейти» на предупреждении SmartScreen (`Tab::pass_smartscreen`).
+    pub fn pass_smartscreen(&self, id: TabId) -> anyhow::Result<()> {
+        let state = self.inner.borrow();
+        let tab = state
+            .tabs
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
+        Ok(tab.pass_smartscreen()?)
+    }
+
     /// Спросить страницу, можно ли её закрыть (`Tab::request_close`).
     /// `false` — спрашивать некого (вкладка не достроена), закрывать сразу.
     pub fn request_close(&self, id: TabId) -> bool {

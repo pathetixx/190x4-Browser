@@ -123,6 +123,38 @@ pub fn set_reputation_checking(on: bool) {
     REPUTATION.store(on, Ordering::Relaxed);
 }
 
+/// Сайты, которые человек открыл мимо SmartScreen («Всё равно перейти» на его
+/// предупреждении), — до выхода, как решение о сертификате. Кнопка движка
+/// (`certificateErrorPageController.proceed`) во WebView2 на предупреждении
+/// SmartScreen ничего не делает, поэтому проверку для такого сайта вкладка
+/// выключает сама.
+static SMARTSCREEN_PASSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Проверять ли этот адрес в SmartScreen: настройка и решения человека.
+fn reputation_for(url: &str) -> bool {
+    if !REPUTATION.load(Ordering::Relaxed) {
+        return false;
+    }
+    let Some(host) = host_of(url) else {
+        return true;
+    };
+    !SMARTSCREEN_PASSED
+        .lock()
+        .is_ok_and(|passed| passed.contains(&host))
+}
+
+/// SmartScreen для следующих переходов вкладки.
+fn set_reputation(core: &ICoreWebView2, check: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings8;
+
+    let result = unsafe { core.Settings() }
+        .and_then(|settings| settings.cast::<ICoreWebView2Settings8>())
+        .and_then(|settings8| unsafe { settings8.SetIsReputationCheckingRequired(check) });
+    if let Err(err) = result {
+        tracing::debug!(%err, "SmartScreen вкладки не переключён");
+    }
+}
+
 /// Ступени масштаба — как в Chrome: пользователь привык к этим числам.
 const ZOOM_STEPS: &[f64] = &[
     0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
@@ -449,12 +481,19 @@ fn page_navigation(
     Some(user.as_bool())
 }
 
+/// Сколько живёт невидимая заглушка рекламного окна (`decoy_popup`).
+const DECOY_LIFETIME_MS: u32 = 10 * 60 * 1000;
+
 /// Рекламное окно страницы — в невидимую заглушку вместо отказа, как у uBlock
 /// Origin (он открывает такую вкладку и тут же закрывает). Отказ даёт странице
 /// `null` из `window.open`, и рекламный скрипт плеера оставляет свой прозрачный
 /// слой поверх видео и пробует снова на каждом щелчке — перемотка не
 /// срабатывает. Заглушка — пустой вебвью того же профиля: страница получает
-/// окно, ни один переход в нём не начинается, через секунду оно закрывается.
+/// окно, ни один переход в нём не начинается. Живёт она долго
+/// ([`DECOY_LIFETIME_MS`]): закрытое окно реклама считает непоказанным и
+/// открывает новое на следующем щелчке по плееру — щелчок уходит ей, а не
+/// плееру. Brave так же оставляет окно рекламы открытым, только маленьким и
+/// под окном браузера.
 /// При ошибке окно отклоняют (`SetHandled`): `window.open` получит `null`.
 fn decoy_popup(
     controller: &ICoreWebView2Controller,
@@ -508,7 +547,7 @@ fn decoy_popup(
                 Ok(decoy)
             })();
             match attached {
-                Ok(decoy) => crate::later::after(1000, move || unsafe {
+                Ok(decoy) => crate::later::after(DECOY_LIFETIME_MS, move || unsafe {
                     let _ = decoy.Close();
                 }),
                 Err(err) => {
@@ -1934,11 +1973,18 @@ impl Tab {
             let cert = self.cert.clone();
             let filtering = self.filtering.clone();
             let filter_guard = guard.clone();
+            let completed_source = self.source.clone();
             core.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                     let Some(args) = args else { return Ok(()) };
                     let mut ok = windows_core::BOOL::default();
                     args.IsSuccess(&mut ok)?;
+                    // SmartScreen — по сайту, на котором вкладка оказалась:
+                    // сайт, открытый мимо проверки, её не получает.
+                    if let Some(core) = sender.as_ref() {
+                        set_reputation(core, reputation_for(&completed_source.borrow()));
+                    }
+
                     let certificate = cert.failed.borrow().is_some();
                     if !ok.as_bool() && certificate {
                         // Страницу ошибки сертификата движок ставит сам и позже
@@ -1956,9 +2002,17 @@ impl Tab {
                         let mut status =
                             webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                         args.WebErrorStatus(&mut status)?;
+                        // У предупреждения SmartScreen адрес документа —
+                        // `about:blank`: показываем тот, куда шёл переход.
+                        let shown = document_url(sender.as_ref());
+                        let url = if shown.starts_with("http") {
+                            shown.clone()
+                        } else {
+                            completed_source.borrow().clone()
+                        };
                         if let (Some(core), Some(script)) = (
                             sender.as_ref(),
-                            crate::errors::error_script(status, &document_url(sender.as_ref())),
+                            crate::errors::error_script(status, &url),
                         ) {
                             let _ = core.ExecuteScript(
                                 &HSTRING::from(script),
@@ -1971,6 +2025,21 @@ impl Tab {
                                     },
                                 )),
                             );
+                            // Предупреждение SmartScreen движок может поставить
+                            // позже этого события — тогда оно заменит общую
+                            // страницу, нарисованную выше.
+                            for delay in [400, 1500] {
+                                let (core, url, shown) = (core.clone(), url.clone(), shown.clone());
+                                crate::later::after(delay, move || {
+                                    if document_url(Some(&core)) == shown {
+                                        run_script(
+                                            &core,
+                                            &crate::errors::smartscreen_script(&url),
+                                            "страница SmartScreen",
+                                        );
+                                    }
+                                });
+                            }
                         }
                     }
                     let mut status = 0i32;
@@ -2128,9 +2197,13 @@ impl Tab {
                             openers.push(frame);
                         }
                     }
-                    if openers
-                        .iter()
-                        .any(|opener| guard.blocks_popup(&url, opener))
+                    let blank_ad = openers.get(1).is_some_and(|frame| {
+                        guard.blank_popup_from_foreign_frame(&url, &openers[0], frame)
+                    });
+                    if blank_ad
+                        || openers
+                            .iter()
+                            .any(|opener| guard.blocks_popup(&url, opener))
                     {
                         tracing::debug!(tab = id, "рекламное окно страницы не открыто");
                         if let Err(err) = decoy_popup(&controller, &core_ref, private, &args) {
@@ -2395,8 +2468,46 @@ impl Tab {
 
     /// SmartScreen для этой вкладки — по настройке (`set_reputation_checking`).
     pub(crate) fn apply_reputation(&self) {
-        if let Err(err) = configure(&self.core, true) {
-            tracing::debug!(%err, "SmartScreen вкладки не переключён");
+        set_reputation(&self.core, reputation_for(&self.source.borrow()));
+    }
+
+    /// «Всё равно перейти» на предупреждении SmartScreen: сайт, который он
+    /// закрыл, открывается без проверки, и до выхода она его не трогает.
+    pub(crate) fn pass_smartscreen(&self) -> windows_core::Result<()> {
+        // Просить может любой документ вкладки, поэтому сначала — что на
+        // экране: предупреждение SmartScreen. Адрес `chrome-error://` страница
+        // подделать не может, а он бывает только у страниц движка.
+        const ON_WARNING: &str = r#"location.href.startsWith("chrome-error://") && typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle")"#;
+        let core = self.core.clone();
+        let source = self.source.clone();
+        let browser_navigation = self.browser_navigation.clone();
+        unsafe {
+            self.core.ExecuteScript(
+                &HSTRING::from(ON_WARNING),
+                &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(
+                    move |code, result| {
+                        if code.is_err() || result != "true" {
+                            return Ok(());
+                        }
+                        let url = source.borrow().clone();
+                        let Some(host) = url.starts_with("http").then(|| host_of(&url)).flatten()
+                        else {
+                            return Ok(());
+                        };
+                        if let Ok(mut passed) = SMARTSCREEN_PASSED.lock() {
+                            if !passed.contains(&host) {
+                                passed.push(host);
+                            }
+                        }
+                        set_reputation(&core, false);
+                        browser_navigation.set(true);
+                        if let Err(err) = core.Navigate(&HSTRING::from(url)) {
+                            tracing::debug!(%err, "сайт мимо SmartScreen не открыт");
+                        }
+                        Ok(())
+                    },
+                )),
+            )
         }
     }
 

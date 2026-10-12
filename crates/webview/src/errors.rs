@@ -119,19 +119,35 @@ const PROCEED_HINT: &str = "Если это ваш роутер или серв�
                             сайт можно открыть без проверки сертификата. Всё, что вы на нём \
                             введёте, могут перехватить.";
 
+/// Тексты страницы ошибки. `more` — под «Подробнее», рядом с «Всё равно
+/// перейти»; `kind` — класс страницы, по нему её узнают повторные скрипты.
+struct Page<'a> {
+    title: &'a str,
+    hint: &'a str,
+    more: &'a str,
+    kind: &'a str,
+}
+
+/// Текст под «Подробнее» у сайта, который SmartScreen отметил опасным.
+const SMARTSCREEN_MORE: &str = "SmartScreen — проверка Microsoft. Другие браузеры сверяются с \
+                                другими базами и могут этот сайт не блокировать. Если вы ему \
+                                доверяете, его можно открыть. Проверку для всех сайтов \
+                                выключает настройка SmartScreen в разделе «Конфиденциальность».";
+
 /// Скрипт, который собирает страницу из элементов, а не строкой HTML: у
 /// страницы ошибки сертификата движок требует Trusted Types, и `innerHTML`
 /// там запрещён — своя страница на ней просто не вставала. Тексты — данные
 /// (`textContent`), разметкой они не становятся. `guard` — проверка перед
 /// заменой, `proceed` — что делает «Всё равно перейти» (пусто — кнопки нет).
-fn page_script(title: &str, url: &str, hint: &str, guard: &str, proceed: &str) -> String {
+fn page_script(page: Page<'_>, url: &str, guard: &str, proceed: &str) -> String {
     let data = serde_json::json!({
-        "title": title,
+        "title": page.title,
         "host": short_host(url),
-        "hint": hint,
+        "hint": page.hint,
         "url": url,
         "style": STYLE,
-        "more": PROCEED_HINT,
+        "more": page.more,
+        "kind": page.kind,
     })
     // `<` — escape-последовательностью: адрес со страницы не закроет ничего,
     // куда бы скрипт ни попал.
@@ -150,7 +166,7 @@ const make = (tag, className, text) => {{
 const style = make("style", null, data.style);
 const head = make("head");
 head.append(style);
-const box = make("div", "box190x4");
+const box = make("div", ("box190x4 " + data.kind).trim());
 box.append(make("div", "mark190x4", "190"), make("h1", null, data.title), make("p", "site190x4", data.host),
   make("p", null, data.hint), make("div", "url190x4", data.url));
 const retry = make("button", null, "Обновить");
@@ -183,15 +199,60 @@ document.title = data.title;
 /// считает и навигацию, после которой на экране осталась прежняя страница
 /// (переход отменили, ссылка ушла в приложение), и ответ сайта 4xx со своим
 /// содержимым — их документ не наш, и заменять его нельзя.
+///
+/// Сайт, который SmartScreen отметил опасным, движок закрывает своей страницей
+/// предупреждения — тоже `chrome-error://`, и код ошибки у неё общий. Её
+/// узнаёт [`smartscreen_script`], он идёт первым.
 pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<String> {
     let (title, hint) = describe(status)?;
-    Some(page_script(
-        title,
+    let page = page_script(
+        Page {
+            title,
+            hint,
+            more: "",
+            kind: "",
+        },
         url,
-        hint,
-        r#"if (!location.href.startsWith("chrome-error://")) return;"#,
+        r#"if (!location.href.startsWith("chrome-error://")) return;
+if (document.querySelector(".box190x4")) return;"#,
         "null",
-    ))
+    );
+    Some(format!("{}\n{page}", smartscreen_script(url)))
+}
+
+/// Своя страница вместо предупреждения SmartScreen «Это небезопасный сайт».
+///
+/// Прежде здесь рисовалась обычная «Страница не открылась», и сайт, который
+/// SmartScreen считает опасным, выглядел как обрыв связи. Предупреждение
+/// движок может поставить и позже конца навигации, поэтому скрипт повторяют
+/// (`Tab`): он заменяет и уже нарисованную общую страницу, но не себя.
+/// «Всё равно перейти» — если движок вообще разрешает открыть сайт
+/// (`overridable`): его собственная кнопка (`certificateErrorPageController.proceed`)
+/// во WebView2 тут ничего не делает, поэтому страница просит браузер
+/// (`smartscreen_proceed`), и вкладка открывает сайт без проверки
+/// (`Tab::pass_smartscreen`).
+pub fn smartscreen_script(url: &str) -> String {
+    page_script(
+        Page {
+            title: "Сайт отмечен как опасный",
+            hint: "Microsoft Defender SmartScreen считает, что этот сайт может красть данные \
+                   или заражать компьютер.",
+            more: SMARTSCREEN_MORE,
+            kind: "smartscreen190x4",
+        },
+        url,
+        r#"if (!location.href.startsWith("chrome-error://") || document.querySelector(".smartscreen190x4")) return;
+let strings = null;
+try {
+  strings = typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle") ? loadTimeData : null;
+} catch (_) {}
+if (!strings) return;
+let overridable = false;
+try {
+  overridable = strings.valueExists("overridable") && strings.getBoolean("overridable");
+} catch (_) {}"#,
+        r#"overridable && window.chrome && chrome.webview ? () => chrome.webview.postMessage({ evt: "smartscreen_proceed" }) : null"#,
+    )
 }
 
 /// Своя страница вместо страницы движка «Подключение не защищено».
@@ -204,10 +265,15 @@ pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<
 /// выхода, как Chrome.
 pub fn certificate_script(url: &str) -> String {
     page_script(
-        "Подключение не защищено",
+        Page {
+            title: "Подключение не защищено",
+            hint:
+                "Сертификат сайта не в порядке: срок истёк, он отозван или выписан на другое имя. \
+                   Кто-то может выдавать себя за этот сайт.",
+            more: PROCEED_HINT,
+            kind: "",
+        },
         url,
-        "Сертификат сайта не в порядке: срок истёк, он отозван или выписан на другое имя. \
-         Кто-то может выдавать себя за этот сайт.",
         r#"if (!location.href.startsWith("chrome-error://") || document.querySelector(".box190x4")) return;
 const edge = document.getElementById("proceed-link");
 const controller = window.certificateErrorPageController;
@@ -267,7 +333,14 @@ mod tests {
         assert!(!cert.contains('\0'));
         let timeout = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
         assert!(timeout.contains("const proceed = null;"));
-        assert!(!timeout.contains("certificateErrorPageController"));
+        // Кнопку получает только предупреждение SmartScreen, и то — если
+        // движок сам разрешает открыть сайт.
+        let smartscreen = smartscreen_script("https://a/");
+        assert!(timeout.starts_with(&smartscreen));
+        assert!(smartscreen.contains("smartScreenPageTitle"));
+        assert!(smartscreen.contains(r#"strings.getBoolean("overridable")"#));
+        assert!(smartscreen.contains("smartscreen_proceed"));
+        assert!(!smartscreen.contains('\0'));
     }
 
     #[test]

@@ -171,7 +171,9 @@ if (want("windows")) {
     check(got, `окно со щелчком: ${label} — странице вернулось окно`);
     await sleep(2500);
     const closed = await page.evaluate("window.ad ? window.ad.closed : null");
-    check(closed === true, `окно со щелчком: ${label} — заглушка закрылась`, String(closed));
+    // Заглушка остаётся «открытой»: закрытое окно реклама считает
+    // непоказанным и пробует снова на следующем щелчке.
+    check(closed === false, `окно со щелчком: ${label} — заглушка не закрылась`, String(closed));
     const host = new URL(url).hostname.replace(/^www\./, "");
     const opened = (await tabsNow()).filter((t) => t.url.includes(host));
     check(opened.length === 0, `окно со щелчком: ${label} — не открылось`, opened.map((t) => t.url).join(" "));
