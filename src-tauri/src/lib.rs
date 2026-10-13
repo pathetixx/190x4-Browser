@@ -365,7 +365,10 @@ pub(crate) fn route_event(
             error,
             ..
         } => {
-            transfers::on_engine_event(app, label, *key, phase, url, path, *bytes, *total, error);
+            let private = app.state::<App>().windows.is_private(label);
+            transfers::on_engine_event(
+                app, label, private, *key, phase, url, path, *bytes, *total, error,
+            );
             return;
         }
         TabEvent::DownloadAsk { key, path, .. } => {

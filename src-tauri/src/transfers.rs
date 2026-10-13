@@ -119,6 +119,7 @@ fn writer() -> &'static std::sync::mpsc::Sender<Job> {
 pub fn on_engine_event(
     app: &AppHandle,
     window: &str,
+    private: bool,
     key: u64,
     phase: &str,
     url: &str,
@@ -137,7 +138,7 @@ pub fn on_engine_event(
     );
     let _ = writer().send(Box::new(move || {
         apply_engine_event(
-            &app, &window, key, &phase, &url, &path, bytes, total, &error,
+            &app, &window, private, key, &phase, &url, &path, bytes, total, &error,
         )
     }));
 }
@@ -146,6 +147,7 @@ pub fn on_engine_event(
 fn apply_engine_event(
     app: &AppHandle,
     window: &str,
+    private: bool,
     key: u64,
     phase: &str,
     url: &str,
@@ -158,8 +160,10 @@ fn apply_engine_event(
     let store = &state.store;
 
     // Приватное окно не оставляет следов: прогресс виден в пузыре загрузок,
-    // но в списке и в базе такой загрузки нет.
-    if state.windows.is_private(window) {
+    // но в списке и в базе такой загрузки нет. Приватность решена ещё на
+    // главном потоке, в момент события: к этой записи окно могли уже закрыть и
+    // убрать из реестра — и загрузка ушла бы в базу как обычная.
+    if private {
         let id = private_id(key);
         if phase == "done" && !path.is_empty() {
             state
