@@ -284,12 +284,18 @@ impl Services {
     /// Забрать готовый файл на диск.
     ///
     /// Пишем потоком: ролик на пару гигабайт не должен оказаться в памяти
-    /// целиком. Имя берём то, что отдал сервер.
+    /// целиком. Имя берём то, что отдал сервер, и занимаем его сразу пустым
+    /// файлом: вторая загрузка с тем же именем возьмёт следующее, а не
+    /// перезапишет эту. Сам файл пишется рядом, в `.part`, и встаёт на место
+    /// целиком — оборванная загрузка не оставляет обрубка под настоящим именем.
+    /// `page_url` — страница ролика для отметки «скачано из интернета»; в
+    /// приватном окне её нет.
     pub async fn media_fetch(
         &self,
         job_id: &str,
         dir: &Path,
         file_name: &str,
+        page_url: Option<&str>,
     ) -> anyhow::Result<PathBuf> {
         let response = self
             .http
@@ -302,15 +308,23 @@ impl Services {
             .error_for_status()?;
 
         tokio::fs::create_dir_all(dir).await?;
-        let target = unique_path(dir, file_name);
+        let target = reserve_path(dir, file_name).await?;
+        let mut partial = target.clone().into_os_string();
+        partial.push(".part");
+        let partial = PathBuf::from(partial);
 
-        let mut file = tokio::fs::File::create(&target).await?;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
+        let written = async {
+            write_body(response, &partial).await?;
+            mark_from_internet(&partial, page_url);
+            tokio::fs::rename(&partial, &target).await?;
+            anyhow::Ok(())
         }
-        file.flush().await?;
-
+        .await;
+        if let Err(err) = written {
+            let _ = tokio::fs::remove_file(&partial).await;
+            let _ = tokio::fs::remove_file(&target).await;
+            return Err(err);
+        }
         Ok(target)
     }
 
@@ -355,14 +369,11 @@ impl Services {
     }
 }
 
-/// Не затирать уже скачанное: `video.mp4` → `video (2).mp4`.
-fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
+/// Занять имя для файла: `video.mp4`, если свободно, иначе `video (2).mp4`…
+/// Имя занимается пустым файлом (`create_new`), а не проверкой «есть ли
+/// такой»: между проверкой и записью его успела бы занять другая загрузка.
+async fn reserve_path(dir: &Path, file_name: &str) -> anyhow::Result<PathBuf> {
     let safe = sanitize(file_name);
-    let candidate = dir.join(&safe);
-    if !candidate.exists() {
-        return candidate;
-    }
-
     let path = Path::new(&safe);
     let stem = path
         .file_stem()
@@ -373,15 +384,60 @@ fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
         .map(|s| format!(".{}", s.to_string_lossy()))
         .unwrap_or_default();
 
-    for index in 2..1000 {
-        let candidate = dir.join(format!("{stem} ({index}){ext}"));
-        if !candidate.exists() {
-            return candidate;
+    for index in 1..1000 {
+        let candidate = if index == 1 {
+            dir.join(&safe)
+        } else {
+            dir.join(format!("{stem} ({index}){ext}"))
+        };
+        let created = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+            .await;
+        match created {
+            Ok(_) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err.into()),
         }
     }
-
-    dir.join(safe)
+    anyhow::bail!("в папке загрузок слишком много файлов с именем {safe}")
 }
+
+/// Тело ответа — в файл, потоком.
+async fn write_body(response: reqwest::Response, path: &Path) -> anyhow::Result<()> {
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        file.write_all(&chunk?).await?;
+    }
+    file.flush().await?;
+    // Закрыть до переименования: открытый файл Windows не переименует.
+    drop(file.into_std().await);
+    Ok(())
+}
+
+/// Отметка «скачано из интернета» (Mark of the Web), как у загрузок движка:
+/// по ней Windows и SmartScreen проверяют файл, когда его открывают. Без неё
+/// файл с сервера загрузчика выглядел бы созданным на этом компьютере.
+#[cfg(windows)]
+fn mark_from_internet(path: &Path, page_url: Option<&str>) {
+    let mut text = String::from("[ZoneTransfer]\r\nZoneId=3\r\n");
+    if let Some(url) = page_url.filter(|url| url.starts_with("http") && !url.contains(['\r', '\n']))
+    {
+        text.push_str("ReferrerUrl=");
+        text.push_str(url);
+        text.push_str("\r\n");
+    }
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    if let Err(err) = std::fs::write(PathBuf::from(stream), text) {
+        tracing::debug!(%err, "отметка «скачано из интернета» не записана");
+    }
+}
+
+#[cfg(not(windows))]
+fn mark_from_internet(_path: &Path, _page_url: Option<&str>) {}
 
 /// Имя приходит от стороннего сервиса — в путь оно попадать как есть не должно.
 fn sanitize(file_name: &str) -> String {

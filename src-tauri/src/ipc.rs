@@ -2211,7 +2211,12 @@ pub async fn media_download(
 
             if progress.finished() {
                 match services
-                    .media_fetch(&job, &target_dir, &progress.file_name)
+                    .media_fetch(
+                        &job,
+                        &target_dir,
+                        &progress.file_name,
+                        (!private).then_some(url.as_str()),
+                    )
                     .await
                 {
                     Ok(path) => {
