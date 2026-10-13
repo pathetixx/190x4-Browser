@@ -203,7 +203,7 @@ document.title = data.title;
 /// Сайт, который SmartScreen отметил опасным, движок закрывает своей страницей
 /// предупреждения — тоже `chrome-error://`, и код ошибки у неё общий. Её
 /// узнаёт [`smartscreen_script`], он идёт первым.
-pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<String> {
+pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str, key: &str) -> Option<String> {
     let (title, hint) = describe(status)?;
     let page = page_script(
         Page {
@@ -217,7 +217,7 @@ pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<
 if (document.querySelector(".box190x4")) return;"#,
         "null",
     );
-    Some(format!("{}\n{page}", smartscreen_script(url)))
+    Some(format!("{}\n{page}", smartscreen_script(url, key)))
 }
 
 /// Своя страница вместо предупреждения SmartScreen «Это небезопасный сайт».
@@ -230,8 +230,14 @@ if (document.querySelector(".box190x4")) return;"#,
 /// (`overridable`): его собственная кнопка (`certificateErrorPageController.proceed`)
 /// во WebView2 тут ничего не делает, поэтому страница просит браузер
 /// (`smartscreen_proceed`), и вкладка открывает сайт без проверки
-/// (`Tab::pass_smartscreen`).
-pub fn smartscreen_script(url: &str) -> String {
+/// (`Tab::pass_smartscreen`). `key` — одноразовый ключ этой страницы: просьбу
+/// без него вкладка не слушает, иначе её мог бы прислать документ, который
+/// был на экране до предупреждения.
+pub fn smartscreen_script(url: &str, key: &str) -> String {
+    let key = serde_json::to_string(key).unwrap_or_default();
+    let proceed = format!(
+        r#"overridable && window.chrome && chrome.webview ? () => chrome.webview.postMessage({{ evt: "smartscreen_proceed", key: {key} }}) : null"#
+    );
     page_script(
         Page {
             title: "Сайт отмечен как опасный",
@@ -251,7 +257,7 @@ let overridable = false;
 try {
   overridable = strings.valueExists("overridable") && strings.getBoolean("overridable");
 } catch (_) {}"#,
-        r#"overridable && window.chrome && chrome.webview ? () => chrome.webview.postMessage({ evt: "smartscreen_proceed" }) : null"#,
+        &proceed,
     )
 }
 
@@ -320,7 +326,8 @@ mod tests {
     fn cancelled_navigation_has_no_page() {
         assert!(error_script(
             COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
-            "https://a"
+            "https://a",
+            "k"
         )
         .is_none());
     }
@@ -331,21 +338,23 @@ mod tests {
         assert!(cert.contains("Всё равно перейти"));
         assert!(cert.contains("chrome-error://"));
         assert!(!cert.contains('\0'));
-        let timeout = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
+        let timeout =
+            error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/", "k").unwrap();
         assert!(timeout.contains("const proceed = null;"));
         // Кнопку получает только предупреждение SmartScreen, и то — если
         // движок сам разрешает открыть сайт.
-        let smartscreen = smartscreen_script("https://a/");
+        let smartscreen = smartscreen_script("https://a/", "k");
         assert!(timeout.starts_with(&smartscreen));
         assert!(smartscreen.contains("smartScreenPageTitle"));
         assert!(smartscreen.contains(r#"strings.getBoolean("overridable")"#));
-        assert!(smartscreen.contains("smartscreen_proceed"));
+        assert!(smartscreen.contains(r#"evt: "smartscreen_proceed", key: "k""#));
         assert!(!smartscreen.contains('\0'));
     }
 
     #[test]
     fn error_page_replaces_only_the_engine_page() {
-        let script = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
+        let script =
+            error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/", "k").unwrap();
         assert!(script.contains(r#"if (!location.href.startsWith("chrome-error://")) return;"#));
     }
 
@@ -358,6 +367,7 @@ mod tests {
         let script = error_script(
             COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT,
             "https://a/\"</script>",
+            "k",
         )
         .unwrap();
         assert!(!script.contains("</script>"));

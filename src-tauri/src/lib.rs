@@ -523,9 +523,17 @@ fn route_message(
         // шёл переход, а не `chrome-error://`, поэтому вкладка сама спрашивает
         // документ, что на экране предупреждение (`Tab::pass_smartscreen`).
         "smartscreen_proceed" if top => {
+            #[derive(serde::Deserialize)]
+            struct Proceed {
+                #[serde(default)]
+                key: String,
+            }
+            let key = serde_json::from_str::<Proceed>(payload)
+                .map(|proceed| proceed.key)
+                .unwrap_or_default();
             let label = label.to_string();
             let _ = state::with_host(app, &label, move |host| {
-                if let Err(err) = host.pass_smartscreen(browser190x4_webview::TabId(id)) {
+                if let Err(err) = host.pass_smartscreen(browser190x4_webview::TabId(id), &key) {
                     tracing::debug!(%err, "сайт мимо SmartScreen не открыт");
                 }
             });

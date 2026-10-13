@@ -130,6 +130,16 @@ pub fn set_reputation_checking(on: bool) {
 /// выключает сама.
 static SMARTSCREEN_PASSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// Одноразовый ключ страницы предупреждения SmartScreen (`smartscreen_key`):
+/// случайный для страниц — `RandomState` берёт ключи хеша у системы.
+fn fresh_key() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    format!("{:016x}", hasher.finish())
+}
+
 /// Проверять ли этот адрес в SmartScreen: настройка и решения человека.
 fn reputation_for(url: &str) -> bool {
     if !REPUTATION.load(Ordering::Relaxed) {
@@ -766,6 +776,10 @@ pub struct Tab {
     filtering: Rc<Cell<bool>>,
     /// Следующий переход начал браузер (`Tab::navigate`), а не страница.
     browser_navigation: Rc<Cell<bool>>,
+    /// Ключ своей последней страницы предупреждения SmartScreen: «Всё равно
+    /// перейти» принимается только с ним (`pass_smartscreen`). Знает его лишь
+    /// скрипт этой страницы; новая неудачная навигация выдаёт новый.
+    smartscreen_key: Rc<RefCell<String>>,
     guard: Arc<Guard>,
     /// Скрипты косметики и скриптлетов по хостам. Обработчики движка держат
     /// их слабой ссылкой, а живут они, пока поле держит вкладка.
@@ -1834,6 +1848,7 @@ impl Tab {
             identity,
             filtering: Rc::new(Cell::new(true)),
             browser_navigation: Rc::default(),
+            smartscreen_key: Rc::default(),
             guard: guard.clone(),
             _cosmetics: cosmetics,
         };
@@ -2041,6 +2056,7 @@ impl Tab {
             let filtering = self.filtering.clone();
             let filter_guard = guard.clone();
             let completed_source = self.source.clone();
+            let completed_key = self.smartscreen_key.clone();
             core.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -2077,9 +2093,11 @@ impl Tab {
                         } else {
                             completed_source.borrow().clone()
                         };
+                        let key = fresh_key();
+                        completed_key.borrow_mut().clone_from(&key);
                         if let (Some(core), Some(script)) = (
                             sender.as_ref(),
-                            crate::errors::error_script(status, &url),
+                            crate::errors::error_script(status, &url, &key),
                         ) {
                             let _ = core.ExecuteScript(
                                 &HSTRING::from(script),
@@ -2096,12 +2114,13 @@ impl Tab {
                             // позже этого события — тогда оно заменит общую
                             // страницу, нарисованную выше.
                             for delay in [400, 1500] {
-                                let (core, url, shown) = (core.clone(), url.clone(), shown.clone());
+                                let (core, url, shown, key) =
+                                    (core.clone(), url.clone(), shown.clone(), key.clone());
                                 crate::later::after(delay, move || {
                                     if document_url(Some(&core)) == shown {
                                         run_script(
                                             &core,
-                                            &crate::errors::smartscreen_script(&url),
+                                            &crate::errors::smartscreen_script(&url, &key),
                                             "страница SmartScreen",
                                         );
                                     }
@@ -2555,11 +2574,22 @@ impl Tab {
 
     /// «Всё равно перейти» на предупреждении SmartScreen: сайт, который он
     /// закрыл, открывается без проверки, и до выхода она его не трогает.
-    pub(crate) fn pass_smartscreen(&self) -> windows_core::Result<()> {
-        // Просить может любой документ вкладки, поэтому сначала — что на
-        // экране: предупреждение SmartScreen. Адрес `chrome-error://` страница
+    pub(crate) fn pass_smartscreen(&self, key: &str) -> windows_core::Result<()> {
+        // Просьба — только с ключом своей страницы предупреждения: его знает
+        // лишь скрипт, нарисовавший её поверх страницы движка. Без ключа
+        // просьбу мог бы прислать прежний документ вкладки, уходя на опасный
+        // сайт, — и проверка ниже застала бы на экране уже предупреждение.
+        {
+            let mut expected = self.smartscreen_key.borrow_mut();
+            if expected.is_empty() || *expected != key {
+                return Ok(());
+            }
+            expected.clear();
+        }
+        // Затем — что на экране: предупреждение SmartScreen, которое движок
+        // разрешает обойти (`overridable`). Адрес `chrome-error://` страница
         // подделать не может, а он бывает только у страниц движка.
-        const ON_WARNING: &str = r#"location.href.startsWith("chrome-error://") && typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle")"#;
+        const ON_WARNING: &str = r#"location.href.startsWith("chrome-error://") && typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle") && loadTimeData.valueExists("overridable") && loadTimeData.getBoolean("overridable")"#;
         let core = self.core.clone();
         let source = self.source.clone();
         let browser_navigation = self.browser_navigation.clone();

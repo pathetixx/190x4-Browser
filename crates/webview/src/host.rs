@@ -1130,13 +1130,13 @@ impl TabHost {
     }
 
     /// «Всё равно перейти» на предупреждении SmartScreen (`Tab::pass_smartscreen`).
-    pub fn pass_smartscreen(&self, id: TabId) -> anyhow::Result<()> {
+    pub fn pass_smartscreen(&self, id: TabId, key: &str) -> anyhow::Result<()> {
         let state = self.inner.borrow();
         let tab = state
             .tabs
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
-        Ok(tab.pass_smartscreen()?)
+        Ok(tab.pass_smartscreen(key)?)
     }
 
     /// Спросить страницу, можно ли её закрыть (`Tab::request_close`).
