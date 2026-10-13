@@ -428,9 +428,16 @@ fn accept_files(app: &AppHandle, window: &tauri::WebviewWindow) {
             let count = unsafe { DragQueryFileW(dropped, u32::MAX, None) };
             let mut urls = Vec::new();
             for index in 0..count {
-                let mut buffer = [0u16; 1024];
-                let length = unsafe { DragQueryFileW(dropped, index, Some(&mut buffer)) } as usize;
-                if length == 0 {
+                // Длина пути — сначала: длинный путь (больше MAX_PATH) не
+                // обрезается до несуществующего файла.
+                let needed = unsafe { DragQueryFileW(dropped, index, None) } as usize;
+                if needed == 0 {
+                    continue;
+                }
+                let mut buffer = vec![0u16; needed + 1];
+                let length =
+                    unsafe { DragQueryFileW(dropped, index, Some(buffer.as_mut_slice())) } as usize;
+                if length == 0 || length > needed {
                     continue;
                 }
                 let path = std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..length]));
