@@ -8,7 +8,8 @@
 //   - списки: раскрывает `!#if`/`!#else`/`!#endif` под наш движок (Chromium,
 //     без HTML-фильтрации) и подставляет `!#include` — adblock-rust этих
 //     директив не понимает и применил бы обе ветки условий;
-//   - ресурсы: берёт модули скриптлетов последнего релиза uBlock Origin,
+//   - ресурсы: берёт модули скриптлетов релиза uBlock Origin (последнего из
+//     вышедших хотя бы три дня назад, см. RELEASE_AGE_DAYS),
 //     импортирует их и выгружает функции с зависимостями и признаком
 //     доверенности (`permission`, тот же бит, что у доверенных списков);
 //   - заглушки правил `$redirect=` (`noop.js`, пустой VAST, `google-ima.js`,
@@ -182,8 +183,24 @@ async function preprocess(source, base, depth = 0) {
   return out.join("\n");
 }
 
+// Релиз uBlock Origin берётся не самый свежий, а вышедший хотя бы три дня
+// назад: его модули исполняются при сборке, а скриптлеты — на каждом сайте у
+// всех пользователей. Подменённый релиз за это время успевают заметить и
+// отозвать; исправления рекламы приходят на три дня позже — цена этого.
+const RELEASE_AGE_DAYS = 3;
+
+async function settledRelease() {
+  const releases = await api(`repos/${REPO}/releases?per_page=20`);
+  const before = Date.now() - RELEASE_AGE_DAYS * 86_400_000;
+  const settled = releases.find(
+    (release) => !release.draft && !release.prerelease && Date.parse(release.published_at) <= before
+  );
+  if (!settled) throw new Error(`нет релиза uBlock Origin старше ${RELEASE_AGE_DAYS} дней`);
+  return settled.tag_name;
+}
+
 async function scriptlets() {
-  const { tag_name: tag } = await api(`repos/${REPO}/releases/latest`);
+  const tag = await settledRelease();
   const tmp = join(OUT, ".ubo");
   rmSync(tmp, { recursive: true, force: true });
   const listing = await api(`repos/${REPO}/contents/src/js/resources?ref=${tag}`);

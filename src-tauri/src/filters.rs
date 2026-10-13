@@ -2,10 +2,14 @@
 //! собирает workflow `filters.yml`.
 //!
 //! Источник — GitLab, резерв — GitHub, как у обновлений браузера. Манифест
-//! подписан тем же ключом minisign, что и обновления (`manifest.json.sig`):
-//! скриптлеты из канала выполняются на каждом сайте, и без подписи доступ к
-//! пакету GitLab или релизу на GitHub значил бы свой код на всех сайтах у всех
-//! пользователей. Старый манифест не принимается — откатить фильтры, подсунув
+//! подписан своим ключом minisign (`manifest.json.v2.sig`), не ключом
+//! обновлений: скриптлеты из канала выполняются на каждом сайте, и без подписи
+//! доступ к пакету GitLab или релизу на GitHub значил бы свой код на всех
+//! сайтах у всех пользователей, а общий с обновлениями ключ — что подпись
+//! выкладки фильтров годилась бы и установщику. Манифест собирает и подписывает
+//! задача публикации из проверенных файлов, а не сборка списков, которая
+//! исполняет код uBlock Origin (`filters.yml`). Прежний `manifest.json.sig`
+//! (ключ обновлений) канал выкладывает для версий до 0.12.1 включительно. Старый манифест не принимается — откатить фильтры, подсунув
 //! прежнюю выкладку, нельзя. Файлы сверяются с манифестом по размеру и SHA-256
 //! и записываются атомарно; манифест — последним, поэтому оборванное
 //! обновление не выглядит готовым. После обновления фильтр пересобирается.
@@ -26,10 +30,20 @@ const SOURCES: [&str; 2] = [
     "https://github.com/pathetixx/190x4-Browser/releases/download/filters/",
 ];
 
-/// Открытый ключ подписи — тот же, что у обновлений браузера (`plugins.updater.pubkey`
-/// в `tauri.conf.json`; тест ниже следит, чтобы они не разошлись): base64 от
-/// файла открытого ключа minisign.
-const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFNUE4NUMwQzk1NkMxOUEKUldTYXdWYkp3SVZhN2hnYm1mUWJOZlpnRk9zY3NrVkR6WTNjRlN5MHB5K2t5d3FRZnBGL0NVejgK";
+/// Открытый ключ подписи фильтров — свой, не ключ обновлений браузера
+/// (`plugins.updater.pubkey` в `tauri.conf.json`; тест ниже следит, чтобы они
+/// не совпали): base64 от файла открытого ключа minisign.
+const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMTcyNjE1QjlDODYzMkIKUldRclk4aTVGU1lYTW9tQyt0U3A2akFYYXFPTW85NTBuZ0lXamJ3V1BXNElid1F6NldTNWYzbHMK";
+
+/// Подпись манифеста ключом фильтров.
+const SIGNATURE: &str = "manifest.json.v2.sig";
+
+/// Сколько браузер готов скачать до проверки подписи — манифест и подпись
+/// маленькие, — и сколько весит самый большой файл канала (списки — единицы
+/// мегабайт). Иначе подменённый источник отдавал бы гигабайты в память.
+const MANIFEST_LIMIT: u64 = 256 * 1024;
+const SIGNATURE_LIMIT: u64 = 4 * 1024;
+const FILE_LIMIT: u64 = 32 * 1024 * 1024;
 
 /// Первое обновление — не в момент запуска: сначала поднимаются вкладки.
 const FIRST: Duration = Duration::from_secs(30);
@@ -88,20 +102,12 @@ async fn update() -> anyhow::Result<bool> {
 }
 
 async fn update_from(client: &reqwest::Client, base: &str, dir: &Path) -> anyhow::Result<bool> {
-    let manifest_text = client
-        .get(format!("{base}manifest.json"))
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    let signature = client
-        .get(format!("{base}manifest.json.sig"))
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+    let manifest_text = String::from_utf8(
+        fetch_limited(client, &format!("{base}manifest.json"), MANIFEST_LIMIT).await?,
+    )?;
+    let signature = String::from_utf8(
+        fetch_limited(client, &format!("{base}{SIGNATURE}"), SIGNATURE_LIMIT).await?,
+    )?;
     verify(manifest_text.as_bytes(), &signature, PUBLIC_KEY).context("подпись manifest.json")?;
     let manifest: Manifest = serde_json::from_str(&manifest_text).context("manifest.json")?;
 
@@ -120,26 +126,18 @@ async fn update_from(client: &reqwest::Client, base: &str, dir: &Path) -> anyhow
     // списки хуже прежних целиком.
     let mut staged = Vec::new();
     for (name, info) in &manifest.files {
-        if name.is_empty()
-            || name.starts_with('.')
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        {
+        if !valid_name(name) {
             bail!("недопустимое имя файла в манифесте: {name}");
+        }
+        if info.size > FILE_LIMIT {
+            bail!("{name}: слишком большой файл в манифесте");
         }
         if let Ok(current) = std::fs::read(dir.join(name)) {
             if current.len() as u64 == info.size && sha256_hex(&current) == info.sha256 {
                 continue;
             }
         }
-        let bytes = client
-            .get(format!("{base}{name}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+        let bytes = fetch_limited(client, &format!("{base}{name}"), info.size).await?;
         if bytes.len() as u64 != info.size || sha256_hex(&bytes) != info.sha256 {
             bail!("{name}: не совпали размер или контрольная сумма");
         }
@@ -150,7 +148,45 @@ async fn update_from(client: &reqwest::Client, base: &str, dir: &Path) -> anyhow
         write_atomic(&dir.join(name), bytes)?;
     }
     write_atomic(&dir.join("manifest.json"), manifest_text.as_bytes())?;
+    // Файлы, которых в новой выкладке нет, — прочь: иначе снятый с канала
+    // список так и собирался бы в фильтр из прежней копии.
+    if let Some(local) = &local {
+        for name in local.files.keys() {
+            if !manifest.files.contains_key(name) && valid_name(name) {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        }
+    }
     Ok(true)
+}
+
+/// Имя файла из манифеста: без путей и скрытых файлов.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Тело ответа, но не больше `limit` байт: длиннее — ошибка, без чтения
+/// остатка в память.
+async fn fetch_limited(client: &reqwest::Client, url: &str, limit: u64) -> anyhow::Result<Vec<u8>> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit)
+    {
+        bail!("{url}: ответ больше {limit} байт");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if (body.len() + chunk.len()) as u64 > limit {
+            bail!("{url}: ответ больше {limit} байт");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Подпись minisign в формате Tauri: и ключ, и подпись — base64 от текста
@@ -202,16 +238,32 @@ mod tests {
         assert!(verify(TEST_DATA.as_bytes(), TEST_SIGNATURE, TEST_KEY).is_ok());
         let changed = TEST_DATA.replace("2026", "2027");
         assert!(verify(changed.as_bytes(), TEST_SIGNATURE, TEST_KEY).is_err());
-        // Чужой ключ — тот, которым подписаны настоящие выкладки.
+        // Чужой ключ — ключ настоящих выкладок.
         assert!(verify(TEST_DATA.as_bytes(), TEST_SIGNATURE, PUBLIC_KEY).is_err());
         assert!(verify(TEST_DATA.as_bytes(), "не base64", TEST_KEY).is_err());
     }
 
     #[test]
-    fn filters_key_is_the_updater_key() {
+    fn filters_key_is_not_the_updater_key() {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(config["plugins"]["updater"]["pubkey"], PUBLIC_KEY);
+        assert_ne!(config["plugins"]["updater"]["pubkey"], PUBLIC_KEY);
+        // Ключ — настоящий открытый ключ minisign.
+        use base64::Engine as _;
+        let text = base64::engine::general_purpose::STANDARD
+            .decode(PUBLIC_KEY)
+            .unwrap();
+        assert!(minisign_verify::PublicKey::decode(&String::from_utf8(text).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn manifest_names_stay_inside_the_folder() {
+        assert!(valid_name("easylist.txt"));
+        assert!(valid_name("ubo-filters.txt"));
+        assert!(!valid_name("../browser.db"));
+        assert!(!valid_name(".hidden"));
+        assert!(!valid_name("a/b.txt"));
+        assert!(!valid_name(""));
     }
 
     #[test]

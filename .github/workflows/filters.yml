@@ -67,15 +67,32 @@ jobs:
           name: filters
           path: filters-out
 
-      # Подпись — тем же ключом, что и обновления браузера: скриптлеты из канала
-      # выполняются на каждом сайте, и браузер не примет выкладку без неё
-      # (src-tauri/src/filters.rs).
+      # Манифест сборки не подписывается: сборка исполняла код uBlock Origin, и
+      # подпись её файла была бы подписью на что угодно. Манифест пишет заново
+      # свой скрипт — из проверенных файлов выкладки.
+      - name: Rebuild manifest
+        run: node scripts/filters/manifest.mjs filters-out
+
+      # Подпись — своим ключом фильтров (manifest.json.v2.sig, его проверяет
+      # браузер, src-tauri/src/filters.rs): скриптлеты из канала выполняются на
+      # каждом сайте. Прежняя подпись ключом обновлений (manifest.json.sig) —
+      # для версий до 0.12.1 включительно; подписывается ею уже манифест,
+      # собранный здесь, а не сборкой. Снять, когда эти версии уйдут.
       - name: Sign manifest
         env:
+          FILTERS_SIGNING_PRIVATE_KEY: ${{ secrets.FILTERS_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "$FILTERS_SIGNING_PRIVATE_KEY" ]; then
+            echo "Нет секрета FILTERS_SIGNING_PRIVATE_KEY" >&2
+            exit 1
+          fi
+          rm -f filters-out/*.sig
+          npx --yes @tauri-apps/cli@2.11.4 signer sign --private-key "$FILTERS_SIGNING_PRIVATE_KEY" --password "" filters-out/manifest.json
+          mv filters-out/manifest.json.sig filters-out/manifest.json.v2.sig
           npx --yes @tauri-apps/cli@2.11.4 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "" filters-out/manifest.json
+          test -s filters-out/manifest.json.v2.sig
           test -s filters-out/manifest.json.sig
 
       # Основной источник. Подпись и manifest.json — последними: браузер сверяет
@@ -95,10 +112,11 @@ jobs:
           }
           for file in filters-out/*; do
             case "$(basename "$file")" in
-              manifest.json | manifest.json.sig) ;;
+              manifest.json | *.sig) ;;
               *) upload "$file" ;;
             esac
           done
+          upload filters-out/manifest.json.v2.sig
           upload filters-out/manifest.json.sig
           upload filters-out/manifest.json
 
@@ -114,6 +132,7 @@ jobs:
             gh release create filters --prerelease --latest=false --title "Filters" \
               --notes "Обновляемые фильтры и ресурсы скриптлетов для 190x4 Browser. Лицензии — NOTICE.txt."
           fi
-          find filters-out -maxdepth 1 -type f ! -name manifest.json ! -name manifest.json.sig -print0 | xargs -0 gh release upload filters --clobber
+          find filters-out -maxdepth 1 -type f ! -name manifest.json ! -name '*.sig' -print0 | xargs -0 gh release upload filters --clobber
+          gh release upload filters filters-out/manifest.json.v2.sig --clobber
           gh release upload filters filters-out/manifest.json.sig --clobber
           gh release upload filters filters-out/manifest.json --clobber
