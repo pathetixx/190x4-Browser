@@ -15,7 +15,10 @@
 //! подойдёт любой с тем же устройством адреса: `<сервер><адрес плейлиста>`.
 //! Токен входа Twitch ему уходит, только если человек сам это включил
 //! (`twitch_proxy_token`): с ним сервер берёт плейлист от имени зрителя —
-//! без рекламной заставки и с 1440p.
+//! без рекламной заставки и с 1440p. Токен идёт параметром `auth` в адресе —
+//! другого способа сервер не знает (так же его передаёт и их расширение). У
+//! приватных окон он свой: вход в приватном окне не уходит с плейлистами
+//! обычных, и наоборот, а с последним приватным окном он забывается.
 //!
 //! Смайлы и бонусы — скрипт страницы (`crates/webview/src/inject/twitch.js`).
 //! Списки смайлов браузер берёт у API BetterTTV (там же и смайлы FFZ) и 7TV
@@ -74,9 +77,32 @@ type RussiaOnly = (Option<Instant>, HashSet<String>);
 pub struct Twitch {
     emotes: Mutex<EmoteCache>,
     ids: Mutex<ChannelIds>,
-    /// Токен входа зрителя — только пока включена его передача серверу.
-    token: Mutex<Option<String>>,
+    /// Токены входа зрителя — обычных окон и приватных — только пока
+    /// включена их передача серверу.
+    tokens: Mutex<Tokens>,
     russia_only: Mutex<RussiaOnly>,
+}
+
+/// Токен входа обычных окон и приватных: у них разные профили движка.
+#[derive(Default)]
+struct Tokens {
+    normal: Option<String>,
+    private: Option<String>,
+}
+
+impl Tokens {
+    fn slot(&mut self, private: bool) -> &mut Option<String> {
+        if private {
+            &mut self.private
+        } else {
+            &mut self.normal
+        }
+    }
+}
+
+/// Последнее приватное окно закрыли — его вход больше не нужен.
+pub fn forget_private(app: &AppHandle) {
+    app.state::<Twitch>().tokens.lock().private = None;
 }
 
 #[derive(Deserialize)]
@@ -107,7 +133,7 @@ pub fn apply(app: &AppHandle) {
     let state = app.state::<App>();
     init(&state.store);
     if !state.store.setting_bool("twitch_proxy_token", false) {
-        *app.state::<Twitch>().token.lock() = None;
+        *app.state::<Twitch>().tokens.lock() = Tokens::default();
     }
     for label in state.windows.labels() {
         let _ = crate::state::with_host(app, &label, |host| {
@@ -127,7 +153,13 @@ pub fn apply(app: &AppHandle) {
 }
 
 /// Сообщение скрипта Twitch. `true` — оно наше и дальше не идёт.
-pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) -> bool {
+pub fn handle_message(
+    app: &AppHandle,
+    tab: u32,
+    private: bool,
+    source: &str,
+    payload: &str,
+) -> bool {
     let Ok(event) = serde_json::from_str::<PageEvent>(payload) else {
         return false;
     };
@@ -139,7 +171,7 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
         PageEvent::Token { token } => {
             let store = &app.state::<App>().store;
             if store.setting_bool("twitch_proxy_token", false) && valid_token(&token) {
-                *app.state::<Twitch>().token.lock() = Some(token);
+                *app.state::<Twitch>().tokens.lock().slot(private) = Some(token);
             }
         }
         PageEvent::Channel { channel } => {
@@ -473,10 +505,10 @@ async fn channel_id(app: &AppHandle, login: &str) -> Option<String> {
 
 /// Движок держит запрос плейлиста и ждёт ответа: ответ приходит всегда — либо
 /// плейлист от сервера, либо «пусть идёт к Twitch как был».
-pub fn intercept(app: &AppHandle, tab: u32, token: u64, url: String) {
+pub fn intercept(app: &AppHandle, tab: u32, private: bool, token: u64, url: String) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let reply = playlist(&app, &url).await;
+        let reply = playlist(&app, &url, private).await;
         if reply.is_none() {
             tracing::debug!("плейлист Twitch идёт напрямую");
         }
@@ -510,7 +542,11 @@ async fn answer(
     tracing::warn!("ответ на запрос плейлиста Twitch не доставлен");
 }
 
-async fn playlist(app: &AppHandle, url: &str) -> Option<browser190x4_webview::InterceptReply> {
+async fn playlist(
+    app: &AppHandle,
+    url: &str,
+    private: bool,
+) -> Option<browser190x4_webview::InterceptReply> {
     let store = app.state::<App>().store.clone();
     if !(store.setting_bool("ext_twitch_enabled", true)
         && store.setting_bool("twitch_quality", true))
@@ -522,7 +558,7 @@ async fn playlist(app: &AppHandle, url: &str) -> Option<browser190x4_webview::In
     if russia_only(app, &servers[0]).await.contains(&channel) {
         return None;
     }
-    let token = app.state::<Twitch>().token.lock().clone();
+    let token = app.state::<Twitch>().tokens.lock().slot(private).clone();
     let client = app.state::<crate::newtab::NewTab>().client().clone();
     for server in servers.iter().take(TRIES) {
         let mut target = format!("{server}{url}");

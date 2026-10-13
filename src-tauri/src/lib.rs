@@ -392,7 +392,8 @@ pub(crate) fn route_event(
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
         TabEvent::Intercept { id, token, url } => {
-            twitch::intercept(app, *id, *token, url.clone());
+            let private = app.state::<App>().windows.is_private(label);
+            twitch::intercept(app, *id, private, *token, url.clone());
             return;
         }
         // Ссылку на приложение открывает браузер: спросить или открыть сразу.
@@ -517,7 +518,8 @@ fn route_message(
             pip::handle_message(app, id, frame, payload);
         }
         name if top && name.starts_with("twitch_") => {
-            twitch::handle_message(app, id, source, payload);
+            let private = app.state::<App>().windows.is_private(label);
+            twitch::handle_message(app, id, private, source, payload);
         }
         name if top && name.starts_with("newtab_") => {
             newtab::handle_message(app, id, source, payload);

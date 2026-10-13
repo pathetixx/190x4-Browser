@@ -90,6 +90,11 @@ impl WindowRegistry {
             .any(|(other, meta)| other != label && !meta.kind.is_private())
     }
 
+    /// Открыто ли хоть одно приватное окно.
+    pub fn any_private(&self) -> bool {
+        self.0.lock().values().any(|meta| meta.kind.is_private())
+    }
+
     /// Сколько окон браузера открыто (без всплывающих).
     pub fn len(&self) -> usize {
         self.0.lock().len()
@@ -523,6 +528,10 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
                 crate::drm::forget_tab(tab);
             }
             handle.state::<App>().windows.remove(&label);
+            // Вход Twitch приватного сеанса живёт, пока открыто приватное окно.
+            if !handle.state::<App>().windows.any_private() {
+                crate::twitch::forget_private(&handle);
+            }
             crate::popup::destroy(&handle, &label);
             // Последнее окно браузера закрыли: всплывающие окна сами приложение
             // на плаву не держат.
