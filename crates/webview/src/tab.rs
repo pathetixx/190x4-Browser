@@ -786,43 +786,154 @@ pub struct Tab {
     _cosmetics: Rc<filter::CosmeticScripts>,
 }
 
-type IdentitySlot = Rc<Cell<Option<(Identity, u64)>>>;
+/// Кем вкладка представляется сайтам.
+#[derive(Default)]
+struct IdentityState {
+    /// Вид сейчас и версия настроек, при которой он поставлен; `None` — движок
+    /// как есть.
+    current: Cell<Option<(Identity, u64)>>,
+    /// Подмена для фреймов чужих сайтов — параметры
+    /// `Emulation.setUserAgentOverride`; `None` — подменять нечего.
+    frames: RefCell<Option<String>>,
+    /// Вкладка уже подключается к фреймам чужих сайтов ([`attach_frames`]).
+    attached: Cell<bool>,
+}
+
+type IdentitySlot = Rc<IdentityState>;
+
+/// Подключение к фреймам чужих сайтов: каждый новый такой фрейм движок
+/// останавливает до его первого скрипта и ждёт, пока его отпустят.
+const AUTO_ATTACH: &str = r#"{"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true,"filter":[{"type":"iframe"}]}"#;
 
 /// Поставить вкладке вид для адреса (`identity::for_url`), если он другой.
 /// Команда протокола отладки асинхронная, но движок выполняет её раньше
 /// следующей навигации: обе идут в процесс движка по порядку.
 fn apply_identity(core: &ICoreWebView2, slot: &IdentitySlot, url: &str) {
-    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
-
     let identity = identity::for_url(url);
     let wanted = Some((identity, identity::generation()));
-    if slot.get() == wanted {
+    if slot.current.get() == wanted {
         return;
     }
     // Подмены не было, и нужен Edge — движок и так Edge.
-    if slot.get().is_none() && identity == Identity::Edge {
-        slot.set(wanted);
+    if slot.current.get().is_none() && identity == Identity::Edge {
+        slot.current.set(wanted);
         return;
     }
     let Some(params) = identity::override_params(identity) else {
         return;
     };
-    slot.set(wanted);
-    let sent = unsafe {
-        core.CallDevToolsProtocolMethod(
-            &HSTRING::from("Emulation.setUserAgentOverride"),
-            &HSTRING::from(params),
-            &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|code, _| {
-                if let Err(err) = code {
-                    tracing::warn!(%err, "вид браузера для сайта не поставлен");
+    slot.current.set(wanted);
+    // Фреймам — та же подмена, что документу; Edge — движок как есть.
+    *slot.frames.borrow_mut() = (identity != Identity::Edge).then(|| params.clone());
+    if identity != Identity::Edge && !slot.attached.get() {
+        slot.attached.set(attach_frames(core, slot));
+    }
+    devtools_call(core, None, "Emulation.setUserAgentOverride", &params);
+}
+
+/// Ставить вид вкладки и фреймам чужих сайтов.
+///
+/// Такой фрейм — отдельная цель протокола отладки в своём процессе, и подмена
+/// документа его скриптов не касается: страница представлялась Chrome, а
+/// фрейм проверки Cloudflare (challenges.cloudflare.com) в ней — Edge. Защита
+/// от ботов это сверяет, и «Подтвердите, что вы человек» шло по кругу. Движок
+/// останавливает каждый новый фрейм чужого сайта до его скриптов, обработчик
+/// ставит ему подмену и отпускает; фоновые потоки фрейма берут вид у него.
+///
+/// `false` — движок так не умеет, фреймы останутся Edge.
+fn attach_frames(core: &ICoreWebView2, slot: &IdentitySlot) -> bool {
+    use webview2_com::DevToolsProtocolEventReceivedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
+
+    if core.cast::<ICoreWebView2_11>().is_err() {
+        return false;
+    }
+    let receiver = match unsafe {
+        core.GetDevToolsProtocolEventReceiver(windows_core::h!("Target.attachedToTarget"))
+    } {
+        Ok(receiver) => receiver,
+        Err(err) => {
+            tracing::warn!(%err, "вид браузера для фреймов не поставлен");
+            return false;
+        }
+    };
+    let slot = slot.clone();
+    let mut token = 0i64;
+    let added = unsafe {
+        receiver.add_DevToolsProtocolEventReceived(
+            &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else {
+                    return Ok(());
+                };
+                let mut raw = PWSTR::null();
+                args.ParameterObjectAsJson(&mut raw)?;
+                let event: serde_json::Value =
+                    serde_json::from_str(&take_pwstr(raw)).unwrap_or_default();
+                let Some(session) = event["sessionId"].as_str() else {
+                    return Ok(());
+                };
+                let target = Some(session);
+                if event["targetInfo"]["type"] == "iframe" {
+                    if let Some(params) = slot.frames.borrow().as_deref() {
+                        devtools_call(&sender, target, "Emulation.setUserAgentOverride", params);
+                    }
+                    // Фреймы чужих сайтов внутри этого фрейма.
+                    devtools_call(&sender, target, "Target.setAutoAttach", AUTO_ATTACH);
+                }
+                // Отпустить — в любом случае: иначе фрейм так и стоит пустым.
+                if event["waitingForDebugger"] == true {
+                    devtools_call(&sender, target, "Runtime.runIfWaitingForDebugger", "{}");
                 }
                 Ok(())
             })),
+            &mut token,
         )
     };
-    if let Err(err) = sent {
-        tracing::warn!(%err, "вид браузера для сайта не поставлен");
+    if let Err(err) = added {
+        tracing::warn!(%err, "вид браузера для фреймов не поставлен");
+        return false;
     }
+    devtools_call(core, None, "Target.setAutoAttach", AUTO_ATTACH)
+}
+
+/// Команда протокола отладки документу вкладки (`session` — `None`) или
+/// подключённой цели. `false` — движок её не принял; ошибку выполнения
+/// пишет в лог ответ.
+fn devtools_call(core: &ICoreWebView2, session: Option<&str>, method: &str, params: &str) -> bool {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
+
+    let method = method.to_string();
+    let done = {
+        let method = method.clone();
+        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |code, _| {
+            if let Err(err) = code {
+                tracing::warn!(%err, %method, "команда протокола отладки не выполнена");
+            }
+            Ok(())
+        }))
+    };
+    let sent = match session {
+        None => unsafe {
+            core.CallDevToolsProtocolMethod(
+                &HSTRING::from(method.as_str()),
+                &HSTRING::from(params),
+                &done,
+            )
+        },
+        Some(session) => core.cast::<ICoreWebView2_11>().and_then(|core| unsafe {
+            core.CallDevToolsProtocolMethodForSession(
+                &HSTRING::from(session),
+                &HSTRING::from(method.as_str()),
+                &HSTRING::from(params),
+                &done,
+            )
+        }),
+    };
+    if let Err(err) = &sent {
+        tracing::warn!(%err, %method, "команда протокола отладки не выполнена");
+    }
+    sent.is_ok()
 }
 
 /// Скрипт защищённого видео во вкладке: его номер у движка и номер
@@ -1785,7 +1896,7 @@ impl Tab {
             }
         }
         // Вид для всех сайтов — до первой навигации: её адрес здесь ещё не известен.
-        let identity: IdentitySlot = Rc::new(Cell::new(None));
+        let identity: IdentitySlot = Rc::default();
         apply_identity(&core, &identity, "");
         let drm_script = Rc::new(RefCell::new(DrmSlot::default()));
         inject_scripts(&core, scripts.clone(), drm_script.clone())?;
