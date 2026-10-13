@@ -40,6 +40,13 @@
   // Вместо окна скрипт получает заглушку, которая остаётся «открытой»: на
   // отказ (`null`) и на закрытое окно реклама отвечает новой попыткой на
   // каждом щелчке, и до плеера щелчок не доходит.
+  //
+  // Встроенные функции страницы (`window.open`, `contentWindow` у фреймов)
+  // подменяются не сразу, а при первом настоящем нажатии, которое защита
+  // стережёт: на щелчке по плееру, а во фрейме чужого сайта — на любом. Защита
+  // от ботов (Cloudflare, капчи) сверяет эти функции с настоящими, и подмена
+  // с самого начала документа выглядела для неё как браузер под управлением
+  // скрипта: проверка «Подтвердите, что вы человек» шла по кругу.
   const frameDocument = config.popups && window !== window.top;
   const own = (host) => host === config.site || host.endsWith("." + config.site);
   // Куда окно: "foreign" — чужой сайт, "blank" — пустое окно, "" — своё.
@@ -66,13 +73,17 @@
   };
   const playerClick = (event) => {
     if (!event.isTrusted) return;
+    // Во фрейме чужого сайта защита действует всегда — с первого нажатия.
+    if (frameDocument) arm();
     const el = event.target instanceof Element ? event.target : null;
     if (el && el.closest("a[href], area[href]")) {
       playerClickUntil = 0;
       return;
     }
     // Щелчок мимо плеера (кнопка «Поделиться» под ним) снимает защиту сразу.
-    playerClickUntil = (el && el.closest(PLAYER)) || onVideo(event.clientX, event.clientY) ? performance.now() + 1500 : 0;
+    const player = (el && el.closest(PLAYER)) || onVideo(event.clientX, event.clientY);
+    playerClickUntil = player ? performance.now() + 1500 : 0;
+    if (player) arm();
   };
   for (const type of ["pointerdown", "mousedown", "click", "touchstart"]) {
     window.addEventListener(type, playerClick, true);
@@ -154,18 +165,26 @@
       }
     } catch (_) {}
   };
-  install(window);
-  // Свежий пустой фрейм — обход: его `open` ещё родной.
-  const frameWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
-  if (frameWindow && frameWindow.get) {
-    Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
-      ...frameWindow,
-      get() {
-        const win = frameWindow.get.call(this);
-        install(win);
-        return win;
-      },
-    });
+  // Подменить `open` — один раз, на первом нажатии, которое защита стережёт
+  // (`playerClick`): обработчики нажатия на `window` стоят раньше всех
+  // обработчиков страницы, и окно из того же щелчка уже попадает под защиту.
+  let armed = false;
+  function arm() {
+    if (armed) return;
+    armed = true;
+    install(window);
+    // Свежий пустой фрейм — обход: его `open` ещё родной.
+    const frameWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
+    if (frameWindow && frameWindow.get) {
+      Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+        ...frameWindow,
+        get() {
+          const win = frameWindow.get.call(this);
+          install(win);
+          return win;
+        },
+      });
+    }
   }
   // Ссылку на чужой сайт в новом окне «нажал» скрипт (`a.click()`,
   // `dispatchEvent`) — не человек.

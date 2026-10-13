@@ -70,6 +70,48 @@ const VETTED_SEARCH_ENGINES: &[&str] = &[
     "brave",
 ];
 
+/// Сайты, чьи фреймы на чужих страницах — оплата, вход и проверка «вы не
+/// робот», а не реклама. Кнопки PayPal открывают окно оплаты пустым и ставят
+/// адрес следом, как и реклама в плеерах, а Cloudflare и капчи сверяют
+/// встроенные функции страницы: подмена `window.open` в их фрейме зацикливала
+/// проверку. Таким фреймам защиту от рекламных окон не ставим. Сравнивается
+/// регистрируемый домен фрейма.
+const TRUSTED_FRAME_SITES: &[&str] = &[
+    // Проверка «вы не робот».
+    "cloudflare.com",
+    "hcaptcha.com",
+    "recaptcha.net",
+    "google.com",
+    "yandexcloud.net",
+    "arkoselabs.com",
+    // Оплата.
+    "paypal.com",
+    "paypalobjects.com",
+    "stripe.com",
+    "klarna.com",
+    "yoomoney.ru",
+    "cloudpayments.ru",
+    "tbank.ru",
+    "tinkoff.ru",
+    // Вход через сторонний аккаунт. Порталов со своей рекламой во фреймах
+    // (Яндекс, Mail.ru, VK) здесь нет: их кнопки входа открывают окно на свой
+    // же сайт, а такое окно защита не трогает и так.
+    "apple.com",
+    "microsoftonline.com",
+    "live.com",
+    "telegram.org",
+];
+
+/// Фрейм сайта из [`TRUSTED_FRAME_SITES`].
+fn is_trusted_frame(url: &str) -> bool {
+    host_slice(url).is_some_and(|host| {
+        let domain = registrable_domain(host);
+        TRUSTED_FRAME_SITES
+            .iter()
+            .any(|site| domain.eq_ignore_ascii_case(site))
+    })
+}
+
 fn is_vetted_search_engine(url: &str) -> bool {
     let Some(host) = host_slice(url) else {
         return false;
@@ -489,8 +531,9 @@ impl Guard {
             || !cosmetics.styles.is_empty()
             || !cosmetics.procedural.is_empty()
             || !cosmetics.script.trim().is_empty();
-        // Фрейм чужого сайта скрипт получает всегда — ради окон (`popups`).
-        let popups = !same_site(url, page_url);
+        // Фрейм чужого сайта скрипт получает всегда — ради окон (`popups`), —
+        // кроме оплаты, входа и капч.
+        let popups = !same_site(url, page_url) && !is_trusted_frame(url);
         if rules {
             Some(Cosmetics {
                 popups,
@@ -747,7 +790,8 @@ impl Guard {
     /// странице `page_url`: так реклама в плеерах открывает окно по щелчку, а
     /// адрес рекламной сети, которой нет в списках, ставит в него следом.
     /// Вход через Google, VK ID и Telegram открывает окно сразу со своим
-    /// адресом.
+    /// адресом; оплата PayPal — пустым, но из фрейма доверенного сайта
+    /// ([`TRUSTED_FRAME_SITES`]).
     pub fn blank_popup_from_foreign_frame(
         &self,
         url: &str,
@@ -759,6 +803,7 @@ impl Guard {
             && self.filters(page_url)
             && frame_url.starts_with("http")
             && !same_site(frame_url, page_url)
+            && !is_trusted_frame(frame_url)
     }
 }
 
@@ -1201,6 +1246,12 @@ mod tests {
         ));
         assert!(!guard.blank_popup_from_foreign_frame("about:blank", page, page));
         assert!(!guard.blank_popup_from_foreign_frame("https://accounts.example/", page, player));
+        // Кнопка оплаты PayPal открывает окно пустым и ставит адрес следом.
+        assert!(!guard.blank_popup_from_foreign_frame(
+            "about:blank",
+            "https://shop.example/cart",
+            "https://www.paypal.com/smart/buttons?x=1"
+        ));
         guard.set_exempt_sites(["films.example".to_string()]);
         assert!(!guard.blank_popup_from_foreign_frame("about:blank", page, player));
     }
@@ -1331,6 +1382,14 @@ mod tests {
         assert_eq!(plain.site, "plain.example");
         assert!(guard
             .frame_cosmetics("https://cdn.news.example/embed", page)
+            .is_none());
+        // Капча Cloudflare и оплата — без защиты окон: Turnstile сверяет
+        // встроенные функции, PayPal открывает окно оплаты пустым.
+        assert!(guard
+            .frame_cosmetics("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/if/ov2/", page)
+            .is_none());
+        assert!(guard
+            .frame_cosmetics("https://www.paypal.com/smart/buttons", page)
             .is_none());
         // Страница без блокировки — и её фреймы без косметики.
         guard.set_exempt_sites(["news.example".to_string()]);

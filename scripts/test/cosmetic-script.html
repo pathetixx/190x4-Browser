@@ -74,6 +74,12 @@
 
       (async () => {
         await wait(400);
+        // Без щелчка по плееру встроенные функции страницы — настоящие: защита
+        // от ботов (Cloudflare) сверяет их и зацикливала проверку.
+        const frameGetter = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow").get;
+        checks.natives_untouched =
+          Function.prototype.toString.call(window.open).includes("open") &&
+          Function.prototype.toString.call(frameGetter).includes("[native code]");
         checks.css_hide = !shown("promo") && shown("news-card");
         checks.css_style = getComputedStyle(document.getElementById("banner")).height === "1px";
         checks.has_text = !shown("ad-card");

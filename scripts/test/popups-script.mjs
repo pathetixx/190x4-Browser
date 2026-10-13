@@ -34,6 +34,12 @@ try {
   const last = () => evaluate("window.log[window.log.length - 1]");
   await sleep(1500);
   check(await evaluate("Boolean(window[Symbol.for('x4cosmetic')])"), "исполнитель отработал на странице");
+  const native = (expression) => evaluate(`Function.prototype.toString.call(${expression})`);
+  check((await native("window.open")).includes("open"), "до щелчка по плееру window.open — настоящий");
+  check(
+    (await native("Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get")).includes("[native code]"),
+    "до щелчка по плееру contentWindow — настоящий"
+  );
 
   await click(50, 50);
   check((await last()) === "decoy", "щелчок по кнопке плеера: окно на чужой сайт — заглушка");
@@ -51,6 +57,9 @@ try {
 
   const frame = "document.getElementById('frame').contentWindow";
   check(await evaluate(`Boolean(${frame}[Symbol.for('x4cosmetic')])`), "исполнитель отработал во фрейме");
+  check((await native(`${frame}.open`)).includes("open"), "фрейм до первого нажатия: window.open — настоящий");
+  // Защита фрейма включается на первом настоящем нажатии в нём.
+  await click(600, 50);
   check(await evaluate(`window.decoy(${frame}.open('about:blank'))`), "фрейм чужого сайта: пустое окно — заглушка");
   check(await evaluate(`window.decoy(${frame}.open(''))`), "фрейм чужого сайта: окно без адреса — заглушка");
   check(await evaluate(`window.decoy(${frame}.open('https://ads.example/f'))`), "фрейм чужого сайта: окно на чужой сайт — заглушка");
