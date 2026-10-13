@@ -86,6 +86,11 @@ impl Transfers {
         self.inner.lock().media_jobs.remove(&id);
     }
 
+    /// Сколько видео сейчас качает сервер загрузчика.
+    pub fn media_active(&self) -> usize {
+        self.inner.lock().media_jobs.len()
+    }
+
     fn media_job(&self, id: i64) -> Option<String> {
         self.inner.lock().media_jobs.get(&id).cloned()
     }

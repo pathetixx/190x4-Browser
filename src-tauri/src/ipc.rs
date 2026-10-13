@@ -1755,6 +1755,19 @@ pub fn zoom_site_set(
     Ok(())
 }
 
+/// Сколько загрузок прервёт закрытие браузера (обновление): файлы движка во
+/// всех окнах и видео загрузчика.
+#[tauri::command(async)]
+pub fn downloads_active(app: AppHandle, state: State<'_, App>) -> usize {
+    let engine: usize = state
+        .windows
+        .labels()
+        .iter()
+        .filter_map(|label| with_host(&app, label, |host| host.active_downloads()).ok())
+        .sum();
+    engine + state.transfers.media_active()
+}
+
 #[tauri::command(async)]
 pub fn downloads_clear(app: AppHandle, state: State<'_, App>) -> Result<(), String> {
     state.store.clear_downloads().map_err(text)?;

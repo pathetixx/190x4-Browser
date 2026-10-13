@@ -225,6 +225,7 @@ pub fn run() {
             ipc::session_restore,
             ipc::downloads_list,
             ipc::download_control,
+            ipc::downloads_active,
             ipc::downloads_clear,
             ipc::downloads_folder_open,
             ipc::download_folder_pick,
