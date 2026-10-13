@@ -26,6 +26,13 @@
     return;
   }
 
+  // Страница проверки Cloudflare («Один момент…» — её скрипт задаёт
+  // `_cf_chl_opt`) следит за чужим кодом в документе: фоновые проходы
+  // косметики — проверка спрятанного, сбор классов, процедурные правила — на
+  // ней сбивали невидимую проверку, и страница перезапускала её без конца.
+  // Здесь скрипт только ставит стили с начала документа, дальше молчит.
+  const challenge = () => "_cf_chl_opt" in window;
+
   /* ── Окна рекламы «по щелчку» ─────────────────────────────── */
 
   // Плеер открывает рекламу в новом окне скриптом по щелчку: `window.open` на
@@ -222,7 +229,7 @@
   };
   const passThrough = (event) => {
     const el = event.target;
-    if (!catcher(el)) return;
+    if (challenge() || !catcher(el)) return;
     el.style.setProperty("pointer-events", "none", "important");
     // Мышь уже нажата на слое: этот щелчок не отдаём ни слою, ни рекламе.
     if (event.type !== "pointerover") {
@@ -408,7 +415,7 @@
   };
 
   const pumpCosmeticFilterQueues = () => {
-    if (queueIsSleeping) return;
+    if (queueIsSleeping || challenge()) return;
     let didPumpAnything = false;
     for (let queueIndex = 0; queueIndex < queues.length; queueIndex += 1) {
       const currentQueue = queues[queueIndex];
@@ -815,7 +822,7 @@
   };
   const pass = () => {
     timer = 0;
-    if (document.hidden) return;
+    if (document.hidden || challenge()) return;
     attach();
     if (config.generic) survey();
     if (!procedural.length || !structural) return;
