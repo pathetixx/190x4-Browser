@@ -972,6 +972,27 @@ impl TabHost {
                     // мини-плеера ни к чему.
                     let _ = unsafe { settings.SetAreDefaultContextMenusEnabled(false) };
                 }
+                // Документ мини-плеера пишет страница сама, и уходить ему
+                // некуда: окно поверх всех без адресной строки не должно
+                // показывать чужой сайт.
+                let mut token = 0i64;
+                let _ = unsafe {
+                    core.add_NavigationStarting(
+                        &webview2_com::NavigationStartingEventHandler::create(Box::new(
+                            |_, args| {
+                                let Some(args) = args else { return Ok(()) };
+                                let mut raw = windows_core::PWSTR::null();
+                                args.Uri(&mut raw)?;
+                                let url = webview2_com::take_pwstr(raw);
+                                if !url.is_empty() && !url.starts_with("about:") {
+                                    args.SetCancel(true)?;
+                                }
+                                Ok(())
+                            },
+                        )),
+                        &mut token,
+                    )
+                };
                 slot.doc = Some(controller);
                 let sink = state.sink.clone();
                 drop(state);

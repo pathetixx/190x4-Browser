@@ -484,6 +484,67 @@ fn page_navigation(
 /// Сколько живёт невидимая заглушка рекламного окна (`decoy_popup`).
 const DECOY_LIFETIME_MS: u32 = 10 * 60 * 1000;
 
+/// Больше заглушек вкладка не держит: каждая — живой вебвью, а страница с
+/// рекламой открывает окно на каждом щелчке. Лишняя закрывает самую старую.
+const DECOYS_PER_TAB: usize = 3;
+
+/// Заглушки рекламных окон вкладки. Закрываются вместе с вкладкой: иначе
+/// вебвью закрытой вкладки жили бы до десяти минут, а в приватном окне держали
+/// бы его сеанс InPrivate открытым и после закрытия окна.
+#[derive(Default)]
+struct Decoys {
+    list: RefCell<std::collections::VecDeque<(u64, ICoreWebView2Controller)>>,
+    next: Cell<u64>,
+    /// Вкладку закрыли: заглушка, которую движок достроит позже, закрывается сразу.
+    closed: Cell<bool>,
+}
+
+impl Decoys {
+    /// Взять готовую заглушку на учёт: до конца срока, до закрытия вкладки или
+    /// пока её не вытеснит более свежая.
+    fn keep(self: &Rc<Self>, decoy: ICoreWebView2Controller) {
+        if self.closed.get() {
+            let _ = unsafe { decoy.Close() };
+            return;
+        }
+        let id = self.next.get() + 1;
+        self.next.set(id);
+        let evicted = {
+            let mut list = self.list.borrow_mut();
+            list.push_back((id, decoy));
+            if list.len() > DECOYS_PER_TAB {
+                list.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some((_, old)) = evicted {
+            let _ = unsafe { old.Close() };
+        }
+        let weak = Rc::downgrade(self);
+        crate::later::after(DECOY_LIFETIME_MS, move || {
+            let Some(decoys) = weak.upgrade() else { return };
+            let expired = {
+                let mut list = decoys.list.borrow_mut();
+                list.iter()
+                    .position(|(other, _)| *other == id)
+                    .and_then(|at| list.remove(at))
+            };
+            if let Some((_, decoy)) = expired {
+                let _ = unsafe { decoy.Close() };
+            }
+        });
+    }
+
+    fn close_all(&self) {
+        self.closed.set(true);
+        let all = std::mem::take(&mut *self.list.borrow_mut());
+        for (_, decoy) in all {
+            let _ = unsafe { decoy.Close() };
+        }
+    }
+}
+
 /// Рекламное окно страницы — в невидимую заглушку вместо отказа, как у uBlock
 /// Origin (он открывает такую вкладку и тут же закрывает). Отказ даёт странице
 /// `null` из `window.open`, и рекламный скрипт плеера оставляет свой прозрачный
@@ -493,17 +554,19 @@ const DECOY_LIFETIME_MS: u32 = 10 * 60 * 1000;
 /// ([`DECOY_LIFETIME_MS`]): закрытое окно реклама считает непоказанным и
 /// открывает новое на следующем щелчке по плееру — щелчок уходит ей, а не
 /// плееру. Brave так же оставляет окно рекламы открытым, только маленьким и
-/// под окном браузера.
+/// под окном браузера. Звука у заглушки нет: в пустое окно реклама может
+/// дописать свой документ, а слышно его было бы ниоткуда.
 /// При ошибке окно отклоняют (`SetHandled`): `window.open` получит `null`.
 fn decoy_popup(
     controller: &ICoreWebView2Controller,
     core: &ICoreWebView2,
     private: bool,
     args: &ICoreWebView2NewWindowRequestedEventArgs,
+    decoys: Rc<Decoys>,
 ) -> windows_core::Result<()> {
     use webview2_com::CreateCoreWebView2ControllerCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Environment10, ICoreWebView2_2,
+        ICoreWebView2Environment10, ICoreWebView2_2, ICoreWebView2_8,
     };
 
     let env = unsafe { core.cast::<ICoreWebView2_2>()?.Environment()? };
@@ -529,6 +592,9 @@ fn decoy_popup(
                 unsafe {
                     decoy.SetIsVisible(false)?;
                     let page = decoy.CoreWebView2()?;
+                    if let Ok(page8) = page.cast::<ICoreWebView2_8>() {
+                        let _ = page8.SetIsMuted(true);
+                    }
                     let mut token = 0i64;
                     page.add_NavigationStarting(
                         &NavigationStartingEventHandler::create(Box::new(|_, args| {
@@ -547,9 +613,7 @@ fn decoy_popup(
                 Ok(decoy)
             })();
             match attached {
-                Ok(decoy) => crate::later::after(DECOY_LIFETIME_MS, move || unsafe {
-                    let _ = decoy.Close();
-                }),
+                Ok(decoy) => decoys.keep(decoy),
                 Err(err) => {
                     tracing::debug!(%err, "заглушка рекламного окна не встала");
                     let _ = unsafe { args.SetHandled(true) };
@@ -693,6 +757,8 @@ pub struct Tab {
     /// Браузер сам попросил страницу открыть мини-плеер (`pip_script`):
     /// следующее её окно — окно мини-плеера, а не вкладка.
     pip_expected: Rc<Cell<bool>>,
+    /// Невидимые заглушки рекламных окон страницы (`decoy_popup`).
+    decoys: Rc<Decoys>,
     /// Кем вкладка представляется сайтам сейчас (`identity`) и при какой
     /// версии настроек это поставлено; `None` — движок как есть.
     identity: IdentitySlot,
@@ -1764,6 +1830,7 @@ impl Tab {
             drm_script,
             intercepts,
             pip_expected: Rc::default(),
+            decoys: Rc::default(),
             identity,
             filtering: Rc::new(Cell::new(true)),
             browser_navigation: Rc::default(),
@@ -2144,6 +2211,7 @@ impl Tab {
             let controller = self.controller.clone();
             let core_ref = core.clone();
             let private = self.private;
+            let decoys = self.decoys.clone();
             core.add_NewWindowRequested(
                 &NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
                     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -2157,6 +2225,18 @@ impl Tab {
                     // Окно мини-плеера, которое браузер сам попросил открыть
                     // (`pip_script`): не вкладка, его сажает в своё окно хост.
                     if pip_expected.replace(false) {
+                        // Окно мини-плеера — `documentPictureInPicture`, всегда
+                        // пустое. Окно с адресом страница открыла сама, подменив
+                        // `requestWindow`, пока работал скрипт мини-плеера: это
+                        // было бы окно поверх всех без адресной строки.
+                        if !(url.is_empty() || url.eq_ignore_ascii_case("about:blank")) {
+                            tracing::debug!(
+                                tab = id,
+                                "вместо мини-плеера страница открыла окно с адресом"
+                            );
+                            args.SetHandled(true)?;
+                            return Ok(());
+                        }
                         let (width, height) = window_size(&args);
                         let deferral = args.GetDeferral()?;
                         let token = NEXT_POPUP.fetch_add(1, Ordering::Relaxed);
@@ -2206,7 +2286,9 @@ impl Tab {
                             .any(|opener| guard.blocks_popup(&url, opener))
                     {
                         tracing::debug!(tab = id, "рекламное окно страницы не открыто");
-                        if let Err(err) = decoy_popup(&controller, &core_ref, private, &args) {
+                        if let Err(err) =
+                            decoy_popup(&controller, &core_ref, private, &args, decoys.clone())
+                        {
                             tracing::debug!(%err, "заглушка рекламного окна не создана");
                             let _ = args.SetHandled(true);
                         }
@@ -2899,6 +2981,7 @@ impl Tab {
     }
 
     pub fn close(self) -> windows_core::Result<()> {
+        self.decoys.close_all();
         unsafe { self.controller.Close() }
     }
 
