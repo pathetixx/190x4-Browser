@@ -5,8 +5,8 @@
 //! Режим Chrome подменяет и то и другое командой протокола отладки
 //! `Emulation.setUserAgentOverride`: строка — та же, без `Edg/…`, Client Hints —
 //! настоящие значения движка (их присылает интерфейс, см. [`set_engine_hints`]),
-//! где бренд Edge заменён на «Google Chrome» с версией Chromium, как у настоящего
-//! Chrome.
+//! а бренды — как у Chrome той же версии: три, с заглушкой и порядком по
+//! алгоритму Chromium, Google Chrome — с версией Chromium.
 //!
 //! Подмена живёт во вкладке и ставится до навигации: при создании вкладки и в
 //! `NavigationStarting`, если сайт нового адреса представляется иначе. Первый
@@ -126,8 +126,9 @@ fn chrome_agent(engine: &str) -> String {
         .join(" ")
 }
 
-/// Client Hints Chrome из настоящих значений движка: бренд Edge —
-/// «Google Chrome», его полная версия — версия Chromium, как у Chrome.
+/// Client Hints Chrome из настоящих значений движка: платформа и архитектура —
+/// движка, бренды — как у Chrome той же версии ([`chrome_brands`]), полная
+/// версия Chrome — версия Chromium.
 fn chrome_metadata(hints: Option<&Value>, agent: &str) -> Value {
     let major = agent
         .split("Chrome/")
@@ -153,11 +154,9 @@ fn chrome_metadata(hints: Option<&Value>, agent: &str) -> Value {
         .map(str::to_string)
         .unwrap_or_else(|| format!("{major}.0.0.0"));
 
-    let brands = rebrand(field("brands"), &major, "99");
-    let full_versions = rebrand(field("fullVersionList"), &chromium_full, "99.0.0.0");
     json!({
-        "brands": brands,
-        "fullVersionList": full_versions,
+        "brands": chrome_brands(&major, &major, false),
+        "fullVersionList": chrome_brands(&major, &chromium_full, true),
         "fullVersion": chromium_full,
         "platform": text("platform", "Windows"),
         "platformVersion": text("platformVersion", "10.0.0"),
@@ -169,37 +168,41 @@ fn chrome_metadata(hints: Option<&Value>, agent: &str) -> Value {
     })
 }
 
-/// Список брендов, где Edge заменён на Chrome с этой версией. Нет списка —
-/// тот, что у Chrome: Chromium, Google Chrome и бренд-заглушка с версией
-/// `grease` (у кратких брендов — `99`, у полных версий — `99.0.0.0`).
-fn rebrand(list: Option<&Value>, chrome_version: &str, grease: &str) -> Value {
-    let mut out: Vec<Value> = list
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let brand = item.get("brand")?.as_str()?;
-                    let version = item.get("version")?.as_str()?;
-                    Some(if brand.contains("Edge") {
-                        json!({ "brand": "Google Chrome", "version": chrome_version })
-                    } else {
-                        json!({ "brand": brand, "version": version })
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if !out.iter().any(|item| item["brand"] == "Chromium") {
-        out.push(json!({ "brand": "Chromium", "version": chrome_version }));
-    }
-    if !out.iter().any(|item| item["brand"] == "Google Chrome") {
-        out.push(json!({ "brand": "Google Chrome", "version": chrome_version }));
-    }
-    if out.len() < 3 {
-        out.insert(0, json!({ "brand": "Not.A/Brand", "version": grease }));
-    }
-    Value::Array(out)
+/// Бренды Chrome этой версии — так, как их строит сам Chromium
+/// (`GenerateBrandVersionList`, `components/embedder_support/user_agent_utils.cc`):
+/// ровно три — бренд-заглушка, Chromium и Google Chrome, — а порядок и
+/// заглушка зависят от основной версии. Бренды движка переименовывать нельзя:
+/// у WebView2 их два («Microsoft Edge» и «Microsoft Edge WebView2»), и Chrome
+/// выходил дважды — защита от ботов на такое не ведётся.
+fn chrome_brands(major: &str, version: &str, full: bool) -> Value {
+    const CHARS: [&str; 11] = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"];
+    const VERSIONS: [&str; 3] = ["8", "99", "24"];
+    const ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let seed: usize = major.parse().unwrap_or(0);
+    let grease_brand = format!(
+        "Not{}A{}Brand",
+        CHARS[seed % CHARS.len()],
+        CHARS[(seed + 1) % CHARS.len()]
+    );
+    let grease_version = VERSIONS[seed % VERSIONS.len()];
+    let grease_version = if full {
+        format!("{grease_version}.0.0.0")
+    } else {
+        grease_version.to_string()
+    };
+    let order = ORDERS[seed % ORDERS.len()];
+    let mut list = vec![Value::Null; 3];
+    list[order[0]] = json!({ "brand": grease_brand, "version": grease_version });
+    list[order[1]] = json!({ "brand": "Chromium", "version": version });
+    list[order[2]] = json!({ "brand": "Google Chrome", "version": version });
+    Value::Array(list)
 }
 
 #[cfg(test)]
@@ -217,17 +220,19 @@ mod tests {
     }
 
     #[test]
-    fn edge_brand_becomes_chrome_with_the_chromium_version() {
+    fn brands_are_chrome_with_the_chromium_version() {
         let hints = json!({
             "brands": [
-                {"brand": "Chromium", "version": "146"},
-                {"brand": "Not-A.Brand", "version": "24"},
-                {"brand": "Microsoft Edge WebView2", "version": "146"}
+                {"brand": "Microsoft Edge", "version": "154"},
+                {"brand": "Not A(Brand", "version": "99"},
+                {"brand": "Microsoft Edge WebView2", "version": "154"},
+                {"brand": "Chromium", "version": "154"}
             ],
             "fullVersionList": [
-                {"brand": "Chromium", "version": "146.0.7680.80"},
-                {"brand": "Not-A.Brand", "version": "24.0.0.0"},
-                {"brand": "Microsoft Edge WebView2", "version": "146.0.3856.62"}
+                {"brand": "Microsoft Edge", "version": "154.0.4258.62"},
+                {"brand": "Not A(Brand", "version": "99.0.0.0"},
+                {"brand": "Microsoft Edge WebView2", "version": "154.0.4258.62"},
+                {"brand": "Chromium", "version": "154.0.8037.98"}
             ],
             "platform": "Windows",
             "platformVersion": "19.0.0",
@@ -237,18 +242,38 @@ mod tests {
             "mobile": false,
             "wow64": false
         });
-        let metadata = chrome_metadata(Some(&hints), &chrome_agent(EDGE));
-        let text = metadata.to_string();
-        assert!(!text.contains("Edge"));
+        let agent = EDGE.replace("146.0.0.0", "154.0.0.0");
+        let metadata = chrome_metadata(Some(&hints), &chrome_agent(&agent));
+        assert!(!metadata.to_string().contains("Edge"));
+        // Заглушка движка той же версии совпадает с посчитанной.
         assert_eq!(
-            metadata["brands"][2],
-            json!({"brand": "Google Chrome", "version": "146"})
+            metadata["brands"],
+            json!([
+                {"brand": "Chromium", "version": "154"},
+                {"brand": "Google Chrome", "version": "154"},
+                {"brand": "Not A(Brand", "version": "99"}
+            ])
         );
         assert_eq!(
-            metadata["fullVersionList"][2],
-            json!({"brand": "Google Chrome", "version": "146.0.7680.80"})
+            metadata["fullVersionList"][1],
+            json!({"brand": "Google Chrome", "version": "154.0.8037.98"})
         );
+        assert_eq!(metadata["fullVersion"], "154.0.8037.98");
         assert_eq!(metadata["platformVersion"], "19.0.0");
+    }
+
+    #[test]
+    fn brands_match_the_chrome_header() {
+        // Sec-CH-UA настоящего Chrome 120:
+        // "Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120".
+        assert_eq!(
+            chrome_brands("120", "120", false),
+            json!([
+                {"brand": "Not_A Brand", "version": "8"},
+                {"brand": "Chromium", "version": "120"},
+                {"brand": "Google Chrome", "version": "120"}
+            ])
+        );
     }
 
     #[test]
@@ -260,7 +285,8 @@ mod tests {
             .iter()
             .map(|item| item["brand"].as_str().unwrap())
             .collect();
-        assert_eq!(brands, ["Not.A/Brand", "Chromium", "Google Chrome"]);
+        // Для 146 — как у WebView2 той же версии: Chromium, Not-A.Brand, бренд.
+        assert_eq!(brands, ["Chromium", "Not-A.Brand", "Google Chrome"]);
         assert_eq!(metadata["fullVersion"], "146.0.0.0");
     }
 }

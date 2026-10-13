@@ -1295,8 +1295,12 @@ PlayReady — там, где Widevine выключен вообще (`drm_widevi
 
 Вид Chrome — команда протокола отладки `Emulation.setUserAgentOverride` во
 вкладке (`crates/webview/src/identity.rs`): строка движка без `Edg/…` и Client
-Hints движка, где бренд Edge заменён на «Google Chrome» с полной версией
-Chromium — как у настоящего Chrome. Настоящие Client Hints присылает окно
+Hints движка (платформа, архитектура, версия Chromium), а бренды — как у
+настоящего Chrome той же версии: ровно три — заглушка, Chromium и Google
+Chrome, — с заглушкой и порядком по алгоритму Chromium
+(`GenerateBrandVersionList`). Бренды движка не переименовываются: у WebView2
+их два («Microsoft Edge» и «Microsoft Edge WebView2»), и Chrome выходил
+дважды. Настоящие Client Hints присылает окно
 интерфейса при запуске (`getHighEntropyValues` → `engine_hints`): это тот же
 движок, что у вкладок; до них — правдоподобный набор по версии из строки.
 Проверено в Chromium: после команды `navigator.userAgent`, краткие и полные
