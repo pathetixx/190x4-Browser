@@ -1221,8 +1221,23 @@ pub fn history_clear_period(state: State<'_, App>, period: String) -> Result<(),
         "hour" => state.store.clear_history_since(now - 3600).map_err(text),
         "day" => state.store.clear_history_since(now - 86_400).map_err(text),
         "week" => state.store.clear_history_since(now - 604_800).map_err(text),
-        "all" => state.store.clear_history().map_err(text),
+        "all" => {
+            forget_site_icons();
+            state.store.clear_history().map_err(text)
+        }
         other => Err(format!("неизвестный период {other}")),
+    }
+}
+
+/// Кэш значков сайтов (`site-icons`) — тоже след посещённых сайтов: каждый
+/// значок там — сайт с плитки новой вкладки, то есть из истории. Уходит вместе
+/// с историей и данными сайтов.
+fn forget_site_icons() {
+    let dir = crate::profile_dir().join("site-icons");
+    if let Err(err) = std::fs::remove_dir_all(&dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%err, "кэш значков сайтов не удалён");
+        }
     }
 }
 
@@ -1847,6 +1862,9 @@ pub fn browsing_data_clear(
 ) -> Result<(), String> {
     if history {
         state.store.clear_history().map_err(text)?;
+    }
+    if history || site_data {
+        forget_site_icons();
     }
     if downloads {
         state.store.clear_downloads().map_err(text)?;
