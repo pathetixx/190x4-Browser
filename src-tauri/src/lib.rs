@@ -570,7 +570,12 @@ fn relaunch_after_engine_crash(app: &tauri::AppHandle) {
     }
     let uptime = STARTED.get().map(|at| at.elapsed()).unwrap_or_default();
     if uptime < std::time::Duration::from_secs(30) {
+        // Перезапуск пошёл бы по кругу, а оставаться нельзя: окна мертвы,
+        // кнопки «Закрыть» нет (заголовок окна — та же страница), и следующий
+        // запуск отдал бы свои адреса этому процессу. Сказать и выйти.
         tracing::error!(?uptime, "движок WebView2 упал сразу после запуска");
+        engine_crash_notice();
+        app.exit(1);
         return;
     }
     tracing::error!("движок WebView2 упал — браузер перезапускается");
@@ -582,6 +587,23 @@ fn relaunch_after_engine_crash(app: &tauri::AppHandle) {
     match spawned {
         Ok(_) => app.exit(0),
         Err(err) => tracing::error!(%err, "браузер не перезапущен"),
+    }
+}
+
+/// Сообщение о движке, упавшем сразу после запуска.
+#[cfg(windows)]
+fn engine_crash_notice() {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let text = HSTRING::from(
+        "Движок страниц WebView2 завершился сразу после запуска, и браузер закрывается.\n\n\
+         Обычно помогает перезагрузка компьютера или обновление Microsoft Edge WebView2 Runtime. \
+         Подробности — в browser.log в папке профиля.",
+    );
+    let caption = HSTRING::from("190x4 Browser");
+    unsafe {
+        let _ = MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
     }
 }
 
