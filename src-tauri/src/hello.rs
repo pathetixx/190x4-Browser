@@ -132,12 +132,10 @@ fn confirm_with_password(
             return Ok(false);
         }
         if code != 0 || packed.is_null() {
-            // Системного окна входа нет вовсе — запирать пароли нечем.
-            tracing::warn!(
-                code,
-                "окно входа Windows не открылось — подтверждение пропущено"
-            );
-            return Ok(true);
+            // Окно входа не открылось — пароль не показываем: пропускать без
+            // проверки на любой ошибке значило бы, что её можно вызвать нарочно.
+            tracing::warn!(code, "окно входа Windows не открылось");
+            anyhow::bail!("окно входа Windows не открылось — попробуйте ещё раз");
         }
 
         let mut user = vec![0u16; 514];
@@ -198,15 +196,27 @@ fn confirm_with_password(
         wipe(&mut password);
         wipe(&mut domain);
         match logon {
+            // Окно входа может принять и чужую учётную запись этого компьютера:
+            // пароли открывает только вход того, чьи они, — сверяем SID.
             Ok(()) => {
+                let same = token_sid(token)
+                    .is_some_and(|sid| current_user_sid().is_some_and(|own| own == sid));
                 unsafe {
                     let _ = CloseHandle(token);
                 }
-                return Ok(true);
+                if same {
+                    return Ok(true);
+                }
+                tracing::warn!("в окне входа — другая учётная запись Windows");
+                error = ERROR_LOGON_FAILURE.0;
             }
             // Учётная запись без пароля: Windows не пускает с пустым паролем
-            // через этот вход, а проверять больше нечего.
-            Err(err) if blank && err.code() == ERROR_ACCOUNT_RESTRICTION.to_hresult() => {
+            // через этот вход, а проверять больше нечего — если это она сама.
+            Err(err)
+                if blank
+                    && err.code() == ERROR_ACCOUNT_RESTRICTION.to_hresult()
+                    && is_current_account(account_domain.as_deref(), &account) =>
+            {
                 return Ok(true);
             }
             Err(err) => {
@@ -216,6 +226,63 @@ fn confirm_with_password(
         }
     }
     Ok(false)
+}
+
+/// SID учётной записи токена — байтами.
+#[cfg(windows)]
+fn token_sid(token: windows::Win32::Foundation::HANDLE) -> Option<Vec<u8>> {
+    use windows::Win32::Security::{GetLengthSid, GetTokenInformation, TokenUser, TOKEN_USER};
+
+    unsafe {
+        let mut size = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
+        if size == 0 {
+            return None;
+        }
+        // Буфер под TOKEN_USER — с выравниванием указателя.
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            size,
+            &mut size,
+        )
+        .ok()?;
+        let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let sid = user.User.Sid;
+        if sid.0.is_null() {
+            return None;
+        }
+        let length = GetLengthSid(sid) as usize;
+        Some(std::slice::from_raw_parts(sid.0 as *const u8, length).to_vec())
+    }
+}
+
+/// SID пользователя, от чьего имени работает браузер.
+#[cfg(windows)]
+fn current_user_sid() -> Option<Vec<u8>> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+        let sid = token_sid(token);
+        let _ = CloseHandle(token);
+        sid
+    }
+}
+
+/// Имя из окна входа — учётная запись, от чьего имени работает браузер. Для
+/// записи без пароля: у неё нет токена, по которому сверить SID.
+#[cfg(windows)]
+fn is_current_account(domain: Option<&str>, account: &str) -> bool {
+    let same = |name: &str, var: &str| {
+        std::env::var(var).is_ok_and(|own| own.to_lowercase() == name.to_lowercase())
+    };
+    same(account, "USERNAME") && domain.is_none_or(|domain| same(domain, "USERDOMAIN"))
 }
 
 #[cfg(not(windows))]

@@ -571,8 +571,12 @@ pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::R
 
 /// Учётку — в документ вкладки или во фрейм. `origin` — адрес документа,
 /// которому показали список: во вкладке он сверяется с документом прямо перед
-/// отправкой, во фрейме — скриптом страницы (`location.origin`), а сменившийся
-/// документ фрейма свои учётки уже потерял (`on_frame_navigation`).
+/// отправкой. Во фрейме адрес документа движок не сообщает: там проверяется,
+/// что учётки фрейма ещё на месте — переход фрейма их забирает
+/// (`on_frame_navigation`, на том же главном потоке, что и эта отправка), — а
+/// потом скриптом страницы (`location.origin`). Одной проверки скриптом мало:
+/// сообщение `chrome.webview` слышит любой скрипт документа, и пароль дошёл бы
+/// до чужого документа раньше, чем исполнитель его отверг.
 fn fill_tab(
     app: &AppHandle,
     tab: u32,
@@ -581,11 +585,28 @@ fn fill_tab(
     username: String,
     password: String,
 ) {
+    let handle = app.clone();
     later(app, tab, move |host| {
         host.with_tab(TabId(tab), |view| {
             if frame.is_none() && origin_of(&view.source_url()).as_deref() != Some(origin.as_str())
             {
                 tracing::debug!(tab, "вкладка ушла на другой адрес, форму не заполняем");
+                return;
+            }
+            let still_there = frame.is_none()
+                || handle
+                    .state::<App>()
+                    .passwords
+                    .pages
+                    .lock()
+                    .get(&(tab, frame))
+                    .is_some_and(|offer| offer.origin == origin);
+            if !still_there {
+                tracing::debug!(
+                    tab,
+                    ?frame,
+                    "фрейм ушёл на другой адрес, форму не заполняем"
+                );
                 return;
             }
             let message = serde_json::json!({
