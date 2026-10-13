@@ -67,11 +67,14 @@ export function createHistoryPage(root) {
   async function load() {
     if (loading || done) return;
     loading = true;
-    const before = items.length ? items[items.length - 1].visited_at : null;
-    const batch = await invoke("history_page", { query, before, limit: PAGE }).catch(() => []);
+    // Продолжение — с последнего показанного посещения: время и номер вместе,
+    // иначе посещения одной секунды не помещались бы на страницу.
+    const last = items[items.length - 1];
+    const before = last ? last.visited_at : null;
+    const beforeId = last ? last.id : null;
+    const batch = await invoke("history_page", { query, before, beforeId, limit: PAGE }).catch(() => []);
     loading = false;
-    // Записи той же секунды могли попасть в прошлую страницу: дубли убираем
-    // по номеру посещения.
+    // Дубли — на всякий случай: страница истории могла смениться между подгрузками.
     const known = new Set(items.map((item) => item.id));
     const fresh = batch.filter((item) => !known.has(item.id));
     if (!fresh.length) {

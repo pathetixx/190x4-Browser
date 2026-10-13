@@ -1192,13 +1192,14 @@ pub fn history_page(
     state: State<'_, App>,
     query: Option<String>,
     before: Option<i64>,
+    before_id: Option<i64>,
     limit: Option<u32>,
 ) -> Result<Vec<browser190x4_store::Visit>, String> {
     state
         .store
         .history_visits(
             query.as_deref().unwrap_or(""),
-            before,
+            before.map(|at| (at, before_id.unwrap_or(i64::MAX))),
             limit.unwrap_or(120).min(500),
         )
         .map_err(text)

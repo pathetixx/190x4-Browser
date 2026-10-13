@@ -127,28 +127,30 @@ impl Store {
     }
 
     /// Страница истории: посещения по времени, новые первыми. `before` —
-    /// метка времени, с которой продолжать (для подгрузки), `query` —
-    /// поиск по адресу и заголовку.
+    /// последнее показанное посещение (время и номер), с него продолжать
+    /// подгрузку; `query` — поиск по адресу и заголовку. Продолжение — по паре,
+    /// а не по одному времени: посещений одной секунды бывает больше страницы,
+    /// и подгрузка по времени упиралась бы в них навсегда.
     pub fn history_visits(
         &self,
         query: &str,
-        before: Option<i64>,
+        before: Option<(i64, i64)>,
         limit: u32,
     ) -> anyhow::Result<Vec<Visit>> {
         let needle = like_pattern(query);
-        let before = before.unwrap_or(i64::MAX);
+        let (before, before_id) = before.unwrap_or((i64::MAX, i64::MAX));
         self.with(|db| {
             let mut stmt = db.prepare(
                 r#"
                 SELECT id, url, title, host, visited_at FROM visits
-                WHERE visited_at <= ?2
+                WHERE (visited_at < ?2 OR (visited_at = ?2 AND id < ?4))
                   AND (?1 = '' OR search LIKE ?1 ESCAPE '\')
                 ORDER BY visited_at DESC, id DESC
                 LIMIT ?3
                 "#,
             )?;
             let rows: Vec<Visit> = stmt
-                .query_map(rusqlite::params![needle, before, limit], |row| {
+                .query_map(rusqlite::params![needle, before, limit, before_id], |row| {
                     Ok(Visit {
                         id: row.get(0)?,
                         url: row.get(1)?,
@@ -372,6 +374,34 @@ mod tests {
         store.record_visit("https://habr.com/", "").unwrap();
 
         assert_eq!(store.recent_history(1).unwrap()[0].title, "Хабр");
+    }
+
+    #[test]
+    fn history_pages_through_visits_of_one_second() {
+        let store = Store::memory().unwrap();
+        store
+            .with(|db| {
+                for index in 0..5 {
+                    db.execute(
+                        "INSERT INTO visits (url, title, host, search, visited_at)
+                         VALUES (?1, '', 'a.example', ?1, 1000)",
+                        [format!("https://a.example/{index}")],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut before = None;
+        loop {
+            let page = store.history_visits("", before, 2).unwrap();
+            let Some(last) = page.last() else { break };
+            before = Some((last.visited_at, last.id));
+            seen.extend(page.iter().map(|visit| visit.id));
+        }
+        assert_eq!(seen.len(), 5);
+        seen.dedup();
+        assert_eq!(seen.len(), 5);
     }
 
     #[test]
