@@ -237,8 +237,9 @@ pub fn tab_zoom_set(app: AppHandle, id: u32, factor: f64) -> Result<(), String> 
 }
 
 /// Ответ на окно страницы. Несколько номеров — одно окно на несколько
-/// запросов (камера и микрофон сразу).
-#[tauri::command]
+/// запросов (камера и микрофон сразу). Не на главном потоке: «всегда открывать
+/// это приложение» записывается в базу (`external::answer`).
+#[tauri::command(async)]
 pub fn tab_dialog(
     app: AppHandle,
     window: tauri::Window,
