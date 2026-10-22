@@ -639,9 +639,11 @@ mod fullscreen_frame {
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::core::w;
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsZoomed, SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE,
+        GetWindowRect, IsZoomed, RemovePropW, SetPropW, SetWindowPos, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE,
     };
 
     const SUBCLASS_ID: usize = 0x1904;
@@ -676,6 +678,9 @@ mod fullscreen_frame {
             marked.retain(|(other, _)| *other != key);
             marked.push((key, rect));
         }
+        // Метка для оболочки 190x4 Desktop: развёрнутое окно во весь экран снаружи
+        // не отличить от просто развёрнутого, а док и HUD на время видео прячутся.
+        let _ = unsafe { SetPropW(hwnd, w!("190x4.Fullscreen"), Some(HANDLE(1 as _))) };
         if !unsafe { IsZoomed(hwnd) }.as_bool() {
             return;
         }
@@ -737,6 +742,7 @@ mod fullscreen_frame {
     }
 
     fn take(hwnd: HWND) -> Option<RECT> {
+        let _ = unsafe { RemovePropW(hwnd, w!("190x4.Fullscreen")) };
         let key = hwnd.0 as isize;
         let mut marked = MARKED.lock();
         let index = marked.iter().position(|(other, _)| *other == key)?;
