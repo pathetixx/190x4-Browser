@@ -634,13 +634,12 @@ pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<(
 #[cfg(windows)]
 mod fullscreen_frame {
     use parking_lot::Mutex;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::core::w;
+    use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows::core::w;
-    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowRect, IsZoomed, RemovePropW, SetPropW, SetWindowPos, SWP_FRAMECHANGED,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE,
