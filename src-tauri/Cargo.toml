@@ -36,7 +36,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Только таймер: опрос прогресса загрузки идёт в фоновой задаче Tauri.
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync"] }
 parking_lot.workspace = true
 
 [target.'cfg(windows)'.dependencies]

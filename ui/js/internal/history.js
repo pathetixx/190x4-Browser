@@ -27,6 +27,8 @@ export function createHistoryPage(root) {
   let done = false;
   let loading = false;
   let search = 0;
+  let generation = 0;
+  let destroyed = false;
 
   const page = el("div", "page page--single");
   const main = el("div", "page__main");
@@ -42,6 +44,8 @@ export function createHistoryPage(root) {
   input.placeholder = "Поиск в истории";
   input.addEventListener("input", () => {
     query = input.value.trim();
+    generation += 1;
+    loading = false;
     // Печать быстрее базы: отвечает только последний запрос.
     const token = ++search;
     setTimeout(() => {
@@ -65,14 +69,25 @@ export function createHistoryPage(root) {
   more.addEventListener("click", () => load());
 
   async function load() {
-    if (loading || done) return;
+    if (destroyed || loading || done) return;
+    const request = generation;
     loading = true;
     // Продолжение — с последнего показанного посещения: время и номер вместе,
     // иначе посещения одной секунды не помещались бы на страницу.
     const last = items[items.length - 1];
     const before = last ? last.visited_at : null;
     const beforeId = last ? last.id : null;
-    const batch = await invoke("history_page", { query, before, beforeId, limit: PAGE }).catch(() => []);
+    let batch;
+    try {
+      batch = await invoke("history_page", { query, before, beforeId, limit: PAGE });
+    } catch (error) {
+      if (!destroyed && request === generation) {
+        loading = false;
+        hooks.toast(String(error));
+      }
+      return;
+    }
+    if (destroyed || request !== generation) return;
     loading = false;
     // Дубли — на всякий случай: страница истории могла смениться между подгрузками.
     const known = new Set(items.map((item) => item.id));
@@ -87,6 +102,8 @@ export function createHistoryPage(root) {
   }
 
   async function reload() {
+    generation += 1;
+    loading = false;
     items = [];
     done = false;
     await load();
@@ -160,6 +177,8 @@ export function createHistoryPage(root) {
 
   return {
     destroy() {
+      destroyed = true;
+      generation += 1;
       search += 1;
     },
   };

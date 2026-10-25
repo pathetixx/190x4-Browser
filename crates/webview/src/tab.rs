@@ -99,14 +99,21 @@ pub fn set_drm_config(widevine: bool, playready: bool, sites: &[String]) {
     *DRM_CONFIG.write() = config;
 }
 
-fn drm_script() -> String {
+fn drm_script(extra_sites: &[String]) -> String {
     let config = DRM_CONFIG.read();
     let config = if config.is_empty() {
         r#"{"widevine":true,"playready":false,"sites":[]}"#
     } else {
         config.as_str()
     };
-    engine_script(DRM_SCRIPT).replace("__X4_DRM__", config)
+    let mut config: serde_json::Value = serde_json::from_str(config).unwrap_or_default();
+    if let Some(sites) = config
+        .get_mut("sites")
+        .and_then(|value| value.as_array_mut())
+    {
+        sites.extend(extra_sites.iter().map(|site| serde_json::json!(site)));
+    }
+    engine_script(DRM_SCRIPT).replace("__X4_DRM__", &config.to_string())
 }
 
 fn engine_script(source: &str) -> String {
@@ -123,34 +130,10 @@ pub fn set_reputation_checking(on: bool) {
     REPUTATION.store(on, Ordering::Relaxed);
 }
 
-/// Сайты, которые человек открыл мимо SmartScreen («Всё равно перейти» на его
-/// предупреждении), — до выхода, как решение о сертификате. Кнопка движка
-/// (`certificateErrorPageController.proceed`) во WebView2 на предупреждении
-/// SmartScreen ничего не делает, поэтому проверку для такого сайта вкладка
-/// выключает сама.
-static SMARTSCREEN_PASSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-/// Одноразовый ключ страницы предупреждения SmartScreen (`smartscreen_key`):
-/// случайный для страниц — `RandomState` берёт ключи хеша у системы.
-fn fresh_key() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-    format!("{:016x}", hasher.finish())
-}
-
 /// Проверять ли этот адрес в SmartScreen: настройка и решения человека.
-fn reputation_for(url: &str) -> bool {
-    if !REPUTATION.load(Ordering::Relaxed) {
-        return false;
-    }
-    let Some(host) = host_of(url) else {
-        return true;
-    };
-    !SMARTSCREEN_PASSED
-        .lock()
-        .is_ok_and(|passed| passed.contains(&host))
+fn reputation_for(_url: &str) -> bool {
+    // Флаг общий на каталог данных WebView2: исключений по сайтам у него нет.
+    REPUTATION.load(Ordering::Relaxed)
 }
 
 /// SmartScreen для следующих переходов вкладки.
@@ -282,6 +265,11 @@ pub enum TabEvent {
     /// Фрейм страницы начал переход на новый адрес: всё, что браузер знал о
     /// его прежнем документе (учётки для формы входа), к новому не относится.
     FrameStarted {
+        id: u32,
+        frame: u32,
+        url: String,
+    },
+    FrameGone {
         id: u32,
         frame: u32,
     },
@@ -776,10 +764,6 @@ pub struct Tab {
     filtering: Rc<Cell<bool>>,
     /// Следующий переход начал браузер (`Tab::navigate`), а не страница.
     browser_navigation: Rc<Cell<bool>>,
-    /// Ключ своей последней страницы предупреждения SmartScreen: «Всё равно
-    /// перейти» принимается только с ним (`pass_smartscreen`). Знает его лишь
-    /// скрипт этой страницы; новая неудачная навигация выдаёт новый.
-    smartscreen_key: Rc<RefCell<String>>,
     guard: Arc<Guard>,
     /// Скрипты косметики и скриптлетов по хостам. Обработчики движка держат
     /// их слабой ссылкой, а живут они, пока поле держит вкладка.
@@ -947,6 +931,7 @@ fn devtools_call(core: &ICoreWebView2, session: Option<&str>, method: &str, para
 struct DrmSlot {
     id: Option<String>,
     generation: u64,
+    extra_sites: Vec<String>,
 }
 
 /// Цвет страниц браузера (новая вкладка) под тему, `[r, g, b]`. Им же
@@ -1355,24 +1340,32 @@ fn wire_frame(
         let _ = frame2.add_NavigationStarting(
             &FrameNavigationStartingEventHandler::create(Box::new(move |_, args| {
                 // Вложенный фрейм: его переход движок вкладке может не сообщить.
-                if let (Some(args), Some(cosmetics)) = (args, link.upgrade()) {
-                    let mut raw = PWSTR::null();
-                    if args.Uri(&mut raw).is_ok() {
-                        cosmetics.frame_navigation(&take_pwstr(raw));
-                    }
+                let mut raw = PWSTR::null();
+                let url = match args {
+                    Some(args) if args.Uri(&mut raw).is_ok() => take_pwstr(raw),
+                    _ => String::new(),
+                };
+                if let Some(cosmetics) = link.upgrade() {
+                    cosmetics.frame_navigation(&url);
                 }
                 s(TabEvent::FrameStarted {
                     id: tab,
                     frame: frame_id,
+                    url,
                 });
                 Ok(())
             })),
             &mut token,
         );
         let gone = frames.clone();
+        let destroyed = sink.clone();
         let _ = frame.add_Destroyed(
             &FrameDestroyedEventHandler::create(Box::new(move |_, _| {
                 gone.borrow_mut().remove(&frame_id);
+                destroyed(TabEvent::FrameGone {
+                    id: tab,
+                    frame: frame_id,
+                });
                 Ok(())
             })),
             &mut token,
@@ -1553,6 +1546,7 @@ pub(crate) fn clear_browsing_data(
     core: &ICoreWebView2,
     site_data: bool,
     cache: bool,
+    done: impl FnOnce(windows_core::Result<()>) + 'static,
 ) -> anyhow::Result<()> {
     use webview2_com::ClearBrowsingDataCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -1568,6 +1562,7 @@ pub(crate) fn clear_browsing_data(
         kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE.0;
     }
     if kinds == 0 {
+        done(Ok(()));
         return Ok(());
     }
 
@@ -1581,10 +1576,8 @@ pub(crate) fn clear_browsing_data(
     unsafe {
         profile.ClearBrowsingData(
             COREWEBVIEW2_BROWSING_DATA_KINDS(kinds),
-            &ClearBrowsingDataCompletedHandler::create(Box::new(|code| {
-                if let Err(err) = code {
-                    tracing::warn!(%err, "данные браузера не удалены");
-                }
+            &ClearBrowsingDataCompletedHandler::create(Box::new(move |code| {
+                done(code);
                 Ok(())
             })),
         )?;
@@ -1788,10 +1781,11 @@ fn add_drm_script(core: &ICoreWebView2, slot: Rc<RefCell<DrmSlot>>) -> windows_c
         unsafe { core.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id))? };
     }
     let current = slot.clone();
+    let script = drm_script(&slot.borrow().extra_sites);
     let owner = core.clone();
     unsafe {
         core.AddScriptToExecuteOnDocumentCreated(
-            &HSTRING::from(drm_script()),
+            &HSTRING::from(script),
             &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
                 move |code, id| {
                     if let Err(err) = code {
@@ -1964,7 +1958,6 @@ impl Tab {
             identity,
             filtering: Rc::new(Cell::new(true)),
             browser_navigation: Rc::default(),
-            smartscreen_key: Rc::default(),
             guard: guard.clone(),
             _cosmetics: cosmetics,
         };
@@ -2172,7 +2165,6 @@ impl Tab {
             let filtering = self.filtering.clone();
             let filter_guard = guard.clone();
             let completed_source = self.source.clone();
-            let completed_key = self.smartscreen_key.clone();
             core.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                     let Some(args) = args else { return Ok(()) };
@@ -2209,11 +2201,9 @@ impl Tab {
                         } else {
                             completed_source.borrow().clone()
                         };
-                        let key = fresh_key();
-                        completed_key.borrow_mut().clone_from(&key);
                         if let (Some(core), Some(script)) = (
                             sender.as_ref(),
-                            crate::errors::error_script(status, &url, &key),
+                            crate::errors::error_script(status, &url),
                         ) {
                             let _ = core.ExecuteScript(
                                 &HSTRING::from(script),
@@ -2230,13 +2220,13 @@ impl Tab {
                             // позже этого события — тогда оно заменит общую
                             // страницу, нарисованную выше.
                             for delay in [400, 1500] {
-                                let (core, url, shown, key) =
-                                    (core.clone(), url.clone(), shown.clone(), key.clone());
+                                let (core, url, shown) =
+                                    (core.clone(), url.clone(), shown.clone());
                                 crate::later::after(delay, move || {
                                     if document_url(Some(&core)) == shown {
                                         run_script(
                                             &core,
-                                            &crate::errors::smartscreen_script(&url, &key),
+                                            &crate::errors::smartscreen_script(&url),
                                             "страница SmartScreen",
                                         );
                                     }
@@ -2688,63 +2678,27 @@ impl Tab {
         set_reputation(&self.core, reputation_for(&self.source.borrow()));
     }
 
-    /// «Всё равно перейти» на предупреждении SmartScreen: сайт, который он
-    /// закрыл, открывается без проверки, и до выхода она его не трогает.
-    pub(crate) fn pass_smartscreen(&self, key: &str) -> windows_core::Result<()> {
-        // Просьба — только с ключом своей страницы предупреждения: его знает
-        // лишь скрипт, нарисовавший её поверх страницы движка. Без ключа
-        // просьбу мог бы прислать прежний документ вкладки, уходя на опасный
-        // сайт, — и проверка ниже застала бы на экране уже предупреждение.
-        {
-            let mut expected = self.smartscreen_key.borrow_mut();
-            if expected.is_empty() || *expected != key {
-                return Ok(());
-            }
-            expected.clear();
-        }
-        // Затем — что на экране: предупреждение SmartScreen, которое движок
-        // разрешает обойти (`overridable`). Адрес `chrome-error://` страница
-        // подделать не может, а он бывает только у страниц движка.
-        const ON_WARNING: &str = r#"location.href.startsWith("chrome-error://") && typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle") && loadTimeData.valueExists("overridable") && loadTimeData.getBoolean("overridable")"#;
-        let core = self.core.clone();
-        let source = self.source.clone();
-        let browser_navigation = self.browser_navigation.clone();
-        unsafe {
-            self.core.ExecuteScript(
-                &HSTRING::from(ON_WARNING),
-                &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(
-                    move |code, result| {
-                        if code.is_err() || result != "true" {
-                            return Ok(());
-                        }
-                        let url = source.borrow().clone();
-                        let Some(host) = url.starts_with("http").then(|| host_of(&url)).flatten()
-                        else {
-                            return Ok(());
-                        };
-                        if let Ok(mut passed) = SMARTSCREEN_PASSED.lock() {
-                            if !passed.contains(&host) {
-                                passed.push(host);
-                            }
-                        }
-                        set_reputation(&core, false);
-                        browser_navigation.set(true);
-                        if let Err(err) = core.Navigate(&HSTRING::from(url)) {
-                            tracing::debug!(%err, "сайт мимо SmartScreen не открыт");
-                        }
-                        Ok(())
-                    },
-                )),
-            )
-        }
-    }
-
     /// Скрипт защищённого видео с новыми настройками (`set_drm_config`).
     /// Действует со следующей загрузки страницы.
     pub(crate) fn apply_drm(&self) {
         if let Err(err) = add_drm_script(&self.core, self.drm_script.clone()) {
             tracing::debug!(%err, "скрипт защищённого видео не обновлён");
         }
+    }
+
+    /// Автоматическое решение приватного сеанса живёт только в этой вкладке.
+    pub fn private_drm_fallback(&self, site: &str) -> bool {
+        if !self.private {
+            return false;
+        }
+        let mut slot = self.drm_script.borrow_mut();
+        if slot.extra_sites.iter().any(|saved| saved == site) {
+            return false;
+        }
+        slot.extra_sites.push(site.into());
+        drop(slot);
+        self.apply_drm();
+        true
     }
 
     /// Вид для сайта вкладки по новым настройкам (`identity::set_identity`).
@@ -3380,8 +3334,13 @@ impl Tab {
 
     /// Удалить данные сайтов и/или кэш профиля. Профиль общий на все вкладки,
     /// поэтому вызывать можно на любой из них.
-    pub fn clear_browsing_data(&self, site_data: bool, cache: bool) -> anyhow::Result<()> {
-        clear_browsing_data(&self.core, site_data, cache)
+    pub fn clear_browsing_data(
+        &self,
+        site_data: bool,
+        cache: bool,
+        done: impl FnOnce(windows_core::Result<()>) + 'static,
+    ) -> anyhow::Result<()> {
+        clear_browsing_data(&self.core, site_data, cache, done)
     }
 
     /// Масштаб страницы напрямую: его помнит сайт, а не вкладка.
@@ -3433,7 +3392,7 @@ mod tests {
     #[test]
     fn drm_script_gets_its_settings() {
         set_drm_config(false, true, &["onlyfans.com".to_string()]);
-        let script = drm_script();
+        let script = drm_script(&[]);
         assert!(!script.contains("__X4_DRM__"));
         assert!(script.contains(r#""sites":["onlyfans.com"]"#));
         assert!(script.contains(r#""widevine":false"#));

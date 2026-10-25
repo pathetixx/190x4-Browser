@@ -203,7 +203,7 @@ document.title = data.title;
 /// Сайт, который SmartScreen отметил опасным, движок закрывает своей страницей
 /// предупреждения — тоже `chrome-error://`, и код ошибки у неё общий. Её
 /// узнаёт [`smartscreen_script`], он идёт первым.
-pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str, key: &str) -> Option<String> {
+pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str) -> Option<String> {
     let (title, hint) = describe(status)?;
     let page = page_script(
         Page {
@@ -217,7 +217,7 @@ pub fn error_script(status: COREWEBVIEW2_WEB_ERROR_STATUS, url: &str, key: &str)
 if (document.querySelector(".box190x4")) return;"#,
         "null",
     );
-    Some(format!("{}\n{page}", smartscreen_script(url, key)))
+    Some(format!("{}\n{page}", smartscreen_script(url)))
 }
 
 /// Своя страница вместо предупреждения SmartScreen «Это небезопасный сайт».
@@ -226,23 +226,13 @@ if (document.querySelector(".box190x4")) return;"#,
 /// SmartScreen считает опасным, выглядел как обрыв связи. Предупреждение
 /// движок может поставить и позже конца навигации, поэтому скрипт повторяют
 /// (`Tab`): он заменяет и уже нарисованную общую страницу, но не себя.
-/// «Всё равно перейти» — если движок вообще разрешает открыть сайт
-/// (`overridable`): его собственная кнопка (`certificateErrorPageController.proceed`)
-/// во WebView2 тут ничего не делает, поэтому страница просит браузер
-/// (`smartscreen_proceed`), и вкладка открывает сайт без проверки
-/// (`Tab::pass_smartscreen`). `key` — одноразовый ключ этой страницы: просьбу
-/// без него вкладка не слушает, иначе её мог бы прислать документ, который
-/// был на экране до предупреждения.
-pub fn smartscreen_script(url: &str, key: &str) -> String {
-    let key = serde_json::to_string(key).unwrap_or_default();
-    let proceed = format!(
-        r#"overridable && window.chrome && chrome.webview ? () => chrome.webview.postMessage({{ evt: "smartscreen_proceed", key: {key} }}) : null"#
-    );
+/// Обход через общий выключатель SmartScreen затронул бы другие сайты.
+pub fn smartscreen_script(url: &str) -> String {
     page_script(
         Page {
             title: "Сайт отмечен как опасный",
             hint: "Microsoft Defender SmartScreen считает, что этот сайт может красть данные \
-                   или заражать компьютер.",
+                   или заражать компьютер. Вернитесь на безопасную страницу.",
             more: SMARTSCREEN_MORE,
             kind: "smartscreen190x4",
         },
@@ -252,12 +242,8 @@ let strings = null;
 try {
   strings = typeof loadTimeData !== "undefined" && loadTimeData.valueExists("smartScreenPageTitle") ? loadTimeData : null;
 } catch (_) {}
-if (!strings) return;
-let overridable = false;
-try {
-  overridable = strings.valueExists("overridable") && strings.getBoolean("overridable");
-} catch (_) {}"#,
-        &proceed,
+if (!strings) return;"#,
+        "null",
     )
 }
 
@@ -327,7 +313,6 @@ mod tests {
         assert!(error_script(
             COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
             "https://a",
-            "k"
         )
         .is_none());
     }
@@ -338,23 +323,20 @@ mod tests {
         assert!(cert.contains("Всё равно перейти"));
         assert!(cert.contains("chrome-error://"));
         assert!(!cert.contains('\0'));
-        let timeout =
-            error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/", "k").unwrap();
+        let timeout = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
         assert!(timeout.contains("const proceed = null;"));
-        // Кнопку получает только предупреждение SmartScreen, и то — если
-        // движок сам разрешает открыть сайт.
-        let smartscreen = smartscreen_script("https://a/", "k");
+        // Предупреждение сохраняется, обход общей защиты не предлагается.
+        let smartscreen = smartscreen_script("https://a/");
         assert!(timeout.starts_with(&smartscreen));
         assert!(smartscreen.contains("smartScreenPageTitle"));
-        assert!(smartscreen.contains(r#"strings.getBoolean("overridable")"#));
-        assert!(smartscreen.contains(r#"evt: "smartscreen_proceed", key: "k""#));
+        assert!(smartscreen.contains("const proceed = null;"));
+        assert!(!smartscreen.contains("smartscreen_proceed"));
         assert!(!smartscreen.contains('\0'));
     }
 
     #[test]
     fn error_page_replaces_only_the_engine_page() {
-        let script =
-            error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/", "k").unwrap();
+        let script = error_script(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, "https://a/").unwrap();
         assert!(script.contains(r#"if (!location.href.startsWith("chrome-error://")) return;"#));
     }
 
@@ -367,7 +349,6 @@ mod tests {
         let script = error_script(
             COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT,
             "https://a/\"</script>",
-            "k",
         )
         .unwrap();
         assert!(!script.contains("</script>"));

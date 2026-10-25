@@ -14,6 +14,9 @@ const items = new Map();
 const rates = new Map();
 const listeners = new Set();
 let started = false;
+let revision = 0;
+let loadGeneration = 0;
+const changedAt = new Map();
 
 export function initDownloads() {
   if (!started) {
@@ -25,19 +28,29 @@ export function initDownloads() {
 }
 
 export async function loadDownloads() {
-  const list = await invoke("downloads_list", { limit: 300 }).catch(() => []);
+  const generation = ++loadGeneration;
+  const before = revision;
+  let list;
+  try {
+    list = await invoke("downloads_list", { limit: 300 });
+  } catch {
+    return; // Ошибка чтения не стирает уже известные загрузки.
+  }
+  if (generation !== loadGeneration) return;
   const live = new Map(items);
   items.clear();
   for (const item of list) {
     // Запись в базе отстаёт от событий на секунду — свежий прогресс не теряем.
     const known = live.get(item.id);
-    items.set(item.id, known && known.state === item.state ? { ...item, bytes: Math.max(item.bytes, known.bytes) } : item);
+    const newer = (changedAt.get(item.id) ?? 0) > before;
+    items.set(item.id, known && newer ? known : item);
   }
   // Загрузки приватного окна в базу не попадают (номер у них со знаком
   // минус) — список из базы их не знает, но до закрытия окна они в нём есть.
   for (const [id, item] of live) {
-    if (id < 0) items.set(id, item);
+    if (id < 0 || (changedAt.get(id) ?? 0) > before) items.set(id, item);
   }
+  for (const id of changedAt.keys()) if (!items.has(id)) changedAt.delete(id);
   notify(null);
 }
 
@@ -51,6 +64,7 @@ const PHASE_STATE = {
 };
 
 function onEvent(event) {
+  changedAt.set(event.id, ++revision);
   const current = items.get(event.id) ?? {
     id: event.id,
     kind: event.kind,
@@ -66,7 +80,7 @@ function onEvent(event) {
     ...current,
     url: event.url || current.url,
     path: event.path || current.path,
-    bytes: event.bytes || current.bytes,
+    bytes: event.bytes ?? current.bytes,
     total_bytes: event.total ?? current.total_bytes,
     state: PHASE_STATE[event.phase] ?? current.state,
     error: event.error ?? "",

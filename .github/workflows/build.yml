@@ -1,6 +1,8 @@
 name: Build 190x4 Browser
 
 on:
+  pull_request:
+    branches: [main]
   push:
     # Только теги: сборка на push в main шла бы параллельно с тегом того же
     # коммита и ничего не защищала. Для проверки без релиза — workflow_dispatch.
@@ -35,7 +37,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Adblock tests
-        run: cargo test -p browser190x4-adblock
+        run: cargo test --locked -p browser190x4-adblock -p browser190x4-store
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -44,6 +46,9 @@ jobs:
 
       - name: Interface module syntax
         run: find ui/js scripts -name '*.js' -o -name '*.mjs' | xargs -n1 node --check
+
+      - name: Browser regression scenarios
+        run: node --experimental-vm-modules scripts/test/review.mjs
 
       - name: Password manager script
         run: |
@@ -99,7 +104,34 @@ jobs:
       - name: Test Rust
         run: cargo test --workspace
 
+      - name: Setup Node for WebView2 scenarios
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Build browser for WebView2 scenarios
+        run: cargo build --locked -p browser190x4
+
+      - name: WebView2 regression scenarios
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Copy-Item pages target/debug/pages -Recurse -Force
+          Copy-Item src-tauri/lists target/debug/lists -Recurse -Force
+          $env:BROWSER190X4_PROFILE = Join-Path $env:RUNNER_TEMP 'browser-review-profile'
+          $env:BROWSER190X4_DEBUG_PORT = '9333'
+          $env:CDP = 'http://127.0.0.1:9333'
+          $browser = Start-Process target/debug/190x4-browser.exe -PassThru
+          try {
+            node scripts/probe/review.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'WebView2 regression scenarios failed' }
+          } finally {
+            taskkill /PID $browser.Id /T /F 2>$null
+            $global:LASTEXITCODE = 0
+          }
+
   installer:
+    if: github.event_name != 'pull_request'
     needs: [checks, rust]
     runs-on: windows-latest
     timeout-minutes: 45

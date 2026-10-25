@@ -93,7 +93,7 @@ pub fn update_state(state: State<'_, Updates>) -> Option<UpdateInfo> {
 }
 
 #[tauri::command]
-pub async fn update_install(app: AppHandle) -> Result<(), String> {
+pub async fn update_install(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<Updates>();
     if state.installing.swap(true, Ordering::SeqCst) {
         return Err("обновление уже устанавливается".into());
@@ -105,39 +105,48 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
     };
 
     let progress = app.clone();
-    let finished = app.clone();
     let mut downloaded = 0u64;
-    let result = update
-        .download_and_install(
-            move |chunk, total| {
-                downloaded += chunk as u64;
-                let _ = progress.emit(
-                    "update-progress",
-                    Progress {
-                        phase: "download",
-                        downloaded,
-                        total,
-                    },
-                );
+    let result = async {
+        let bytes = update
+            .download(
+                move |chunk, total| {
+                    downloaded += chunk as u64;
+                    let _ = progress.emit(
+                        "update-progress",
+                        Progress {
+                            phase: "download",
+                            downloaded,
+                            total,
+                        },
+                    );
+                },
+                || {},
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        let Some(_permit) = crate::shutdown::prepare(&app).await? else {
+            return Ok(false);
+        };
+        let _ = app.emit(
+            "update-progress",
+            Progress {
+                phase: "install",
+                downloaded: 0,
+                total: None,
             },
-            move || {
-                let _ = finished.emit(
-                    "update-progress",
-                    Progress {
-                        phase: "install",
-                        downloaded: 0,
-                        total: None,
-                    },
-                );
-            },
-        )
-        .await;
+        );
+        update.install(bytes).map_err(|err| err.to_string())?;
+        Ok(true)
+    }
+    .await;
 
     // На Windows при успехе сюда не доходит: процесс уже завершён плагином.
-    if let Err(err) = &result {
-        tracing::warn!(%err, "обновление не установлено");
+    if !matches!(result, Ok(true)) {
+        if let Err(err) = &result {
+            tracing::warn!(%err, "обновление не установлено");
+        }
         *state.found.lock() = Some(update);
     }
     state.installing.store(false, Ordering::SeqCst);
-    result.map_err(|err| err.to_string())
+    result
 }

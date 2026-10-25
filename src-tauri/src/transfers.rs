@@ -31,11 +31,17 @@ struct Inner {
     by_key: HashMap<u64, Entry>,
     key_by_id: HashMap<i64, u64>,
     /// Загрузки через загрузчик видео: номер записи → задание на сервере.
-    media_jobs: HashMap<i64, String>,
+    media_jobs: HashMap<i64, MediaJob>,
     /// Файлы, скачанные в приватном окне: записи в базе у них нет, а открыть
     /// файл и показать его в папке из пузыря загрузок всё равно нужно. Живут до
     /// выхода из браузера.
-    private_files: HashMap<i64, PathBuf>,
+    private_files: HashMap<i64, (String, PathBuf)>,
+}
+
+struct MediaJob {
+    job: String,
+    window: String,
+    private: bool,
 }
 
 struct Entry {
@@ -75,11 +81,22 @@ impl Transfers {
     /// Файл, скачанный в приватном окне: открыть и показать его в папке из
     /// пузыря загрузок можно до выхода из браузера.
     pub fn remember_private_file(&self, id: i64, path: PathBuf) {
-        self.inner.lock().private_files.insert(id, path);
+        let mut inner = self.inner.lock();
+        if let Some(job) = inner.media_jobs.get(&id) {
+            let window = job.window.clone();
+            inner.private_files.insert(id, (window, path));
+        }
     }
 
-    pub fn register_media(&self, id: i64, job: String) {
-        self.inner.lock().media_jobs.insert(id, job);
+    pub fn register_media(&self, id: i64, job: String, window: String, private: bool) {
+        self.inner.lock().media_jobs.insert(
+            id,
+            MediaJob {
+                job,
+                window,
+                private,
+            },
+        );
     }
 
     pub fn finish_media(&self, id: i64) {
@@ -92,7 +109,25 @@ impl Transfers {
     }
 
     fn media_job(&self, id: i64) -> Option<String> {
-        self.inner.lock().media_jobs.get(&id).cloned()
+        self.inner
+            .lock()
+            .media_jobs
+            .get(&id)
+            .map(|job| job.job.clone())
+    }
+
+    pub fn forget_window(&self, window: &str) -> Vec<String> {
+        let mut inner = self.inner.lock();
+        inner.private_files.retain(|_, (owner, _)| owner != window);
+        let mut cancelled = Vec::new();
+        inner.media_jobs.retain(|_, job| {
+            let remove = job.private && job.window == window;
+            if remove {
+                cancelled.push(job.job.clone());
+            }
+            !remove
+        });
+        cancelled
     }
 }
 
@@ -169,6 +204,9 @@ fn apply_engine_event(
     // главном потоке, в момент события: к этой записи окно могли уже закрыть и
     // убрать из реестра — и загрузка ушла бы в базу как обычная.
     if private {
+        if !state.windows.is_private(window) {
+            return;
+        }
         let id = private_id(key);
         if phase == "done" && !path.is_empty() {
             state
@@ -176,7 +214,7 @@ fn apply_engine_event(
                 .inner
                 .lock()
                 .private_files
-                .insert(id, PathBuf::from(path));
+                .insert(id, (window.to_string(), PathBuf::from(path)));
         }
         let event = DownloadEvent {
             id,
@@ -278,19 +316,42 @@ pub fn emit_media(
     total: Option<i64>,
     error: &str,
 ) {
-    let _ = app.emit(
-        "download",
-        DownloadEvent {
-            id,
-            kind: DownloadKind::Media,
-            phase: phase.to_string(),
-            url: url.to_string(),
-            path: path.to_string(),
-            bytes,
-            total,
-            error: error.to_string(),
-        },
-    );
+    let event = DownloadEvent {
+        id,
+        kind: DownloadKind::Media,
+        phase: phase.to_string(),
+        url: url.to_string(),
+        path: path.to_string(),
+        bytes,
+        total,
+        error: error.to_string(),
+    };
+    emit_media_event(app, id, "download", event);
+}
+
+/// Приватные задания говорят только со своим окном и его попапом.
+pub fn emit_media_event(app: &AppHandle, id: i64, event: &str, payload: impl Serialize + Clone) {
+    let route = app
+        .state::<App>()
+        .transfers
+        .inner
+        .lock()
+        .media_jobs
+        .get(&id)
+        .map(|job| (job.window.clone(), job.private));
+    match route {
+        Some((window, true)) => {
+            if !app.state::<App>().windows.is_private(&window) {
+                return;
+            }
+            let _ = app.emit_to(window.as_str(), event, payload.clone());
+            let _ = app.emit_to(crate::popup::label_for(&window).as_str(), event, payload);
+        }
+        _ if id >= 0 => {
+            let _ = app.emit(event, payload);
+        }
+        _ => {}
+    }
 }
 
 /// «Всегда спрашивать, куда сохранить»: системный диалог над окном, где
@@ -362,7 +423,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
             "open" | "show" => inner
                 .private_files
                 .get(&id)
-                .cloned()
+                .map(|(_, path)| path.clone())
                 .ok_or_else(|| anyhow::anyhow!("этой загрузки нет в списке"))?,
             other => anyhow::bail!("с загрузкой приватного окна так нельзя: {other}"),
         };
@@ -435,4 +496,26 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
 
     let _ = app.emit("downloads", ());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_private_owner_drops_only_its_jobs_and_files() {
+        let transfers = Transfers::default();
+        transfers.register_media(-1, "private-a".into(), "private-a".into(), true);
+        transfers.register_media(-2, "private-b".into(), "private-b".into(), true);
+        transfers.register_media(1, "normal".into(), "normal".into(), false);
+        transfers.remember_private_file(-1, PathBuf::from("a.mp4"));
+        transfers.remember_private_file(-2, PathBuf::from("b.mp4"));
+        assert_eq!(transfers.forget_window("private-a"), vec!["private-a"]);
+        assert!(transfers.media_job(-1).is_none());
+        assert!(transfers.media_job(-2).is_some());
+        assert!(transfers.media_job(1).is_some());
+        transfers.remember_private_file(-1, PathBuf::from("late.mp4"));
+        assert!(!transfers.inner.lock().private_files.contains_key(&-1));
+        assert!(transfers.inner.lock().private_files.contains_key(&-2));
+    }
 }

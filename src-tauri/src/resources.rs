@@ -144,7 +144,7 @@ impl Monitor {
 
 fn load_engine(app: &AppHandle) -> Option<(Vec<EngineProcess>, Vec<TabBrief>)> {
     let (tx, rx) = mpsc::channel();
-    let tabs = with_any_host(app, move |host| {
+    with_any_host(app, move |host| {
         let reply = tx.clone();
         if let Err(err) = host.engine_processes(move |processes| {
             let _ = reply.send(processes);
@@ -152,9 +152,9 @@ fn load_engine(app: &AppHandle) -> Option<(Vec<EngineProcess>, Vec<TabBrief>)> {
             tracing::debug!(%err, "процессы движка недоступны");
             let _ = tx.send(Vec::new());
         }
-        host.tabs_brief()
     })
     .ok()?;
+    let tabs = crate::state::all_tabs(app).ok()?;
     let processes = rx.recv_timeout(Duration::from_secs(2)).ok()?;
     Some((processes, tabs))
 }

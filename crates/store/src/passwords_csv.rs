@@ -94,21 +94,9 @@ pub fn render_logins(logins: &[CsvLogin]) -> anyhow::Result<String> {
 /// Пароль привязан к origin, а не к адресу страницы: форма входа живёт
 /// то на `/login`, то на `/auth/…`, а учётка одна.
 pub fn origin_of(url: &str) -> Option<String> {
-    let (scheme, rest) = url.trim().split_once("://")?;
-    let scheme = scheme.to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return None;
-    }
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?.to_ascii_lowercase();
-    if host.is_empty() {
-        return None;
-    }
-    let host = match (scheme.as_str(), host.rsplit_once(':')) {
-        ("https", Some((name, "443"))) | ("http", Some((name, "80"))) => name.to_string(),
-        _ => host,
-    };
-    Some(format!("{scheme}://{host}"))
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+        .then(|| parsed.origin().ascii_serialization())
 }
 
 /// Сайт адреса для общих учёток: регистрируемый домен по списку публичных
@@ -154,6 +142,15 @@ mod tests {
 
     #[test]
     fn origin_is_normalized() {
+        assert_eq!(
+            origin_of("https://[::1]:443/login").as_deref(),
+            Some("https://[::1]")
+        );
+        assert_eq!(
+            origin_of("https://пример.рф/login").as_deref(),
+            Some("https://xn--e1afmkfd.xn--p1ai")
+        );
+        assert!(origin_of("https://bad host/login").is_none());
         assert_eq!(
             origin_of("https://Habr.com:443/ru/login?next=/").as_deref(),
             Some("https://habr.com")

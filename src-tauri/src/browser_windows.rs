@@ -254,6 +254,11 @@ struct Opening<'a> {
 }
 
 fn create_window(app: &AppHandle, kind: WindowKind, opening: Opening) -> tauri::Result<String> {
+    if crate::shutdown::is_preparing(app) {
+        return Err(tauri::Error::Anyhow(anyhow::anyhow!(
+            "Браузер готовится к закрытию"
+        )));
+    }
     let label = if opening.first {
         FIRST.to_string()
     } else {
@@ -506,6 +511,10 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             remember_geometry(&handle, &label);
         }
         WindowEvent::CloseRequested { api, .. } => {
+            if crate::shutdown::is_preparing(&handle) {
+                api.prevent_close();
+                return;
+            }
             let force = take_mark(&CLOSING_ANYWAY, &label);
             // Сначала страницы: каждая может попросить «Покинуть сайт?», как при
             // закрытии вкладки. Спрашивает интерфейс, ответ — `close_asked`.
@@ -528,7 +537,17 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
             closing(&handle, &label);
         }
         WindowEvent::Destroyed => {
+            crate::shutdown::window_gone(&handle, &label);
+            close_cancelled(&label);
+            let state = handle.state::<App>();
+            for job in state.transfers.forget_window(&label) {
+                let services = state.services.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = services.media_cancel(&job).await;
+                });
+            }
             for tab in state::remove_host(&label) {
+                handle.state::<App>().documents.forget(tab, None);
                 crate::passwords::forget_tab(&handle, tab);
                 crate::external::forget_tab(&handle.state::<App>(), tab);
                 crate::page_messages::forget(tab);
@@ -784,12 +803,6 @@ static CLOSING_ANYWAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Окна, чьи страницы уже согласились закрыться («Покинуть сайт?» пройден).
 static PAGES_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Когда страницы окна спросили в последний раз. Интерфейс, который не
-/// ответил (завис, упал), не должен держать окно: повторное закрытие позже
-/// этого срока закрывает без вопроса страницам.
-static ASKED_AT: Mutex<Vec<(String, std::time::Instant)>> = Mutex::new(Vec::new());
-const ASK_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
-
 /// Снять отметку окна; `true` — она была.
 fn take_mark(marks: &Mutex<Vec<String>>, label: &str) -> bool {
     let mut marks = marks.lock();
@@ -798,25 +811,9 @@ fn take_mark(marks: &Mutex<Vec<String>>, label: &str) -> bool {
     marks.len() != before
 }
 
-/// Спрошены ли уже страницы окна. Нет — запомнить, что спрашиваем сейчас.
+/// Закрытие разрешает только явный ответ страниц, без обхода по таймауту.
 fn pages_asked(label: &str) -> bool {
-    if take_mark(&PAGES_ASKED, label) {
-        ASKED_AT.lock().retain(|(other, _)| other != label);
-        return true;
-    }
-    let mut asked = ASKED_AT.lock();
-    let now = std::time::Instant::now();
-    match asked.iter().position(|(other, _)| other == label) {
-        Some(index) if now.duration_since(asked[index].1) >= ASK_PATIENCE => {
-            asked.remove(index);
-            true
-        }
-        Some(_) => false,
-        None => {
-            asked.push((label.to_string(), now));
-            false
-        }
-    }
+    take_mark(&PAGES_ASKED, label)
 }
 
 /// Закрыть окно без вопроса о загрузках — на него уже ответили «Закрыть».
@@ -835,6 +832,11 @@ pub fn close_asked(app: &AppHandle, label: &str) -> tauri::Result<()> {
     };
     PAGES_ASKED.lock().push(label.to_string());
     window.close()
+}
+
+/// Отмена — завершённый ответ, а не зависший интерфейс: следующая попытка новая.
+pub fn close_cancelled(label: &str) {
+    take_mark(&PAGES_ASKED, label);
 }
 
 /// Сколько окон, закрытых крестиком, браузер помнит до выхода.

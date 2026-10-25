@@ -10,7 +10,6 @@ import { invoke, isNative, listen } from "./bridge.js";
 import { hooks } from "./actions.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { closePopup, onPopupAction, openPopup } from "./popups.js";
-import { confirmWindowClose } from "./tabs.js";
 
 const button = document.getElementById("update-btn");
 const listeners = new Set();
@@ -93,13 +92,13 @@ export async function installUpdate() {
       confirm: "Обновить",
       cancel: "Позже",
     }));
-  if (!agreed || !(await confirmWindowClose())) {
+  if (!agreed) {
     set({ installing: false });
     return;
   }
-  await hooks.saveSession();
   try {
-    await invoke("update_install");
+    const installed = await invoke("update_install");
+    if (!installed) set({ installing: false });
   } catch (error) {
     set({ installing: false, error: String(error) });
     closePopup();
