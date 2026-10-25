@@ -210,7 +210,7 @@ fn on_problem(
             if let Err(err) = view.reload() {
                 tracing::debug!(%err, "страница с видео не перезагружена");
             }
-        })
+        });
     });
 }
 

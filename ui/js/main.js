@@ -1224,10 +1224,10 @@ function sessionTabs() {
  */
 let savedSession = "";
 
-function writeSession() {
+async function writeSession() {
   const tabs = sessionTabs();
+  await invoke("session_save", { tabs });
   savedSession = JSON.stringify(tabs);
-  return invoke("session_save", { tabs });
 }
 
 function scheduleSessionSave() {
