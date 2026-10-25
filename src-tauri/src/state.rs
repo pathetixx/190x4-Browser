@@ -48,6 +48,7 @@ pub struct App {
     pub store: Arc<Store>,
     pub services: Arc<Services>,
     pub passwords: Passwords,
+    pub documents: crate::documents::Documents,
     pub transfers: Transfers,
     /// Всплывающие окна: по одному на окно браузера.
     pub popup: Popup,
@@ -97,6 +98,7 @@ pub fn active_downloads(label: &str) -> usize {
 /// окна, из которого она ушла.
 pub fn move_tab(app: &AppHandle, tab: u32, to: &str) -> Result<String, String> {
     let to = to.to_string();
+    let handle = app.clone();
     on_main(app, move || {
         HOSTS.with(|cell| {
             let Ok(hosts) = cell.try_borrow() else {
@@ -119,6 +121,8 @@ pub fn move_tab(app: &AppHandle, tab: u32, to: &str) -> Result<String, String> {
             }
             let (moved, hwnd) = source.detach(TabId(tab)).map_err(|err| err.to_string())?;
             target.attach(moved, hwnd).map_err(|err| err.to_string())?;
+            use tauri::Manager;
+            handle.state::<App>().documents.moved(tab, &to);
             Ok(from)
         })
     })
@@ -241,6 +245,20 @@ where
 
     rx.recv_timeout(MAIN_THREAD_TIMEOUT)
         .map_err(|_| "главный поток не ответил".to_string())?
+}
+
+/// Снимок вкладок всех окон для общего монитора процессов.
+pub fn all_tabs(app: &AppHandle) -> Result<Vec<browser190x4_webview::TabBrief>, String> {
+    on_main(app, || {
+        HOSTS.with(|cell| {
+            let hosts = cell.try_borrow().map_err(|_| BUSY.to_string())?;
+            Ok(hosts
+                .values()
+                .filter(|host| !host.is_private())
+                .flat_map(TabHost::tabs_brief)
+                .collect())
+        })
+    })
 }
 
 /// Отложенное действие над вкладкой: не ждёт и не выполняется прямо внутри

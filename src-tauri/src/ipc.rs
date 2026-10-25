@@ -53,6 +53,9 @@ pub fn tab_open(
     url: String,
     popup: Option<u64>,
 ) -> Result<u32, String> {
+    if crate::shutdown::is_preparing(&app) {
+        return Err("Браузер готовится к закрытию".into());
+    }
     let url = normalize_url(&url, &search_engine(&state));
     // Адрес в журнал не пишется: журнал не чистится вместе с историей, а
     // вкладки приватного окна не должны оставлять следов на диске.
@@ -141,6 +144,7 @@ pub fn tab_popup_deny(app: AppHandle, opener: u32, token: u64) -> Result<(), Str
 
 #[tauri::command]
 pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
+    state.documents.forget(id, None);
     passwords::forget_tab(&app, id);
     external::forget_tab(&state, id);
     crate::page_messages::forget(id);
@@ -178,6 +182,9 @@ pub fn tab_navigate(
     id: u32,
     url: String,
 ) -> Result<(), String> {
+    if crate::shutdown::is_preparing(&app) {
+        return Err("Браузер готовится к закрытию".into());
+    }
     let url = normalize_url(&url, &search_engine(&state));
     with_tab(&app, id, move |host| {
         host.with_tab(TabId(id), |tab| tab.navigate(&url))
@@ -368,6 +375,10 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
         "close_force" => windows::close_anyway(&app, window.label()).map_err(text),
         // Страницы уже согласились закрыться («Покинуть сайт?»).
         "close_asked" => windows::close_asked(&app, window.label()).map_err(text),
+        "close_cancelled" => {
+            windows::close_cancelled(window.label());
+            Ok(())
+        }
         // Видео на весь экран и F11: окно занимает экран целиком, интерфейс
         // прячет сам chrome.
         "fullscreen" => windows::set_fullscreen(&app, window.label(), true).map_err(text),
@@ -379,10 +390,14 @@ pub fn window_command(app: AppHandle, window: tauri::Window, action: String) -> 
 /// «Закрыть браузер» из меню: все окна разом. Сессии открытых окон остаются
 /// в базе и вернутся при следующем запуске — в отличие от окна, закрытого
 /// крестиком, пока открыты другие.
-#[tauri::command(async)]
-pub fn app_quit(app: AppHandle) {
+#[tauri::command]
+pub async fn app_quit(app: AppHandle) -> Result<(), String> {
+    let Some(_permit) = crate::shutdown::prepare(&app).await? else {
+        return Ok(());
+    };
     windows::save_geometry(&app);
     app.exit(0);
+    Ok(())
 }
 
 /// Вернуть клавиатуру интерфейсу (см. `TabHost::focus_chrome`).
@@ -1872,8 +1887,15 @@ pub fn browsing_data_clear(
         let _ = app.emit("downloads", ());
     }
     if site_data || cache {
-        with_any_host(&app, move |host| host.clear_browsing_data(site_data, cache))?
-            .map_err(text)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_any_host(&app, move |host| {
+            host.clear_browsing_data(site_data, cache, move |result| {
+                let _ = tx.send(result.map_err(text));
+            })
+        })?
+        .map_err(text)?;
+        rx.recv_timeout(Duration::from_secs(60))
+            .map_err(|_| "Движок не подтвердил удаление данных. Повторите попытку".to_string())??;
     }
     Ok(())
 }
@@ -2144,7 +2166,9 @@ pub async fn media_download(
             .start_download(DownloadKind::Media, &url, "", None)
             .map_err(text)?
     };
-    state.transfers.register_media(id, job_id.clone());
+    state
+        .transfers
+        .register_media(id, job_id.clone(), owner(&window), private);
     transfers::emit_media(&app, id, "started", &url, "", 0, None, "");
 
     let job = job_id.clone();
@@ -2161,7 +2185,9 @@ pub async fn media_download(
                 let _ = store.finish_download(id, bytes, final_state, error);
             }
             transfers::emit_media(app, id, phase, &url, name, bytes, None, error);
-            let _ = app.emit(
+            transfers::emit_media_event(
+                app,
+                id,
                 "media",
                 serde_json::json!({ "job": job, "phase": phase, "error": error }),
             );
@@ -2214,7 +2240,9 @@ pub async fn media_download(
                 total,
                 "",
             );
-            let _ = app.emit(
+            transfers::emit_media_event(
+                &app,
+                id,
                 "media",
                 serde_json::json!({
                     "job": job,
@@ -2276,7 +2304,9 @@ pub async fn media_download(
                             Some(bytes),
                             "",
                         );
-                        let _ = app.emit(
+                        transfers::emit_media_event(
+                            &app,
+                            id,
                             "media",
                             serde_json::json!({ "job": job, "phase": "done", "path": path_text }),
                         );

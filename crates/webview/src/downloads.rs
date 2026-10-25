@@ -419,7 +419,7 @@ fn track(
                     }
                     // Загрузка больше не идёт (закончилась, отменена, оборвалась):
                     // вкладке её держать незачем.
-                    if !matches!(phase, "progress" | "paused") {
+                    if finished {
                         registry.owners.borrow_mut().remove(&key);
                     }
                 }

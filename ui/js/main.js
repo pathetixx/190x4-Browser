@@ -27,7 +27,7 @@ import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, isFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
 import { renderInternal } from "./internal/pages.js";
-import { initLayout, isPageHidden, syncDuring } from "./layout.js";
+import { initLayout, isPageHidden, setPageHidden, syncDuring } from "./layout.js";
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
@@ -50,6 +50,7 @@ import {
   close,
   closeAnswered,
   confirmWindowClose,
+  cancelWindowClose,
   cycle,
   endSplit,
   INTERNAL,
@@ -291,7 +292,7 @@ listen("tab", (event) => {
       if (state.activeId === null) activate(event.id);
       // Готовая поверхность вкладки забирает клавиатуру себе — на новой
       // вкладке возвращаем курсор в адресную строку.
-      if (state.activeId === event.id && String(event.url).includes("190x4-pages.invalid/newtab")) {
+      if (state.activeId === event.id && isNewTabUrl(event.url)) {
         document.dispatchEvent(new CustomEvent("browser:focus-omnibox"));
       }
       break;
@@ -734,12 +735,39 @@ listen("close-asked", async () => {
   if (closingWindow) return;
   closingWindow = true;
   try {
-    if (await confirmWindowClose()) await invoke("window_command", { action: "close_asked" });
+    const allowed = await confirmWindowClose();
+    await invoke("window_command", { action: allowed ? "close_asked" : "close_cancelled" });
   } catch {
-    // Окно уже закрывается.
+    invoke("window_command", { action: "close_cancelled" }).catch(() => {});
   } finally {
     closingWindow = false;
   }
+});
+
+// Выход и обновление проверяют все окна, а не только инициатора.
+let shutdownAttempt = null;
+listen("shutdown-prepare", async (attempt) => {
+  if (shutdownAttempt !== null) return;
+  shutdownAttempt = attempt;
+  let allowed = false;
+  try {
+    allowed = sessionReady && await confirmWindowClose();
+    if (allowed) {
+      await saveSessionNow();
+      if (shutdownAttempt === attempt) setPageHidden("shutdown", true);
+    }
+  } catch (error) {
+    toast(String(error));
+    allowed = false;
+  }
+  if (shutdownAttempt === attempt) await invoke("shutdown_answer", { attempt, allowed }).catch(() => {});
+});
+listen("shutdown-finished", (attempt) => {
+  if (shutdownAttempt !== attempt) return;
+  shutdownAttempt = null;
+  setPageHidden("shutdown", false);
+  // Отказ в другом окне закрывает оставшиеся вопросы без ухода со страницы.
+  cancelWindowClose();
 });
 
 // Окно закрывают, а в нём идут загрузки: закрытие их оборвёт — сперва спросить.
@@ -1196,17 +1224,17 @@ function sessionTabs() {
  */
 let savedSession = "";
 
-function writeSession() {
+async function writeSession() {
   const tabs = sessionTabs();
+  await invoke("session_save", { tabs });
   savedSession = JSON.stringify(tabs);
-  return invoke("session_save", { tabs }).catch(() => {});
 }
 
 function scheduleSessionSave() {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
   sessionTimer = setTimeout(() => {
-    if (JSON.stringify(sessionTabs()) !== savedSession) writeSession();
+    if (JSON.stringify(sessionTabs()) !== savedSession) writeSession().catch((error) => toast(String(error)));
   }, 800);
 }
 
@@ -1222,7 +1250,7 @@ async function saveSessionNow() {
 window.addEventListener("beforeunload", () => {
   if (!sessionReady) return;
   clearTimeout(sessionTimer);
-  writeSession();
+  writeSession().catch(() => {});
 });
 
 /* ── Режим без Rust: макет для ревью вёрстки ───────────────── */

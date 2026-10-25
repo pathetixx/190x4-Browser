@@ -30,8 +30,6 @@ enum PageEvent {
     Problem {
         system: String,
         stage: String,
-        #[serde(default)]
-        detail: String,
         /// Widevine на этой странице уже был спрятан.
         #[serde(default)]
         hidden: bool,
@@ -43,11 +41,17 @@ enum PageEvent {
 
 /// Сообщение скрипта защищённого видео — от документа или фрейма (плеер часто
 /// во фрейме). `true` — оно наше и дальше не идёт.
-pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payload: &str) -> bool {
+pub fn handle_message(
+    app: &AppHandle,
+    label: &str,
+    tab: u32,
+    frame: Option<u32>,
+    source: &str,
+    payload: &str,
+) -> bool {
     let Ok(PageEvent::Problem {
         system,
         stage,
-        detail,
         hidden,
         asked,
     }) = serde_json::from_str::<PageEvent>(payload)
@@ -57,23 +61,34 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
     if !source.starts_with("https://") || !first_in_a_while(tab) {
         return true;
     }
+    let state = app.state::<App>();
+    let Some(document) = state.documents.capture(tab, frame, source) else {
+        return true;
+    };
+    // Чужой iframe не принимает постоянные решения за сайт родителя.
+    let same_origin = state.documents.capture(tab, None, source).is_some();
     // Поля — текст страницы: в журнал идёт только их начало.
     let clip = |text: String| -> String { text.chars().take(DETAIL_LIMIT).collect() };
-    let (system, stage, detail) = (clip(system), clip(stage), clip(detail));
+    let (system, stage) = (clip(system), clip(stage));
     let (app, label) = (app.clone(), label.to_string());
     // Адрес вкладки и настройки — не на главном потоке, куда пришло сообщение.
     tauri::async_runtime::spawn_blocking(move || {
-        let url = crate::state::with_tab(&app, tab, move |host| {
-            host.with_tab(browser190x4_webview::TabId(tab), |view| view.source_url())
-        });
-        let Some(site) = url
-            .ok()
-            .flatten()
-            .and_then(|url| browser190x4_adblock::site_key(&url))
-        else {
+        if !app.state::<App>().documents.current(&document) {
+            return;
+        }
+        let Some(site) = browser190x4_adblock::site_key(&document.origin) else {
             return;
         };
-        tracing::warn!(%site, %system, %stage, %detail, hidden, "защищённое видео не пошло");
+        tracing::warn!(hidden, "защищённое видео не пошло");
+        if !same_origin {
+            notice(
+                &app,
+                &label,
+                tab,
+                "Не удалось запустить защищённое видео во встроенном плеере",
+            );
+            return;
+        }
         // Сайт спрашивал только PlayReady, а он спрятан: для движка это то же,
         // что застрявший Widevine.
         let (system, stage) = if system == "none" && asked.iter().any(|name| name == "playready") {
@@ -81,7 +96,7 @@ pub fn handle_message(app: &AppHandle, label: &str, tab: u32, source: &str, payl
         } else {
             (system, stage)
         };
-        on_problem(&app, &label, tab, &site, &system, &stage, hidden);
+        on_problem(&app, &document, &site, &system, &stage, hidden);
     });
     true
 }
@@ -119,13 +134,13 @@ pub fn forget_tab(tab: u32) {
 
 fn on_problem(
     app: &AppHandle,
-    label: &str,
-    tab: u32,
+    document: &crate::documents::Context,
     site: &str,
     system: &str,
     stage: &str,
     hidden: bool,
 ) {
+    let (label, tab) = (document.window.as_str(), document.tab);
     let store = app.state::<App>().store.clone();
     let reason = reason(stage);
     let widevine = store.setting_bool("drm_widevine", true);
@@ -145,6 +160,23 @@ fn on_problem(
             _ => format!("Защищённое видео не запустилось: {reason}"),
         };
         notice(app, label, tab, &text);
+        return;
+    }
+
+    if document.private {
+        let handle = app.clone();
+        let document = document.clone();
+        let site = site.to_string();
+        crate::state::later(app, tab, move |host| {
+            if !handle.state::<App>().documents.current(&document) {
+                return;
+            }
+            host.with_tab(browser190x4_webview::TabId(tab), |view| {
+                if view.private_drm_fallback(&site) {
+                    let _ = view.reload();
+                }
+            });
+        });
         return;
     }
 
@@ -168,12 +200,17 @@ fn on_problem(
         ),
     );
     // Страница перечитает скрипт с новыми настройками только при загрузке.
+    let handle = app.clone();
+    let document = document.clone();
     let _ = crate::state::with_tab(app, tab, move |host| {
+        if !handle.state::<App>().documents.current(&document) {
+            return;
+        }
         host.with_tab(browser190x4_webview::TabId(tab), |view| {
             if let Err(err) = view.reload() {
                 tracing::debug!(%err, "страница с видео не перезагружена");
             }
-        })
+        });
     });
 }
 

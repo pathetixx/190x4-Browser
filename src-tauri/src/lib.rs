@@ -13,6 +13,7 @@ mod autoscroll;
 mod browser_windows;
 mod cosmetic;
 mod default_browser;
+mod documents;
 mod drm;
 mod external;
 mod filters;
@@ -29,6 +30,7 @@ mod picker;
 mod pip;
 mod popup;
 mod resources;
+mod shutdown;
 mod site_icons;
 mod sponsorblock;
 mod state;
@@ -132,6 +134,7 @@ pub fn run() {
             store: store.clone(),
             services: services.clone(),
             passwords: Default::default(),
+            documents: Default::default(),
             transfers: Default::default(),
             popup: Default::default(),
             external: Default::default(),
@@ -145,6 +148,7 @@ pub fn run() {
             closed_windows: Default::default(),
         })
         .manage(updates::Updates::default())
+        .manage(shutdown::Shutdown::default())
         .manage(newtab::NewTab::default())
         .manage(sponsorblock::SponsorBlock::default())
         .manage(twitch::Twitch::default())
@@ -181,6 +185,7 @@ pub fn run() {
             ipc::tab_history_go,
             ipc::tab_selection,
             ipc::app_quit,
+            shutdown::shutdown_answer,
             ipc::chrome_focus,
             ipc::adblock_stats,
             ipc::adblock_set_enabled,
@@ -386,7 +391,20 @@ pub(crate) fn route_event(
             return;
         }
         // Фрейм ушёл на другой адрес: учётки прежнего документа ему не отдаются.
-        TabEvent::FrameStarted { id, frame } => {
+        TabEvent::FrameStarted { id, frame, url } => {
+            let state = app.state::<App>();
+            state.documents.navigate(
+                *id,
+                Some(*frame),
+                url,
+                label,
+                state.windows.is_private(label),
+            );
+            passwords::on_frame_navigation(app, *id, *frame);
+            return;
+        }
+        TabEvent::FrameGone { id, frame } => {
+            app.state::<App>().documents.forget(*id, Some(*frame));
             passwords::on_frame_navigation(app, *id, *frame);
             return;
         }
@@ -432,7 +450,11 @@ pub(crate) fn route_event(
         TabEvent::Insecure { host, .. } => {
             let _ = app.emit("insecure-host", host);
         }
-        TabEvent::Started { id, .. } => {
+        TabEvent::Started { id, url } => {
+            let state = app.state::<App>();
+            state
+                .documents
+                .navigate(*id, None, url, label, state.windows.is_private(label));
             passwords::on_navigation(app, *id);
             pip::on_navigation(app, *id);
             // Ссылки на приложения прежней страницы больше никто не откроет.
@@ -506,7 +528,7 @@ fn route_message(
             sponsorblock::handle_message(app, id, frame, source, payload);
         }
         "drm_problem" => {
-            drm::handle_message(app, label, id, source, payload);
+            drm::handle_message(app, label, id, frame, source, payload);
         }
         name if name.starts_with("autoscroll_") => {
             autoscroll::handle_message(app, id, frame, source, payload);
@@ -523,26 +545,6 @@ fn route_message(
         }
         name if top && name.starts_with("newtab_") => {
             newtab::handle_message(app, id, source, payload);
-        }
-        // «Всё равно перейти» на своей странице предупреждения SmartScreen
-        // (`errors::smartscreen_script`). Источник у сообщения — адрес, куда
-        // шёл переход, а не `chrome-error://`, поэтому вкладка сама спрашивает
-        // документ, что на экране предупреждение (`Tab::pass_smartscreen`).
-        "smartscreen_proceed" if top => {
-            #[derive(serde::Deserialize)]
-            struct Proceed {
-                #[serde(default)]
-                key: String,
-            }
-            let key = serde_json::from_str::<Proceed>(payload)
-                .map(|proceed| proceed.key)
-                .unwrap_or_default();
-            let label = label.to_string();
-            let _ = state::with_host(app, &label, move |host| {
-                if let Err(err) = host.pass_smartscreen(browser190x4_webview::TabId(id), &key) {
-                    tracing::debug!(%err, "сайт мимо SmartScreen не открыт");
-                }
-            });
         }
         // Остальное ждёт интерфейс окна; другие сообщения туда не идут:
         // страница, шлющая `postMessage` в цикле, загружала бы его событиями.

@@ -336,7 +336,11 @@ pub(crate) fn is_recordable(url: &str) -> bool {
         || url.starts_with("about:")
         || url.starts_with("data:")
         || url.starts_with("blob:")
-        || url.contains("190x4-pages.invalid"))
+        || url::Url::parse(url).ok().is_some_and(|parsed| {
+            parsed.scheme() == "http"
+                && parsed.host_str() == Some("190x4-pages.invalid")
+                && parsed.port().is_none()
+        }))
 }
 
 pub(crate) fn host_of(url: &str) -> String {
@@ -414,6 +418,9 @@ mod tests {
 
         assert!(store.recent_history(10).unwrap().is_empty());
         assert!(store.history_visits("", None, 10).unwrap().is_empty());
+        let url = "https://example.test/#190x4-pages.invalid/newtab";
+        store.record_visit(url, "Обычный сайт").unwrap();
+        assert_eq!(store.recent_history(10).unwrap()[0].url, url);
     }
 
     #[test]

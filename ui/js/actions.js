@@ -9,11 +9,12 @@
 
 import { invoke } from "./bridge.js";
 import { confirmAction, downloadsText } from "./confirm.js";
-import { summary } from "./downloads-model.js";
 import { openPopup } from "./popups.js";
 import { pref, setPref } from "./prefs.js";
 import { activeTab, removeTab, state, tabIndex } from "./state.js";
 import { open, parseInternal, splitWith } from "./tabs.js";
+import { isNewTabUrl } from "./urls.js";
+export { isNewTabUrl } from "./urls.js";
 
 /** Точки, которые заполняет main.js: панели и поиск живут в своих модулях. */
 export const hooks = {
@@ -23,10 +24,6 @@ export const hooks = {
   toast: (_text) => {},
   saveSession: async () => {},
 };
-
-export function isNewTabUrl(url) {
-  return !url || url === "about:blank" || url === "about:newtab" || url.includes("190x4-pages.invalid/newtab");
-}
 
 /** Ввод из адресной строки, клик по закладке, пункт истории. */
 export async function navigate(input, { newTab = false, background = false } = {}) {
@@ -108,7 +105,9 @@ export function toggleBookmarksBar() {
  */
 export async function closeBrowser() {
   // Выход обрывает загрузки — как Chrome, сперва спросить.
-  const { active } = summary();
+  let active;
+  try { active = await invoke("downloads_active"); }
+  catch (error) { hooks.toast(String(error)); return; }
   if (active > 0) {
     const ok = await confirmAction({
       title: "Закрыть браузер?",
@@ -118,8 +117,7 @@ export async function closeBrowser() {
     });
     if (!ok) return;
   }
-  await hooks.saveSession();
-  invoke("app_quit").catch(() => {});
+  await invoke("app_quit").catch((error) => hooks.toast(String(error)));
 }
 
 /** Папки закладок строкой пути — для выпадающего списка «Папка». */

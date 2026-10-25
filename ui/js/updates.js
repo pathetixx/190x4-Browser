@@ -10,7 +10,6 @@ import { invoke, isNative, listen } from "./bridge.js";
 import { hooks } from "./actions.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { closePopup, onPopupAction, openPopup } from "./popups.js";
-import { confirmWindowClose } from "./tabs.js";
 
 const button = document.getElementById("update-btn");
 const listeners = new Set();
@@ -79,27 +78,27 @@ export function openUpdateBubble() {
 /**
  * Скачать и поставить. На Windows браузер закроется и откроется уже новым —
  * как закрытие окна, поэтому сперва те же вопросы: идущие загрузки прервутся,
- * а страницы этого окна могут спросить «Покинуть сайт?».
+ * а страницы всех окон могут спросить «Покинуть сайт?».
  */
 export async function installUpdate() {
   if (update.installing || !update.info) return;
   set({ installing: true, error: "" });
-  const downloads = await invoke("downloads_active").catch(() => 0);
-  const agreed =
-    !downloads ||
-    (await confirmAction({
-      title: "Обновить сейчас?",
-      text: `${downloadsText(downloads)} Обновление закроет браузер, и загрузка прервётся.`,
-      confirm: "Обновить",
-      cancel: "Позже",
-    }));
-  if (!agreed || !(await confirmWindowClose())) {
-    set({ installing: false });
-    return;
-  }
-  await hooks.saveSession();
   try {
-    await invoke("update_install");
+    const downloads = await invoke("downloads_active");
+    const agreed =
+      !downloads ||
+      (await confirmAction({
+        title: "Обновить сейчас?",
+        text: `${downloadsText(downloads)} Обновление закроет браузер, и загрузка прервётся.`,
+        confirm: "Обновить",
+        cancel: "Позже",
+      }));
+    if (!agreed) {
+      set({ installing: false });
+      return;
+    }
+    const installed = await invoke("update_install");
+    if (!installed) set({ installing: false });
   } catch (error) {
     set({ installing: false, error: String(error) });
     closePopup();

@@ -278,11 +278,27 @@ function openInternal(name, section, { background, index }) {
   return id;
 }
 
-/** Спящая вкладка просыпается: под неё заводится настоящая вкладка движка. */
-async function wake(tab) {
+const waking = new Map();
+let activation = 0;
+
+/** Повторные щелчки ждут одну операцию; закрытая вкладка больше не просыпается. */
+function wake(tab) {
+  if (waking.has(tab.id)) return waking.get(tab.id);
+  const task = wakeOnce(tab).finally(() => waking.delete(tab.id));
+  waking.set(tab.id, task);
+  return task;
+}
+
+async function wakeOnce(tab) {
   const url = tab.url;
   const realId = await invoke("tab_open", { url }).catch(() => null);
   if (realId == null) return null;
+  if (!state.tabs.get(tab.id)?.sleeping) {
+    markClosed(realId);
+    removeTab(realId);
+    await invoke("tab_close", { id: realId });
+    return null;
+  }
   // Событие «вкладка открылась» могло прийти раньше ответа: свои поля
   // (закрепление, заголовок из сессии) переносим поверх.
   const known = state.tabs.get(realId);
@@ -297,6 +313,7 @@ async function wake(tab) {
 }
 
 export async function activate(id) {
+  const request = ++activation;
   let tab = state.tabs.get(id);
   if (!tab) return;
 
@@ -309,6 +326,7 @@ export async function activate(id) {
     id = realId;
     tab = state.tabs.get(id);
   }
+  if (!tab || request !== activation) return;
 
   // Когда вкладку видели в последний раз — по нему фоновые засыпают.
   if (state.activeId !== null) seenAt.set(state.activeId, Date.now());
@@ -514,6 +532,13 @@ export function confirmWindowClose() {
       });
     }
   });
+}
+
+/** Другое окно отменило общий выход: все незавершённые проверки отменяются. */
+export function cancelWindowClose() {
+  const ids = [...leaving.keys()];
+  dismissLeaveDialogs(ids);
+  for (const id of ids) leaving.get(id)?.finish(false);
 }
 
 /** Вкладки, которые видны в строке: без спрятанных в свёрнутых группах и закрываемых. */

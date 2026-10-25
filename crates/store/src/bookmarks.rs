@@ -127,15 +127,19 @@ impl Store {
         url: &str,
         icon: &str,
     ) -> anyhow::Result<i64> {
-        self.ensure_folder(parent)?;
         let now = crate::history::now_secs();
-        self.with(|db| insert(db, parent, BookmarkKind::Url, title, Some(url), icon, now))
+        self.with(|db| {
+            ensure_folder(db, parent)?;
+            insert(db, parent, BookmarkKind::Url, title, Some(url), icon, now)
+        })
     }
 
     pub fn add_bookmark_folder(&self, parent: i64, title: &str) -> anyhow::Result<i64> {
-        self.ensure_folder(parent)?;
         let now = crate::history::now_secs();
-        self.with(|db| insert(db, parent, BookmarkKind::Folder, title, None, "", now))
+        self.with(|db| {
+            ensure_folder(db, parent)?;
+            insert(db, parent, BookmarkKind::Folder, title, None, "", now)
+        })
     }
 
     /// Переименовать или поменять адрес. Корневые папки не трогаем: на них
@@ -171,23 +175,29 @@ impl Store {
         if is_root(id) {
             anyhow::bail!("корневую папку нельзя переместить");
         }
-        self.ensure_folder(parent)?;
-        let node = self
-            .bookmark(id)?
-            .ok_or_else(|| anyhow::anyhow!("закладки {id} нет"))?;
-
-        // Папку нельзя положить в саму себя или в собственного потомка:
-        // поднимаемся от новой родительской папки к корню.
-        let mut cursor = Some(parent);
-        while let Some(current) = cursor {
-            if current == id {
-                anyhow::bail!("папку нельзя переместить внутрь неё самой");
-            }
-            cursor = self.bookmark(current)?.and_then(|n| n.parent_id);
-        }
-
         self.with(|db| {
             let tx = db.unchecked_transaction()?;
+            ensure_folder(&tx, parent)?;
+            let old_parent: Option<i64> = tx.query_row(
+                "SELECT parent_id FROM bookmark_nodes WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )?;
+            // Проверка и запись держат один замок: два окна не создадут цикл.
+            let mut seen = std::collections::HashSet::new();
+            let mut cursor = Some(parent);
+            while let Some(current) = cursor {
+                if current == id || !seen.insert(current) {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "папку нельзя переместить внутрь неё самой".into(),
+                    ));
+                }
+                cursor = tx.query_row(
+                    "SELECT parent_id FROM bookmark_nodes WHERE id = ?1",
+                    [current],
+                    |row| row.get(0),
+                )?;
+            }
             let mut siblings = children_ids(&tx, parent)?;
             siblings.retain(|sibling| *sibling != id);
             siblings.insert(index.min(siblings.len()), id);
@@ -196,7 +206,7 @@ impl Store {
                 rusqlite::params![id, parent],
             )?;
             write_order(&tx, &siblings)?;
-            if let Some(old) = node.parent_id.filter(|old| *old != parent) {
+            if let Some(old) = old_parent.filter(|old| *old != parent) {
                 renumber(&tx, old)?;
             }
             tx.commit()
@@ -291,14 +301,20 @@ impl Store {
         let nodes = self.bookmark_nodes()?;
         Ok((subtree(&nodes, BAR_FOLDER), subtree(&nodes, OTHER_FOLDER)))
     }
+}
 
-    fn ensure_folder(&self, id: i64) -> anyhow::Result<()> {
-        match self.bookmark(id)? {
-            Some(node) if node.kind == BookmarkKind::Folder => Ok(()),
-            Some(_) => anyhow::bail!("{id} — не папка"),
-            None => anyhow::bail!("папки {id} нет"),
-        }
+fn ensure_folder(db: &Connection, id: i64) -> rusqlite::Result<()> {
+    let kind: String = db.query_row(
+        "SELECT kind FROM bookmark_nodes WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    if kind != "folder" {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "выбранный элемент — не папка".into(),
+        ));
     }
+    Ok(())
 }
 
 fn subtree(nodes: &[BookmarkNode], parent: i64) -> Vec<ImportNode> {
@@ -431,6 +447,31 @@ fn renumber(db: &Connection, parent: i64) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn concurrent_folder_moves_cannot_create_a_cycle() {
+        let store = std::sync::Arc::new(crate::Store::memory().unwrap());
+        let a = store.add_bookmark_folder(crate::BAR_FOLDER, "А").unwrap();
+        let b = store.add_bookmark_folder(crate::BAR_FOLDER, "Б").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [(a, b), (b, a)]
+            .into_iter()
+            .map(|(id, parent)| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.move_bookmark(id, parent, 0).is_ok()
+                })
+            })
+            .collect();
+        let succeeded = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(succeeded, 1);
+        assert!(store.bookmarks_for_export().is_ok());
+    }
     use crate::bookmarks_html::{FolderRole, ImportNode};
     use crate::{Store, BAR_FOLDER, OTHER_FOLDER};
 

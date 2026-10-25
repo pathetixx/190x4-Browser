@@ -1129,16 +1129,6 @@ impl TabHost {
         tab.find(&state.env, query)
     }
 
-    /// «Всё равно перейти» на предупреждении SmartScreen (`Tab::pass_smartscreen`).
-    pub fn pass_smartscreen(&self, id: TabId, key: &str) -> anyhow::Result<()> {
-        let state = self.inner.borrow();
-        let tab = state
-            .tabs
-            .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("вкладка ещё не готова"))?;
-        Ok(tab.pass_smartscreen(key)?)
-    }
-
     /// Спросить страницу, можно ли её закрыть (`Tab::request_close`).
     /// `false` — спрашивать некого (вкладка не достроена), закрывать сразу.
     pub fn request_close(&self, id: TabId) -> bool {
@@ -1335,9 +1325,15 @@ impl TabHost {
     /// Удалить куки, хранилища сайтов и кэш. Профиль общий на все окна и
     /// вкладки, так что годится любое живое вебвью — в том числе интерфейс,
     /// когда открыты только встроенные страницы.
-    pub fn clear_browsing_data(&self, site_data: bool, cache: bool) -> anyhow::Result<()> {
-        let core = self.any_core()?;
-        crate::tab::clear_browsing_data(&core, site_data, cache)
+    pub fn clear_browsing_data(
+        &self,
+        site_data: bool,
+        cache: bool,
+        done: impl FnOnce(windows_core::Result<()>) + 'static,
+    ) -> anyhow::Result<()> {
+        // Интерфейс всегда в обычном профиле, даже над приватными вкладками.
+        let core = self.regular_core()?;
+        crate::tab::clear_browsing_data(&core, site_data, cache, done)
     }
 
     /// Разрешения, которые пользователь дал или запретил сайтам. Список приходит
@@ -1361,27 +1357,10 @@ impl TabHost {
         dialogs::permission_reset(&self.profile()?, permission, origin, done)
     }
 
-    /// Любое живое вебвью окна: вкладка, а без вкладок — интерфейс.
-    fn any_core(
-        &self,
-    ) -> anyhow::Result<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {
-        let state = self.inner.borrow();
-        match state.tabs.values().next() {
-            Some(tab) => Ok(tab.core().clone()),
-            None => Ok(unsafe {
-                state
-                    .chrome
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("движок ещё не запущен"))?
-                    .CoreWebView2()?
-            }),
-        }
-    }
-
     /// Профиль движка. Он общий на все вкладки и окно интерфейса: годится любая
     /// вкладка, а без вкладок — вебвью интерфейса.
     fn profile(&self) -> anyhow::Result<ICoreWebView2Profile4> {
-        let core = self.any_core()?;
+        let core = self.regular_core()?;
         let unsupported = || anyhow::anyhow!("движок не хранит разрешения сайтов");
         let profile = unsafe {
             core.cast::<ICoreWebView2_13>()
@@ -1389,6 +1368,19 @@ impl TabHost {
                 .Profile()?
         };
         profile.cast().map_err(|_| unsupported())
+    }
+
+    fn regular_core(
+        &self,
+    ) -> anyhow::Result<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {
+        let state = self.inner.borrow();
+        Ok(unsafe {
+            state
+                .chrome
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("движок ещё не запущен"))?
+                .CoreWebView2()?
+        })
     }
 
     /// Версия рантайма WebView2 — для страницы «О браузере».
@@ -1474,8 +1466,10 @@ pub(crate) fn private_options(
         return Ok(None);
     }
     let Ok(env10) = env.cast::<ICoreWebView2Environment10>() else {
-        tracing::warn!("движок не умеет приватный режим — окно будет обычным");
-        return Ok(None);
+        return Err(windows_core::Error::new(
+            windows::Win32::Foundation::E_NOINTERFACE,
+            "Обновите Microsoft Edge WebView2 Runtime для приватного режима",
+        ));
     };
     unsafe {
         let options = env10.CreateCoreWebView2ControllerOptions()?;

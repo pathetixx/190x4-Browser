@@ -30,6 +30,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::documents::Context;
 use crate::state::{later, App};
 use crate::vault;
 
@@ -56,6 +57,7 @@ struct Account {
 
 /// Учётки, найденные для документа: подставить можно только одну из них.
 struct PageOffer {
+    document: Context,
     origin: String,
     accounts: Vec<Account>,
     /// Показывать список, как только человек встаёт в поле (`passwords_autofill`);
@@ -89,6 +91,7 @@ impl Rect {
 /// Человек встал в поле раньше, чем нашлись учётки документа: список покажем,
 /// когда они найдутся, если человек всё ещё там.
 struct PendingMenu {
+    document: Context,
     window: String,
     rect: Option<Rect>,
     keyboard: bool,
@@ -211,7 +214,7 @@ pub fn handle_message(
         return true;
     }
     app.state::<App>().passwords.remember_window(tab, window);
-    tracing::debug!(tab, ?frame, %source, "сообщение менеджера паролей");
+    tracing::debug!(tab, ?frame, "сообщение менеджера паролей");
     let Some(origin) = origin_of(source).filter(|origin| !origin.ends_with(PAGES_HOST)) else {
         return true;
     };
@@ -244,6 +247,9 @@ pub fn handle_message(
         }
         PageEvent::Commit => commit(app, tab),
         PageEvent::Form => {
+            let Some(document) = state.documents.capture(tab, frame, source) else {
+                return true;
+            };
             // Сообщения страницы — недоверенный поток: сайт может слать их в
             // цикле. Поэтому работа уходит в пул задач, а не в новый поток на
             // каждое сообщение, и одна и та же форма не опрашивается чаще
@@ -252,16 +258,19 @@ pub fn handle_message(
                 return true;
             }
             let app = app.clone();
-            tauri::async_runtime::spawn_blocking(move || offer_accounts(&app, tab, frame, &origin));
+            tauri::async_runtime::spawn_blocking(move || offer_accounts(&app, document));
         }
         PageEvent::Menu { rect, keyboard } => {
+            let Some(document) = state.documents.capture(tab, frame, source) else {
+                return true;
+            };
             let rect = rect.and_then(Rect::sane);
             let offer = state
                 .passwords
                 .pages
                 .lock()
                 .get(&(tab, frame))
-                .filter(|offer| offer.origin == origin)
+                .filter(|offer| offer.document == document)
                 .map(|offer| (offer.accounts.clone(), offer.suggest));
             match offer {
                 Some((accounts, suggest)) => {
@@ -274,6 +283,7 @@ pub fn handle_message(
                     state.passwords.menus.lock().insert(
                         (tab, frame),
                         PendingMenu {
+                            document,
                             window: window.to_string(),
                             rect,
                             keyboard,
@@ -480,7 +490,8 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
 /// Mail.ru входит во фрейме VK ID). Учётки сайта вкладки фрейму чужого сайта
 /// не предлагаются: так рекламный фрейм на странице банка увидел бы логины
 /// банка.
-fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str) {
+fn offer_accounts(app: &AppHandle, document: Context) {
+    let (tab, frame, origin) = (document.tab, document.frame, document.origin.as_str());
     let state = app.state::<App>();
     let store = &state.store;
     let mut offered = store.password_secrets_for(origin).unwrap_or_default();
@@ -493,7 +504,6 @@ fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str) {
     offered.retain(|account| seen.insert(account.id));
     tracing::debug!(tab, ?frame, offered = offered.len(), "форма входа");
     if offered.is_empty() {
-        state.passwords.menus.lock().remove(&(tab, frame));
         return;
     }
 
@@ -505,58 +515,67 @@ fn offer_accounts(app: &AppHandle, tab: u32, frame: Option<u32>, origin: &str) {
             origin: account.origin,
         })
         .collect();
-    state.passwords.pages.lock().insert(
-        (tab, frame),
-        PageOffer {
-            origin: origin.to_string(),
-            accounts: accounts.clone(),
-            suggest: store.setting_bool("passwords_autofill", true),
-        },
-    );
-
-    if frame.is_none() {
-        let _ = app.emit_to(
-            state.passwords.window_of(tab).as_str(),
-            "password-site",
-            serde_json::json!({ "tab": tab, "origin": origin, "accounts": accounts }),
+    let suggest = store.setting_bool("passwords_autofill", true);
+    let handle = app.clone();
+    later(app, tab, move |_| {
+        let state = handle.state::<App>();
+        if !state.documents.current(&document) {
+            return;
+        }
+        let origin = document.origin.as_str();
+        state.passwords.pages.lock().insert(
+            (tab, frame),
+            PageOffer {
+                document: document.clone(),
+                origin: origin.to_string(),
+                accounts: accounts.clone(),
+                suggest,
+            },
         );
-    }
 
-    // Человек уже стоит в поле — список сейчас, а не по второму щелчку.
-    let pending = state
-        .passwords
-        .menus
-        .lock()
-        .remove(&(tab, frame))
-        .filter(|menu| menu.at.elapsed() < MENU_WAIT);
-    if let Some(menu) = pending {
-        let suggest = store.setting_bool("passwords_autofill", true);
-        if menu.keyboard || suggest {
-            show_menu(
-                app,
-                &menu.window,
-                tab,
-                frame,
-                origin,
-                &accounts,
-                menu.rect,
-                menu.keyboard,
+        if frame.is_none() {
+            let _ = handle.emit_to(
+                document.window.as_str(),
+                "password-site",
+                serde_json::json!({ "tab": tab, "origin": origin, "accounts": accounts }),
             );
         }
-    }
+
+        // Человек уже стоит в поле — список сейчас, а не по второму щелчку.
+        let pending = state
+            .passwords
+            .menus
+            .lock()
+            .remove(&(tab, frame))
+            .filter(|menu| menu.document == document && menu.at.elapsed() < MENU_WAIT);
+        if let Some(menu) = pending {
+            if menu.keyboard || suggest {
+                show_menu(
+                    &handle,
+                    &menu.window,
+                    tab,
+                    frame,
+                    origin,
+                    &accounts,
+                    menu.rect,
+                    menu.keyboard,
+                );
+            }
+        }
+    });
 }
 
 /// Учётка, которую человек выбрал в окне браузера, — в документ вкладки или
 /// во фрейм, которому её показали.
 pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::Result<()> {
-    let origin = app
+    let document = app
         .state::<App>()
         .passwords
         .pages
         .lock()
         .get(&(tab, frame))
         .filter(|offer| offer.accounts.iter().any(|account| account.id == id))
-        .map(|offer| offer.origin.clone())
+        .map(|offer| offer.document.clone())
         .ok_or_else(|| anyhow::anyhow!("учётки нет среди учёток страницы"))?;
     let state = app.state::<App>();
     let (entry, secret) = state
@@ -565,7 +584,7 @@ pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::R
         .ok_or_else(|| anyhow::anyhow!("пароль удалён"))?;
     let password = vault::reveal(&secret)?;
     let _ = state.store.touch_password(id);
-    fill_tab(app, tab, frame, origin, entry.username, password);
+    fill_tab(app, document, entry.username, password);
     Ok(())
 }
 
@@ -577,16 +596,14 @@ pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::R
 /// потом скриптом страницы (`location.origin`). Одной проверки скриптом мало:
 /// сообщение `chrome.webview` слышит любой скрипт документа, и пароль дошёл бы
 /// до чужого документа раньше, чем исполнитель его отверг.
-fn fill_tab(
-    app: &AppHandle,
-    tab: u32,
-    frame: Option<u32>,
-    origin: String,
-    username: String,
-    password: String,
-) {
+fn fill_tab(app: &AppHandle, document: Context, username: String, password: String) {
+    let (tab, frame) = (document.tab, document.frame);
     let handle = app.clone();
     later(app, tab, move |host| {
+        if !handle.state::<App>().documents.current(&document) {
+            return;
+        }
+        let origin = document.origin;
         host.with_tab(TabId(tab), |view| {
             if frame.is_none() && origin_of(&view.source_url()).as_deref() != Some(origin.as_str())
             {
