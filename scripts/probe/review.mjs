@@ -31,6 +31,13 @@ async function attach(target) {
   const c = await connect(target); connections.push(c);
   const ui = code => bounded(c.evaluate(`(async () => { ${code} })()`));
   const invoke = (command, args = {}) => ui(`return window.__TAURI__.core.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)});`);
+  // CDP уже видит адрес окна, когда его первый документ ещё about:blank.
+  // Импортируем модули только из загруженного интерфейса с готовым мостом.
+  await until(async () => {
+    try {
+      return await ui(`return location.origin === 'http://tauri.localhost' && document.readyState === 'complete' && !!window.__TAURI__?.core;`);
+    } catch { return false; }
+  });
   await until(() => ui(`const {state} = await import('./js/state.js'); return state.tabs.size > 0;`));
   await ui(`window.__reviewDialogs = []; const {listen} = await import('./js/bridge.js'); await listen('tab', e => {
     if (e.kind === 'dialog' && e.request?.kind === 'beforeunload') window.__reviewDialogs.push(e);
