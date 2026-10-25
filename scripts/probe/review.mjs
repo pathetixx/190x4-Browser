@@ -50,7 +50,10 @@ async function cancel(win, event) {
   await sleep(300);
 }
 try {
-  const firstTarget = await until(async () => (await chromeWindows())[0]);
+  // Порт отладки появляется после создания среды WebView2, позже процесса.
+  const firstTarget = await until(async () => {
+    try { return (await chromeWindows())[0]; } catch { return null; }
+  });
   const first = await attach(firstTarget);
   await first.invoke('settings_set', { key: 'newtab_weather', value: false });
   await first.invoke('settings_set', { key: 'newtab_monitor', value: false });
