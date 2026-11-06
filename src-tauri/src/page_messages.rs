@@ -63,8 +63,10 @@ impl Bucket {
     }
 }
 
-static BUCKETS: LazyLock<Mutex<HashMap<(u32, Option<u32>), Bucket>>> =
-    LazyLock::new(Mutex::default);
+/// Вкладка и её фрейм (`None` — документ вкладки).
+type Source = (u32, Option<u32>);
+
+static BUCKETS: LazyLock<Mutex<HashMap<Source, Bucket>>> = LazyLock::new(Mutex::default);
 
 /// Пропустить ли ещё одно сообщение документа вкладки или её фрейма.
 pub fn allow(tab: u32, frame: Option<u32>) -> bool {
