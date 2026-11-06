@@ -21,6 +21,8 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import { dirname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -111,12 +113,74 @@ const ENV = {
 };
 
 const headers = process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {};
+
+// Загрузка — через node:https, а не встроенный fetch. В undici из Node 22 обрыв
+// соединения посреди тела ответа роняет весь процесс внутренней проверкой
+// (`assert(!this.paused)` в Parser.finish): исключение не ловится, повторить
+// запрос нельзя, и сборка падала через раз на ровном месте.
+const ATTEMPTS = 4;
+const TIMEOUT_MS = 60_000;
+const MAX_REDIRECTS = 5;
+
+/** Один запрос: переадресации — следом, тело — целиком в память. */
+function request(url, requestHeaders, redirects = MAX_REDIRECTS) {
+  return new Promise((done, fail) => {
+    const target = new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const req = client.get(target, { headers: { "User-Agent": "190x4-browser-filters", ...requestHeaders } }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        if (!redirects) {
+          fail(new Error(`${url}: слишком много переадресаций`));
+          return;
+        }
+        const next = new URL(res.headers.location, target);
+        // Ключ API уходит только тому же хосту.
+        done(request(next.href, next.host === target.host ? requestHeaders : {}, redirects - 1));
+        return;
+      }
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("error", fail);
+      res.on("end", () => {
+        const body = Buffer.concat(chunks);
+        const length = Number(res.headers["content-length"]);
+        // Соединение закрыли раньше конца тела: обрезанный список хуже ошибки.
+        if (res.complete === false || (Number.isFinite(length) && length !== body.length && !res.headers["content-encoding"])) {
+          fail(new Error(`${url}: ответ оборван`));
+          return;
+        }
+        done({ status, body });
+      });
+    });
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`${url}: нет ответа ${TIMEOUT_MS / 1000} с`)));
+    req.on("error", fail);
+  });
+}
+
+/** Ответ с повтором: на обрыв, таймаут, 429 и 5xx. 4xx — сразу ошибка. */
 async function get(url, options = {}) {
   for (let attempt = 1; ; attempt++) {
-    const response = await fetch(url, options);
-    if (response.ok) return response;
-    if (attempt === 3 || response.status < 500) throw new Error(`${url}: HTTP ${response.status}`);
-    await new Promise((done) => setTimeout(done, attempt * 2000));
+    let failure;
+    try {
+      const { status, body } = await request(url, options.headers ?? {});
+      if (status >= 200 && status < 300) {
+        return {
+          text: async () => body.toString("utf8"),
+          json: async () => JSON.parse(body.toString("utf8")),
+          arrayBuffer: async () => body,
+        };
+      }
+      failure = new Error(`${url}: HTTP ${status}`);
+      if (status < 500 && status !== 429) throw failure;
+    } catch (error) {
+      if (error === failure) throw error;
+      failure = error;
+    }
+    if (attempt === ATTEMPTS) throw failure;
+    console.warn(`${failure.message} — повтор ${attempt + 1} из ${ATTEMPTS}`);
+    await new Promise((resume) => setTimeout(resume, attempt * 3000));
   }
 }
 const text = async (url) => (await get(url)).text();
