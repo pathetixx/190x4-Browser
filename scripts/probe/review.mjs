@@ -102,7 +102,18 @@ try {
   const privateWindow = await attach(privateTarget);
   await first.invoke('window_command', { action: 'close' });
   await second.invoke('window_command', { action: 'close' });
-  await until(async () => (await chromeWindows()).length === 1);
+  await until(async () => (await chromeWindows()).length === 1).catch(async (error) => {
+    // Какие окна не закрылись и что в них: без этого падение пробы в CI не разобрать.
+    const left = await chromeWindows().catch(() => []);
+    console.error('Окна остались:', left.map(t => t.id));
+    for (const [name, win] of [['first', first], ['second', second], ['private', privateWindow]]) {
+      if (!left.some(t => t.id === win.target.id)) continue;
+      const info = await win.ui(`const {state} = await import('./js/state.js');
+        return { window: state.window, tabs: [...state.tabs.values()].map(t => ({ id: t.id, url: t.url, loading: t.loading, sleeping: t.sleeping, closing: t.closing, internal: !!t.internal })) };`).catch(e => String(e));
+      console.error(name, JSON.stringify(info));
+    }
+    throw error;
+  });
   await privateWindow.invoke('browsing_data_clear', { history: false, downloads: false, siteData: true, cache: true });
   await privateWindow.invoke('window_open', { private: false, url: `${base}/plain` });
   const normalTarget = await until(async () => (await chromeWindows()).find(t => t.id !== privateTarget.id));
