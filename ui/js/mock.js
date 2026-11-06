@@ -81,6 +81,9 @@ const DOWNLOADS = [
 ];
 
 const settings = {};
+// ?theme=shiro|bloodmoon — снять макет в другой теме.
+const themeParam = new URLSearchParams(location.search).get("theme");
+if (themeParam) settings.theme = themeParam;
 let defaultBrowser = false;
 
 export async function invoke(command, args = {}) {

@@ -1,0 +1,244 @@
+/* ─────────────────────────────────────────────────────────────
+   Тема Bloodmoon — детали, которых нет в токенах.
+
+   Главная деталь — светящаяся кровью цепь (vein.webp): метит активную
+   вкладку и пункт меню под курсором, тает по нижнему краю chrome-а. Панели
+   лежат на гранже тушью, кнопки окна нарисованы кистью, знак — серп с
+   кровавой кляксой. Красный берётся из --accent, чтобы приватное окно
+   перекрашивало и эту тему. Ничего здесь не анимируется само.
+   Цвета и шрифты темы — в tokens.css.
+   ───────────────────────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] {
+  --bm-grunge: url("../assets/bloodmoon/grunge.webp");
+  --bm-vein: url("../assets/bloodmoon/vein.webp");
+  --bm-splat: url("../assets/bloodmoon/splat.webp");
+  --bm-mark: url("../assets/bloodmoon/mark.webp");
+  --bm-tint: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ── Заголовок окна ────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .titlebar {
+  background:
+    linear-gradient(rgba(5, 4, 4, 0.3), rgba(5, 4, 4, 0.5)),
+    var(--bm-grunge) 0 0 / 1600px auto,
+    var(--ink-0);
+}
+
+/* Знак темы — серп тушью с кровавой кляксой. Подменяется сама картинка,
+   разметка у всех тем одна. */
+:root[data-theme="bloodmoon"] :is(.brand__mark, .page__brand img) {
+  content: var(--bm-mark);
+  filter: drop-shadow(0 0 5px var(--accent-glow));
+}
+
+/* ── Вкладки ───────────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .tab::after {
+  font-family: var(--font-label);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+/* Активная: по верху — светящаяся цепь, тело цвета панели. */
+:root[data-theme="bloodmoon"] .tab[data-active="true"]::before {
+  background:
+    var(--bm-vein) left top / auto 10px repeat-x,
+    linear-gradient(180deg, var(--bm-tint), transparent 18px),
+    var(--ink-2);
+}
+
+:root[data-theme="bloodmoon"] .tab[data-active="true"]::after {
+  text-shadow: 0 0 6px var(--accent-glow);
+}
+
+/* В группе цепь не нужна: кромка — цвет группы, как в других темах. */
+:root[data-theme="bloodmoon"] .tab[data-active="true"][data-group]:not([data-group=""])::before {
+  background:
+    linear-gradient(var(--edge), var(--edge)) 0 0 / calc(100% - var(--cut)) 2px no-repeat,
+    linear-gradient(180deg, color-mix(in srgb, var(--edge) 22%, transparent), transparent 14px),
+    var(--ink-2);
+}
+
+/* ── Кнопки окна: глифы кистью ─────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .winctl__btn svg {
+  visibility: hidden;
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn {
+  background: center / 28px 28px no-repeat;
+  opacity: 0.85;
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn[data-window="minimize"] {
+  background-image: url("../assets/bloodmoon/cap-min.webp");
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn[data-window="toggle_maximize"] {
+  background-image: url("../assets/bloodmoon/cap-max.webp");
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn--close {
+  background-image: url("../assets/bloodmoon/cap-close.webp");
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn:hover {
+  opacity: 1;
+  background-color: var(--overlay-3);
+}
+
+:root[data-theme="bloodmoon"] .winctl__btn--close:hover {
+  background-color: var(--caption-close);
+}
+
+/* ── Панель инструментов и закладки ────────────────────────── */
+
+:root[data-theme="bloodmoon"] .toolbar,
+:root[data-theme="bloodmoon"] .bookmarks {
+  background:
+    linear-gradient(rgba(16, 14, 14, 0.88), rgba(16, 14, 14, 0.88)),
+    var(--bm-grunge) 0 -40px / 1600px auto,
+    var(--ink-2);
+}
+
+:root[data-theme="bloodmoon"] .bookmarks {
+  background-position: 0 0, 0 -84px, 0 0;
+  overflow: visible;
+  z-index: 2;
+}
+
+/* Нижний край chrome-а — светящаяся цепь, которая тает к краям окна. */
+:root[data-theme="bloodmoon"]:not([data-bookmarks="shown"]) .toolbar::after,
+:root[data-theme="bloodmoon"] .bookmarks::after {
+  height: 8px;
+  bottom: -4px;
+  z-index: 2;
+  background: var(--bm-vein) left center / auto 8px repeat-x;
+  mask-image: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);
+}
+
+:root[data-theme="bloodmoon"] .omni {
+  border-radius: 0;
+  background-color: rgba(3, 2, 2, 0.92);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+:root[data-theme="bloodmoon"] .omni[data-focused="true"] {
+  border-color: color-mix(in srgb, var(--accent) 75%, transparent);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7), 0 0 14px -4px var(--accent-glow);
+}
+
+:root[data-theme="bloodmoon"] .omni__site-label {
+  font-family: var(--font-label);
+  letter-spacing: 0.14em;
+}
+
+/* ── Внутренние страницы: настройки, история, загрузки ─────── */
+
+/* Справа за содержимым проступает картина темы. */
+:root[data-theme="bloodmoon"] .internal {
+  background:
+    linear-gradient(90deg, var(--ink-0) 0%, rgba(5, 4, 4, 0.94) 52%, rgba(5, 4, 4, 0.5) 100%),
+    url("../assets/bloodmoon/settings-bg.webp") right top / auto 100vh no-repeat fixed,
+    var(--ink-0);
+}
+
+:root[data-theme="bloodmoon"] .page__brand {
+  font-family: var(--font-grunge);
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: 0.02em;
+}
+
+/* Заголовок раздела: клякса вместо ромба, цепь вместо риски. */
+:root[data-theme="bloodmoon"] .section__title {
+  font-family: var(--font-label);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.26em;
+  color: var(--text-hi);
+}
+
+:root[data-theme="bloodmoon"] .section__title::before {
+  width: 18px;
+  height: 18px;
+  transform: none;
+  box-shadow: none;
+  background: var(--bm-splat) center / contain no-repeat;
+}
+
+:root[data-theme="bloodmoon"] .section__title::after {
+  height: 6px;
+  background: var(--bm-vein) left center / auto 6px repeat-x;
+  mask-image: linear-gradient(90deg, #000 30%, transparent);
+}
+
+:root[data-theme="bloodmoon"] .group {
+  background-color: rgba(10, 9, 9, 0.86);
+}
+
+:root[data-theme="bloodmoon"] .group__title {
+  font-family: var(--font-label);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+:root[data-theme="bloodmoon"] .nav__item[aria-current="true"] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 24%, transparent), transparent 85%);
+}
+
+:root[data-theme="bloodmoon"] .nav__item[aria-current="true"]::before {
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* Выбор — капля крови: пустое кольцо или светящаяся точка. */
+:root[data-theme="bloodmoon"] .choice::before {
+  transform: none;
+  border-radius: 50%;
+}
+
+:root[data-theme="bloodmoon"] .choice[aria-checked="true"]::before {
+  background: radial-gradient(circle, var(--accent-bright) 0 3px, transparent 3.5px);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+:root[data-theme="bloodmoon"] .switch {
+  border-radius: 0;
+}
+
+:root[data-theme="bloodmoon"] .switch[aria-checked="true"]::after {
+  background: var(--on-accent);
+}
+
+/* ── Всплывающее окно: меню и пузыри ───────────────────────── */
+
+:root[data-theme="bloodmoon"] body:has(> .popup) {
+  background:
+    linear-gradient(rgba(10, 9, 9, 0.82), rgba(10, 9, 9, 0.9)),
+    var(--bm-grunge) 20% 0 / 1400px auto,
+    var(--ink-1);
+}
+
+:root[data-theme="bloodmoon"] .popup {
+  background: var(--bm-vein) left top / auto 6px repeat-x;
+}
+
+/* Пункт под курсором — кровавый отсвет и цепь под подписью. */
+:root[data-theme="bloodmoon"] .menu__item:hover,
+:root[data-theme="bloodmoon"] .menu__item[data-selected="true"] {
+  background:
+    var(--bm-vein) left bottom / auto 6px repeat-x,
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 38%, transparent), color-mix(in srgb, var(--accent) 5%, transparent) 85%);
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+  color: #fff;
+}
+
+:root[data-theme="bloodmoon"] .menu__item:hover .menu__icon,
+:root[data-theme="bloodmoon"] .menu__item[data-selected="true"] .menu__icon {
+  color: #fff;
+}

@@ -114,6 +114,40 @@
   color-scheme: light;
 }
 
+/* Кровавая луна (Bloodmoon): токены здесь, картина, раскладка и детали — в
+   bloodmoon.css. */
+:root[data-theme="bloodmoon"] {
+  --font-grunge: "Rubik Dirt", "Oswald", sans-serif;
+  --font-label: "Oswald", "Inter Tight", sans-serif;
+
+  --ink-0: #050404;
+  --ink-1: #0A0909;
+  --ink-2: #100E0E;
+  --ink-3: #181515;
+  --ink-4: #221E1E;
+  --line-1: rgba(230, 226, 218, 0.05);
+  --line-2: rgba(230, 226, 218, 0.09);
+  --line-3: rgba(230, 226, 218, 0.15);
+  --shine: rgba(230, 226, 218, 0.04);
+
+  --text-hi: #E6E2DA;
+  --text-mid: #9C978F;
+  --text-lo: #66615A;
+  --text-faint: #3F3B37;
+
+  --accent: #C4102A;
+  --accent-bright: #EC2A43;
+  --accent-deep: #5C0814;
+  --accent-soft: rgba(196, 16, 42, 0.18);
+  --accent-glow: rgba(236, 42, 67, 0.45);
+
+  --glass: rgba(5, 4, 4, 0.74);
+  --shadow: 0 30px 70px -36px rgba(0, 0, 0, 0.95);
+  --grid-line: transparent;
+  --vignette: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
 body {

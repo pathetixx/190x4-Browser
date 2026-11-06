@@ -1,0 +1,227 @@
+/* ─────────────────────────────────────────────────────────────
+   Новая вкладка в теме Bloodmoon.
+   Картина во всё окно: фигура с клинком и цепями на фоне луны стоит в
+   центре, её ничто не закрывает. Часы — в тёмном левом верхнем углу,
+   «грязным» шрифтом; погода — слева внизу, ресурсы — справа, поиск и сайты —
+   внизу по центру, над мокрой землёй. Пол, развёртка и кольца HUD убраны:
+   ничего не движется само. Токены темы — в newtab.css.
+   ───────────────────────────────────────────────────────────── */
+
+@font-face { font-family: "Rubik Dirt"; font-weight: 400; font-display: swap;
+  src: url("./fonts/rubik-dirt-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+2000-206F, U+2122, U+2212; }
+@font-face { font-family: "Rubik Dirt"; font-weight: 400; font-display: swap;
+  src: url("./fonts/rubik-dirt-cyrillic-400-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+2116; }
+@font-face { font-family: "Oswald"; font-weight: 700; font-display: swap;
+  src: url("./fonts/oswald-700.woff2") format("woff2"); }
+
+:root[data-theme="bloodmoon"] {
+  --bm-vein: url("./bloodmoon/vein.webp");
+  --bm-splat: url("./bloodmoon/splat.webp");
+}
+
+/* ── Картина ───────────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .bg__glow {
+  background: url("./bloodmoon/bg-wide.webp") center 38% / cover no-repeat, var(--ink-0);
+}
+
+:root[data-theme="bloodmoon"] .bg__floor,
+:root[data-theme="bloodmoon"] .bg__scan {
+  display: none;
+}
+
+/* Края темнее — под карточками картина не спорит с текстом. */
+:root[data-theme="bloodmoon"] .bg::after {
+  background:
+    linear-gradient(90deg, rgba(5, 4, 4, 0.7), transparent 30%, transparent 70%, rgba(5, 4, 4, 0.7)),
+    linear-gradient(transparent 72%, rgba(5, 4, 4, 0.75));
+}
+
+/* ── Раскладка: центр отдан картине ────────────────────────── */
+
+@media (min-width: 1280px) {
+  :root[data-theme="bloodmoon"] .deck {
+    height: 100vh;
+    padding: 36px 28px 30px;
+    align-content: stretch;
+    align-items: stretch;
+  }
+
+  :root[data-theme="bloodmoon"] .weather {
+    align-self: end;
+  }
+
+  :root[data-theme="bloodmoon"] .monitor {
+    align-self: start;
+    margin-top: 26px;
+  }
+
+  :root[data-theme="bloodmoon"] .core {
+    align-self: end;
+    gap: 14px !important;
+  }
+
+  /* Часы — в тёмном левом верхнем углу картины. */
+  :root[data-theme="bloodmoon"] .chrono {
+    position: fixed;
+    top: 30px;
+    left: 40px;
+    width: auto;
+    aspect-ratio: auto;
+    display: block;
+  }
+}
+
+/* ── Часы ──────────────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .hud {
+  display: none;
+}
+
+/* В узком окне часы стоят над картиной по центру — под ними тёмное пятно,
+   иначе цифры тонут в луне. В широком они уходят в тёмный угол. */
+:root[data-theme="bloodmoon"] .chrono::before {
+  inset: -18% -12%;
+  background: radial-gradient(closest-side, rgba(5, 4, 4, 0.88), rgba(5, 4, 4, 0.6) 55%, transparent);
+  filter: none;
+  opacity: 1;
+}
+
+@media (min-width: 1280px) {
+  :root[data-theme="bloodmoon"] .chrono::before {
+    display: none;
+  }
+}
+
+:root[data-theme="bloodmoon"] .chrono__face {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "time sec" "date date";
+  align-items: end;
+  justify-items: start;
+  column-gap: 10px;
+  margin: 0;
+}
+
+:root[data-theme="bloodmoon"] .chrono__time {
+  grid-area: time;
+  font: 400 108px / 0.9 var(--font-grunge);
+  letter-spacing: 0;
+  text-shadow: 0 2px 0 #000, 0 0 30px rgba(0, 0, 0, 0.9);
+}
+
+:root[data-theme="bloodmoon"] .chrono__time.glitch {
+  animation: none;
+}
+
+:root[data-theme="bloodmoon"] .chrono__colon {
+  font-family: var(--font-label);
+  font-weight: 700;
+  animation: none;
+  text-shadow: 0 0 14px var(--accent-glow);
+}
+
+:root[data-theme="bloodmoon"] .chrono__sec {
+  grid-area: sec;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: 700 22px / 1 var(--font-label);
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+:root[data-theme="bloodmoon"] .chrono__date {
+  grid-area: date;
+  margin-top: 12px;
+  padding-top: 10px;
+  font: 700 13px / 1 var(--font-label);
+  letter-spacing: 0.34em;
+  background: var(--bm-vein) left top / auto 6px repeat-x;
+}
+
+/* ── Поиск и сайты ─────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .search {
+  border-radius: 0;
+  background: rgba(4, 3, 3, 0.84);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 24px 50px -20px #000;
+}
+
+:root[data-theme="bloodmoon"] .search::before,
+:root[data-theme="bloodmoon"] .search::after {
+  display: none;
+}
+
+:root[data-theme="bloodmoon"] .search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+:root[data-theme="bloodmoon"] .dials {
+  gap: 6px;
+}
+
+:root[data-theme="bloodmoon"] .dial__link,
+:root[data-theme="bloodmoon"] .dial--add {
+  gap: 7px;
+  padding: 10px 6px 9px;
+  border-radius: 0;
+  background: rgba(4, 3, 3, 0.66);
+}
+
+:root[data-theme="bloodmoon"] .dial__plate {
+  width: 40px;
+  height: 40px;
+  clip-path: none;
+}
+
+:root[data-theme="bloodmoon"] .dial__plate--dark {
+  background: linear-gradient(160deg, #1E1A1A, #0A0808);
+}
+
+:root[data-theme="bloodmoon"] .dial__mono {
+  font: 700 17px / 1 var(--font-label);
+}
+
+/* ── Карточки ──────────────────────────────────────────────── */
+
+:root[data-theme="bloodmoon"] .card {
+  border-radius: 0;
+}
+
+/* По верху карточки — та же светящаяся цепь, что и в интерфейсе браузера. */
+:root[data-theme="bloodmoon"] .card::before {
+  inset: -4px -1px auto;
+  height: 8px;
+  opacity: 1;
+  background: var(--bm-vein) left center / auto 8px repeat-x;
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+:root[data-theme="bloodmoon"] .card__label {
+  font: 700 12px / 1 var(--font-label);
+  letter-spacing: 0.28em;
+  color: var(--text-mid);
+}
+
+:root[data-theme="bloodmoon"] .card__label::before {
+  width: 16px;
+  height: 16px;
+  transform: none;
+  box-shadow: none;
+  background: var(--bm-splat) center / contain no-repeat;
+}
+
+:root[data-theme="bloodmoon"] .card__sub {
+  font: 700 10.5px / 1 var(--font-label);
+  letter-spacing: 0.24em;
+}
+
+:root[data-theme="bloodmoon"] :is(.weather__temp, .metric__big) {
+  font-family: var(--font-grunge);
+  font-weight: 400;
+}
