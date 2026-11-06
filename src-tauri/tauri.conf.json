@@ -43,7 +43,7 @@
     ],
     "resources": {
       "lists/*": "lists/",
-      "../pages/**/*": "pages/"
+      "../pages": "pages/"
     },
     "windows": {
       "allowDowngrades": false,
