@@ -3408,6 +3408,10 @@ impl Tab {
     /// Альтернатива — `file://`, но тогда страницы получают origin файла со
     /// всеми его ограничениями (нет localStorage, нет fetch, странный CSP).
     /// `DENY_CORS` запрещает чужим сайтам тянуть оттуда что-либо.
+    ///
+    /// Путь — в обычной форме ([`plain_path`]): папку ресурсов Tauri отдаёт
+    /// как `\\?\C:\…`, и с таким путём движок отдавал файлы только из корня
+    /// папки, а на вложенные (`fonts/`, `bloodmoon/`) отвечал `ERR_INVALID_URL`.
     pub fn map_pages(&self, host: &str, folder: &std::path::Path) -> windows_core::Result<()> {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             ICoreWebView2_3, COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
@@ -3417,16 +3421,51 @@ impl Tab {
         unsafe {
             core3.SetVirtualHostNameToFolderMapping(
                 &HSTRING::from(host),
-                &HSTRING::from(folder.as_os_str()),
+                &HSTRING::from(plain_path(folder).as_os_str()),
                 COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
             )
         }
     }
 }
 
+/// Путь без приставки `\\?\` (её даёт `canonicalize` в Windows): `\\?\C:\…` →
+/// `C:\…`, `\\?\UNC\сервер\папка` → `\\сервер\папка`. Остальные пути — как есть.
+fn plain_path(path: &std::path::Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => std::path::PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_paths_become_plain() {
+        let plain = |path: &str| plain_path(std::path::Path::new(path));
+        assert_eq!(
+            plain(r"\\?\C:\Users\Administrator\AppData\Local\190x4 Browser\pages"),
+            std::path::PathBuf::from(r"C:\Users\Administrator\AppData\Local\190x4 Browser\pages")
+        );
+        assert_eq!(
+            plain(r"\\?\UNC\server\share\pages"),
+            std::path::PathBuf::from(r"\\server\share\pages")
+        );
+        assert_eq!(
+            plain(r"C:\app\pages"),
+            std::path::PathBuf::from(r"C:\app\pages")
+        );
+        // Пространство имён устройств — не диск, оставить как есть.
+        assert_eq!(
+            plain(r"\\?\Volume{1}\pages"),
+            std::path::PathBuf::from(r"\\?\Volume{1}\pages")
+        );
+    }
 
     #[test]
     fn engine_script_drops_comment_lines() {
