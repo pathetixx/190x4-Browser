@@ -90,7 +90,7 @@ fn confirm_with_password(
     use windows::Win32::Graphics::Gdi::HBITMAP;
     use windows::Win32::Security::Credentials::{
         CredUIPromptForWindowsCredentialsW, CredUnPackAuthenticationBufferW,
-        CREDUIWIN_ENUMERATE_CURRENT_USER, CREDUI_INFOW, CRED_PACK_FLAGS,
+        CREDUIWIN_ENUMERATE_CURRENT_USER, CREDUI_INFOW, CRED_PACK_PROTECTED_CREDENTIALS,
     };
     use windows::Win32::Security::{
         LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT,
@@ -161,8 +161,11 @@ fn confirm_with_password(
             password.len() as u32,
         );
         let unpacked = unsafe {
+            // Окно входа отдаёт пароль зашифрованным: без этого флага в
+            // `LogonUserW` ушёл бы шифротекст, и не подошёл бы ни один пароль,
+            // даже пустой.
             let result = CredUnPackAuthenticationBufferW(
-                CRED_PACK_FLAGS(0),
+                CRED_PACK_PROTECTED_CREDENTIALS,
                 packed,
                 packed_size,
                 Some(PWSTR(user.as_mut_ptr())),
@@ -238,7 +241,8 @@ fn confirm_with_password(
                 return Ok(true);
             }
             Err(err) => {
-                tracing::debug!(%err, "пароль Windows не подошёл");
+                // Код ошибки без пароля и имени: по нему видно, почему вход не принят.
+                tracing::warn!(code = err.code().0, blank, "пароль Windows не подошёл");
                 error = ERROR_LOGON_FAILURE.0;
             }
         }
