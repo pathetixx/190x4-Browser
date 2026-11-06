@@ -649,6 +649,12 @@ span.exts__pin {
   background: var(--ink-3);
 }
 
+.media__thumb--empty {
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+}
+
 .media__title {
   font-size: 13px;
   font-weight: 500;

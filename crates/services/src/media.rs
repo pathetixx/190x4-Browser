@@ -353,16 +353,19 @@ impl Services {
         let body = response.text().await?;
 
         if !status.is_success() {
-            let reason = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .map(Self::explain)
-                })
-                .unwrap_or_else(|| format!("HTTP {status}"));
-            anyhow::bail!("{context}: {reason}");
+            let value = serde_json::from_str::<serde_json::Value>(&body).ok();
+            let error = value
+                .as_ref()
+                .and_then(|value| value.get("error"))
+                .and_then(|e| e.as_str());
+            // Ответ с `code` сервер уже написал для человека («На этой странице
+            // не нашлось видео…») — он показывается как есть, без «не удалось…».
+            let explained = value.as_ref().and_then(|value| value.get("code")).is_some();
+            match error {
+                Some(message) if explained => anyhow::bail!("{message}"),
+                Some(code) => anyhow::bail!("{context}: {}", Self::explain(code)),
+                None => anyhow::bail!("{context}: HTTP {status}"),
+            }
         }
 
         Ok(serde_json::from_str(&body)?)
