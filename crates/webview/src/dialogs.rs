@@ -1,5 +1,6 @@
 //! Окна, которые просит страница: alert, confirm, prompt, «Покинуть сайт?»,
-//! запросы разрешений, вход по паролю сайта и запуск приложения по ссылке.
+//! запросы разрешений, вход по паролю сайта, выбор сертификата для входа на
+//! сайт и запуск приложения по ссылке.
 //!
 //! Окна движка — чужая деталь: свой вид, свои кнопки и никаких правил браузера.
 //! Движок отдаёт запрос и ждёт ответа под отсрочкой, окно рисует всплывающее
@@ -12,14 +13,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2BasicAuthenticationRequestedEventArgs, ICoreWebView2Deferral,
-    ICoreWebView2PermissionRequestedEventArgs, ICoreWebView2PermissionRequestedEventArgs3,
-    ICoreWebView2PermissionSettingCollectionView, ICoreWebView2Profile4,
-    ICoreWebView2ScriptDialogOpeningEventArgs, ICoreWebView2_10, ICoreWebView2_18,
-    COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY,
-    COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
-    COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-    COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+    ICoreWebView2, ICoreWebView2BasicAuthenticationRequestedEventArgs,
+    ICoreWebView2ClientCertificateCollection, ICoreWebView2ClientCertificateRequestedEventArgs,
+    ICoreWebView2Deferral, ICoreWebView2PermissionRequestedEventArgs,
+    ICoreWebView2PermissionRequestedEventArgs3, ICoreWebView2PermissionSettingCollectionView,
+    ICoreWebView2Profile4, ICoreWebView2ScriptDialogOpeningEventArgs, ICoreWebView2_10,
+    ICoreWebView2_18, ICoreWebView2_5, COREWEBVIEW2_PERMISSION_KIND,
+    COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+    COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ, COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE,
+    COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS,
+    COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
     COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES,
     COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
     COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS,
@@ -30,7 +33,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM, COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT,
 };
 use webview2_com::{
-    take_pwstr, BasicAuthenticationRequestedEventHandler,
+    take_pwstr, BasicAuthenticationRequestedEventHandler, ClientCertificateRequestedEventHandler,
     GetNonDefaultPermissionSettingsCompletedHandler, LaunchingExternalUriSchemeEventHandler,
     PermissionRequestedEventHandler, ScriptDialogOpeningEventHandler,
     SetPermissionStateCompletedHandler,
@@ -44,8 +47,8 @@ use crate::tab::{EventSink, TabEvent};
 const TEXT_LIMIT: usize = 10_000;
 
 /// Разрешения, о которых браузер спрашивает сам. Имя уходит в интерфейс и в
-/// настройки. Вид, которого здесь нет (движок новее браузера), остаётся окну
-/// движка: объяснить пользователю, о чём просит сайт, браузеру нечем.
+/// настройки. О виде, которого здесь нет (движок новее браузера), браузер
+/// спрашивает общими словами ([`OTHER_PERMISSION`]).
 const PERMISSIONS: [(COREWEBVIEW2_PERMISSION_KIND, &str); 12] = [
     (COREWEBVIEW2_PERMISSION_KIND_CAMERA, "camera"),
     (COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, "microphone"),
@@ -66,6 +69,11 @@ const PERMISSIONS: [(COREWEBVIEW2_PERMISSION_KIND, &str); 12] = [
     ),
     (COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT, "windows"),
 ];
+
+/// Разрешение, которое движок не называет (новые виды в новых версиях
+/// WebView2). Спрашивает о нём всё равно браузер, а не окно движка; ответ не
+/// запоминается — в настройках сайта его не показать и не сбросить.
+const OTHER_PERMISSION: &str = "other";
 
 fn permission_name(kind: COREWEBVIEW2_PERMISSION_KIND) -> Option<&'static str> {
     PERMISSIONS
@@ -101,6 +109,14 @@ pub enum DialogRequest {
     },
     /// Сайт или прокси требует имя и пароль (HTTP Basic, NTLM).
     Auth { url: String },
+    /// Сайт просит сертификат для входа: выбрать один из подходящих или войти
+    /// без сертификата.
+    Certificate {
+        host: String,
+        port: i32,
+        proxy: bool,
+        certificates: Vec<CertificateInfo>,
+    },
     /// Ссылка на приложение: tg:, mailto: и прочие схемы Windows. Движок её уже
     /// отменил, ответа не ждёт.
     External {
@@ -109,6 +125,16 @@ pub enum DialogRequest {
         origin: String,
         user_initiated: bool,
     },
+}
+
+/// Сертификат для входа на сайт — то, что о нём видно в окне выбора.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CertificateInfo {
+    pub name: String,
+    pub subject: String,
+    pub issuer: String,
+    /// Действует до — секунды Unix.
+    pub valid_to: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
@@ -140,6 +166,8 @@ pub struct DialogAnswer {
     pub remember: bool,
     /// «Запретить странице показывать новые окна».
     pub suppress: bool,
+    /// Выбранный сертификат: номер в списке окна.
+    pub choice: Option<u32>,
 }
 
 /// Разрешение сайта, сохранённое в профиле движка.
@@ -164,6 +192,11 @@ enum Pending {
         args: ICoreWebView2BasicAuthenticationRequestedEventArgs,
         deferral: ICoreWebView2Deferral,
     },
+    Certificate {
+        args: ICoreWebView2ClientCertificateRequestedEventArgs,
+        deferral: ICoreWebView2Deferral,
+        certificates: ICoreWebView2ClientCertificateCollection,
+    },
 }
 
 impl Pending {
@@ -174,7 +207,8 @@ impl Pending {
         let deferral = match &self {
             Pending::Script { deferral, .. }
             | Pending::Permission { deferral, .. }
-            | Pending::Auth { deferral, .. } => deferral,
+            | Pending::Auth { deferral, .. }
+            | Pending::Certificate { deferral, .. } => deferral,
         };
         let completed = unsafe { deferral.Complete() };
         applied.and(completed)
@@ -192,6 +226,9 @@ impl Pending {
                     Ok(())
                 }
                 Pending::Permission { args, .. } => {
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                    args.PermissionKind(&mut kind)?;
+                    let known = permission_name(kind).is_some();
                     let (state, save) = match answer.action {
                         DialogAction::Allow => (COREWEBVIEW2_PERMISSION_STATE_ALLOW, true),
                         DialogAction::AllowOnce => (COREWEBVIEW2_PERMISSION_STATE_ALLOW, false),
@@ -203,7 +240,7 @@ impl Pending {
                         }
                     };
                     if let Ok(args3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
-                        args3.SetSavesInProfile(save)?;
+                        args3.SetSavesInProfile(save && known)?;
                     }
                     args.SetState(state)
                 }
@@ -218,6 +255,22 @@ impl Pending {
                     } else {
                         args.SetCancel(true)
                     }
+                }
+                // Отмена — вход без сертификата, как в Chrome: окно движка
+                // при этом не появляется.
+                Pending::Certificate {
+                    args, certificates, ..
+                } => {
+                    if answer.action == DialogAction::Accept {
+                        if let Some(index) = answer.choice {
+                            let mut count = 0u32;
+                            certificates.Count(&mut count)?;
+                            if index < count {
+                                args.SetSelectedCertificate(&certificates.GetValueAtIndex(index)?)?;
+                            }
+                        }
+                    }
+                    args.SetHandled(true)
                 }
             }
         }
@@ -320,6 +373,14 @@ pub(crate) fn wire(id: u32, core: &ICoreWebView2, sink: EventSink, dialogs: Dial
         }
         Err(_) => tracing::warn!("движок не отдаёт вход на сайт по паролю"),
     }
+    match core.cast::<ICoreWebView2_5>() {
+        Ok(core5) => {
+            if let Err(err) = wire_certificates(id, &core5, sink.clone(), dialogs.clone()) {
+                tracing::warn!(%err, "выбор сертификата для сайта не перехвачен");
+            }
+        }
+        Err(_) => tracing::warn!("движок не отдаёт выбор сертификата для сайта"),
+    }
     match core.cast::<ICoreWebView2_18>() {
         Ok(core18) => {
             if let Err(err) = wire_external(id, &core18, sink, dialogs) {
@@ -395,9 +456,7 @@ fn wire_permissions(
                 let Some(args) = args else { return Ok(()) };
                 let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
                 args.PermissionKind(&mut kind)?;
-                let Some(permission) = permission_name(kind) else {
-                    return Ok(());
-                };
+                let permission = permission_name(kind).unwrap_or(OTHER_PERMISSION);
                 let request = DialogRequest::Permission {
                     permission,
                     url: read(|out| args.Uri(out))?,
@@ -429,6 +488,59 @@ fn wire_auth(
                 };
                 let deferral = args.GetDeferral()?;
                 let token = dialogs.hold(Pending::Auth { args, deferral });
+                sink(TabEvent::Dialog { id, token, request });
+                Ok(())
+            })),
+            &mut token,
+        )
+    }
+}
+
+fn wire_certificates(
+    id: u32,
+    core5: &ICoreWebView2_5,
+    sink: EventSink,
+    dialogs: Dialogs,
+) -> windows_core::Result<()> {
+    let mut token = 0i64;
+    unsafe {
+        core5.add_ClientCertificateRequested(
+            &ClientCertificateRequestedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let certificates = args.MutuallyTrustedCertificates()?;
+                let mut count = 0u32;
+                certificates.Count(&mut count)?;
+                // Подходящих сертификатов нет — спрашивать не о чем: вход без
+                // сертификата, без окна движка.
+                if count == 0 {
+                    return args.SetHandled(true);
+                }
+                let mut list = Vec::new();
+                for index in 0..count {
+                    let certificate = certificates.GetValueAtIndex(index)?;
+                    let mut valid_to = 0f64;
+                    certificate.ValidTo(&mut valid_to)?;
+                    list.push(CertificateInfo {
+                        name: limit(&read(|out| certificate.DisplayName(out))?),
+                        subject: limit(&read(|out| certificate.Subject(out))?),
+                        issuer: limit(&read(|out| certificate.Issuer(out))?),
+                        valid_to,
+                    });
+                }
+                let mut port = 0i32;
+                args.Port(&mut port)?;
+                let request = DialogRequest::Certificate {
+                    host: read(|out| args.Host(out))?,
+                    port,
+                    proxy: read_flag(|out| args.IsProxy(out))?,
+                    certificates: list,
+                };
+                let deferral = args.GetDeferral()?;
+                let token = dialogs.hold(Pending::Certificate {
+                    args,
+                    deferral,
+                    certificates,
+                });
                 sink(TabEvent::Dialog { id, token, request });
                 Ok(())
             })),

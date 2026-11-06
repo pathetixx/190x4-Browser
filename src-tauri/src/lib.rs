@@ -11,6 +11,7 @@
 
 mod autoscroll;
 mod browser_windows;
+mod clipboard;
 mod cosmetic;
 mod default_browser;
 mod documents;
@@ -261,6 +262,8 @@ pub fn run() {
             import::browsers_found,
             import::browser_import,
             pip::pip_toggle,
+            clipboard::clipboard_read,
+            clipboard::clipboard_write,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

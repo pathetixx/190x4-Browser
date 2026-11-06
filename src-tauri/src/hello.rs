@@ -67,6 +67,13 @@ pub fn confirm(window: Option<&tauri::WebviewWindow>, reason: &str) -> anyhow::R
     Ok(result == UserConsentVerificationResult::Verified)
 }
 
+/// У учётной записи Windows нет пароля: это подтвердили пустым полем в окне
+/// входа. До выхода из браузера окно больше не показывается — защищать здесь
+/// нечем. Заранее, без человека, пустой пароль не проверяется: у учётной записи
+/// с паролем это неудачный вход, а такие входы ведут к её блокировке.
+#[cfg(windows)]
+static NO_PASSWORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Подтверждение паролем Windows, когда Hello не настроен: системное окно
 /// входа с плиткой текущего пользователя, пароль сверяет сама Windows
 /// (`LogonUserW`). Три попытки, отмена — «не подтверждено».
@@ -75,6 +82,7 @@ fn confirm_with_password(
     window: Option<&tauri::WebviewWindow>,
     reason: &str,
 ) -> anyhow::Result<bool> {
+    use std::sync::atomic::Ordering;
     use windows::core::{HSTRING, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
         CloseHandle, ERROR_ACCOUNT_RESTRICTION, ERROR_CANCELLED, ERROR_LOGON_FAILURE, HANDLE, HWND,
@@ -82,7 +90,7 @@ fn confirm_with_password(
     use windows::Win32::Graphics::Gdi::HBITMAP;
     use windows::Win32::Security::Credentials::{
         CredUIPromptForWindowsCredentialsW, CredUnPackAuthenticationBufferW,
-        CREDUIWIN_ENUMERATE_CURRENT_USER, CREDUI_INFOW, CRED_PACK_FLAGS,
+        CREDUIWIN_ENUMERATE_CURRENT_USER, CREDUI_INFOW, CRED_PACK_PROTECTED_CREDENTIALS,
     };
     use windows::Win32::Security::{
         LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT,
@@ -97,11 +105,17 @@ fn confirm_with_password(
         }
     }
 
+    if NO_PASSWORD.load(Ordering::SeqCst) {
+        return Ok(true);
+    }
     let hwnd = window
         .and_then(|window| window.hwnd().ok())
         .unwrap_or(HWND(std::ptr::null_mut()));
     let caption = HSTRING::from("190x4 Browser");
-    let message = HSTRING::from(format!("{reason}: подтвердите паролем Windows"));
+    let message = HSTRING::from(format!(
+        "{reason}: подтвердите паролем Windows. \
+         Если у учётной записи нет пароля, оставьте поле пустым и нажмите «OK»."
+    ));
     let info = CREDUI_INFOW {
         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
         hwndParent: hwnd,
@@ -147,8 +161,11 @@ fn confirm_with_password(
             password.len() as u32,
         );
         let unpacked = unsafe {
+            // Окно входа отдаёт пароль зашифрованным: без этого флага в
+            // `LogonUserW` ушёл бы шифротекст, и не подошёл бы ни один пароль,
+            // даже пустой.
             let result = CredUnPackAuthenticationBufferW(
-                CRED_PACK_FLAGS(0),
+                CRED_PACK_PROTECTED_CREDENTIALS,
                 packed,
                 packed_size,
                 Some(PWSTR(user.as_mut_ptr())),
@@ -205,6 +222,9 @@ fn confirm_with_password(
                     let _ = CloseHandle(token);
                 }
                 if same {
+                    if blank {
+                        NO_PASSWORD.store(true, Ordering::SeqCst);
+                    }
                     return Ok(true);
                 }
                 tracing::warn!("в окне входа — другая учётная запись Windows");
@@ -217,10 +237,12 @@ fn confirm_with_password(
                     && err.code() == ERROR_ACCOUNT_RESTRICTION.to_hresult()
                     && is_current_account(account_domain.as_deref(), &account) =>
             {
+                NO_PASSWORD.store(true, Ordering::SeqCst);
                 return Ok(true);
             }
             Err(err) => {
-                tracing::debug!(%err, "пароль Windows не подошёл");
+                // Код ошибки без пароля и имени: по нему видно, почему вход не принят.
+                tracing::warn!(code = err.code().0, blank, "пароль Windows не подошёл");
                 error = ERROR_LOGON_FAILURE.0;
             }
         }
