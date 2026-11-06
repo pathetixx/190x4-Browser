@@ -66,7 +66,7 @@ pub fn handle_message(
         return true;
     };
     // Чужой iframe не принимает постоянные решения за сайт родителя.
-    let same_origin = state.documents.capture(tab, None, source).is_some();
+    let same_origin = state.documents.is_origin(tab, None, source);
     // Поля — текст страницы: в журнал идёт только их начало.
     let clip = |text: String| -> String { text.chars().take(DETAIL_LIMIT).collect() };
     let (system, stage) = (clip(system), clip(stage));

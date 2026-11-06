@@ -24,6 +24,9 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 #[derive(Default)]
 pub struct Updates {
     found: Mutex<Option<Update>>,
+    /// Скачанный и проверенный установщик: если выход отменили, повторная
+    /// установка той же версии не качает его заново.
+    downloaded: Mutex<Option<(String, Vec<u8>)>>,
     installing: AtomicBool,
 }
 
@@ -98,8 +101,10 @@ pub async fn update_install(app: AppHandle) -> Result<bool, String> {
     if state.installing.swap(true, Ordering::SeqCst) {
         return Err("обновление уже устанавливается".into());
     }
-    let taken = state.found.lock().take();
-    let Some(update) = taken else {
+    // Найденное обновление остаётся на месте, пока идёт загрузка: окно,
+    // открытое в это время, тоже видит, что версия есть.
+    let found = state.found.lock().clone();
+    let Some(update) = found else {
         state.installing.store(false, Ordering::SeqCst);
         return Err("обновление не найдено — проверьте ещё раз".into());
     };
@@ -107,24 +112,34 @@ pub async fn update_install(app: AppHandle) -> Result<bool, String> {
     let progress = app.clone();
     let mut downloaded = 0u64;
     let result = async {
-        let bytes = update
-            .download(
-                move |chunk, total| {
-                    downloaded += chunk as u64;
-                    let _ = progress.emit(
-                        "update-progress",
-                        Progress {
-                            phase: "download",
-                            downloaded,
-                            total,
-                        },
-                    );
-                },
-                || {},
-            )
-            .await
-            .map_err(|err| err.to_string())?;
+        let cached = state
+            .downloaded
+            .lock()
+            .take()
+            .filter(|(version, _)| *version == update.version)
+            .map(|(_, bytes)| bytes);
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => update
+                .download(
+                    move |chunk, total| {
+                        downloaded += chunk as u64;
+                        let _ = progress.emit(
+                            "update-progress",
+                            Progress {
+                                phase: "download",
+                                downloaded,
+                                total,
+                            },
+                        );
+                    },
+                    || {},
+                )
+                .await
+                .map_err(|err| err.to_string())?,
+        };
         let Some(_permit) = crate::shutdown::prepare(&app).await? else {
+            *state.downloaded.lock() = Some((update.version.clone(), bytes));
             return Ok(false);
         };
         let _ = app.emit(
@@ -141,11 +156,8 @@ pub async fn update_install(app: AppHandle) -> Result<bool, String> {
     .await;
 
     // На Windows при успехе сюда не доходит: процесс уже завершён плагином.
-    if !matches!(result, Ok(true)) {
-        if let Err(err) = &result {
-            tracing::warn!(%err, "обновление не установлено");
-        }
-        *state.found.lock() = Some(update);
+    if let Err(err) = &result {
+        tracing::warn!(%err, "обновление не установлено");
     }
     state.installing.store(false, Ordering::SeqCst);
     result

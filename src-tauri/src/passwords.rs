@@ -109,8 +109,9 @@ pub struct Passwords {
     /// Когда вкладка (или её фрейм) последний раз спрашивала учётки: страница
     /// может слать это сообщение в цикле, а нам хватает одного раза в секунду.
     asked: Mutex<HashMap<(u32, Option<u32>), Instant>>,
-    /// Отправлено, но вход ещё не подтверждён.
-    candidates: Mutex<HashMap<u32, Candidate>>,
+    /// Отправлено, но вход ещё не подтверждён — по вкладке и фрейму: чужой
+    /// фрейм не подменит логин, отправленный в документе вкладки.
+    candidates: Mutex<HashMap<(u32, Option<u32>), Candidate>>,
     /// Показано предложение сохранить, ждём ответа пользователя.
     offers: Mutex<HashMap<u32, Candidate>>,
     /// Учётки по вкладке и фрейму.
@@ -225,8 +226,12 @@ pub fn handle_message(
             if password.is_empty() || password.len() > 1024 || username.len() > 512 {
                 return true;
             }
+            // Логин — только от документа, который сейчас на месте.
+            if !state.documents.is_origin(tab, frame, source) {
+                return true;
+            }
             state.passwords.candidates.lock().insert(
-                tab,
+                (tab, frame),
                 Candidate {
                     origin,
                     username,
@@ -242,10 +247,11 @@ pub fn handle_message(
                 .get(&tab)
                 .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK);
             if navigated {
-                commit(app, tab);
+                commit(app, tab, Some(frame));
             }
         }
-        PageEvent::Commit => commit(app, tab),
+        // Форма исчезла: вход подтверждает только тот документ, где она была.
+        PageEvent::Commit => commit(app, tab, Some(frame)),
         PageEvent::Form => {
             let Some(document) = state.documents.capture(tab, frame, source) else {
                 return true;
@@ -354,23 +360,25 @@ fn cursor_point(app: &AppHandle, window: &str) -> Option<serde_json::Value> {
     }))
 }
 
-/// Вкладка ушла на другой документ — если перед этим отправили логин, вход,
-/// скорее всего, удался. Учётки прежнего документа и его фреймов больше не
-/// подставляются.
+/// Вкладка начала переход — если перед этим отправили логин, вход, скорее
+/// всего, удался. Учётки страницы остаются: переход могут отменить или он уйдёт
+/// в загрузку, а пока он не решён, секреты не уходят никуда (`Documents`).
 pub fn on_navigation(app: &AppHandle, tab: u32) {
-    let state = app.state::<App>();
-    state
+    app.state::<App>()
         .passwords
         .navigations
         .lock()
         .insert(tab, Instant::now());
-    state.passwords.forget_document(tab, None);
-    commit(app, tab);
+    commit(app, tab, None);
 }
 
-/// Фрейм вкладки ушёл на другой адрес: учётки, найденные для прежнего, в него
-/// уже не уйдут.
-pub fn on_frame_navigation(app: &AppHandle, tab: u32, frame: u32) {
+/// На вкладке другой документ: учётки прежнего и его фреймов больше не нужны.
+pub fn on_document(app: &AppHandle, tab: u32) {
+    app.state::<App>().passwords.forget_document(tab, None);
+}
+
+/// Фрейм вкладки исчез: учётки, найденные для него, больше не нужны.
+pub fn on_frame_gone(app: &AppHandle, tab: u32, frame: u32) {
     app.state::<App>()
         .passwords
         .forget_document(tab, Some(frame));
@@ -378,16 +386,39 @@ pub fn on_frame_navigation(app: &AppHandle, tab: u32, frame: u32) {
 
 pub fn forget_tab(app: &AppHandle, tab: u32) {
     let state = app.state::<App>();
-    state.passwords.candidates.lock().remove(&tab);
+    state
+        .passwords
+        .candidates
+        .lock()
+        .retain(|(id, _), _| *id != tab);
     state.passwords.offers.lock().remove(&tab);
     state.passwords.navigations.lock().remove(&tab);
     state.passwords.forget_document(tab, None);
     state.passwords.windows.lock().remove(&tab);
 }
 
-fn commit(app: &AppHandle, tab: u32) {
+/// Вход подтверждён: предложить сохранить логин. `frame` — документ, который
+/// подтвердил вход; `None` — вкладка ушла со страницы, и в счёт идёт последний
+/// логин, отправленный в ней или в её фреймах.
+fn commit(app: &AppHandle, tab: u32, frame: Option<Option<u32>>) {
     let state = app.state::<App>();
-    let Some(candidate) = state.passwords.candidates.lock().remove(&tab) else {
+    let candidate = {
+        let mut candidates = state.passwords.candidates.lock();
+        match frame {
+            Some(frame) => candidates.remove(&(tab, frame)),
+            None => {
+                let latest = candidates
+                    .iter()
+                    .filter(|((id, _), _)| *id == tab)
+                    .max_by_key(|(_, candidate)| candidate.at)
+                    .map(|(key, _)| *key);
+                let found = latest.and_then(|key| candidates.remove(&key));
+                candidates.retain(|(id, _), _| *id != tab);
+                found
+            }
+        }
+    };
+    let Some(candidate) = candidate else {
         return;
     };
     if candidate.at.elapsed() > CANDIDATE_TTL {
@@ -591,9 +622,9 @@ pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::R
 /// Учётку — в документ вкладки или во фрейм. `origin` — адрес документа,
 /// которому показали список: во вкладке он сверяется с документом прямо перед
 /// отправкой. Во фрейме адрес документа движок не сообщает: там проверяется,
-/// что учётки фрейма ещё на месте — переход фрейма их забирает
-/// (`on_frame_navigation`, на том же главном потоке, что и эта отправка), — а
-/// потом скриптом страницы (`location.origin`). Одной проверки скриптом мало:
+/// что документ фрейма не начал переход на другой адрес (`Documents::current`
+/// — начало перехода отмечается на том же главном потоке, что и эта
+/// отправка), — а потом скриптом страницы (`location.origin`). Одной проверки скриптом мало:
 /// сообщение `chrome.webview` слышит любой скрипт документа, и пароль дошёл бы
 /// до чужого документа раньше, чем исполнитель его отверг.
 fn fill_tab(app: &AppHandle, document: Context, username: String, password: String) {

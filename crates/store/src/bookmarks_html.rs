@@ -191,12 +191,16 @@ fn inner_text<'a>(text: &'a str, tag: &str) -> (&'a str, &'a str) {
     while let Some(found) = text[search..].find("</") {
         let start = search + found;
         let name = &text[start + 2..];
-        let matches = name.len() >= tag.len()
-            && name[..tag.len()].eq_ignore_ascii_case(tag)
-            && name[tag.len()..]
-                .chars()
-                .next()
-                .is_none_or(|c| c == '>' || c.is_whitespace());
+        // Сравнение по байтам: после `</` в тексте бывает любой знак, и срез
+        // строки посреди «я» уронил бы импорт.
+        let matches = name
+            .as_bytes()
+            .get(..tag.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(tag.as_bytes()))
+            && name
+                .as_bytes()
+                .get(tag.len())
+                .is_none_or(|&c| c == b'>' || c.is_ascii_whitespace());
         if matches {
             let after = name.find('>').map_or("", |gt| &name[gt + 1..]);
             return (&text[..start], after);
@@ -489,5 +493,11 @@ mod tests {
     fn broken_file_does_not_panic() {
         assert!(parse("<DL><p><DT><H3>Без конца").len() == 1);
         assert!(parse("<<<>>> & ; <A HREF=").is_empty());
+        // `</` и не-ASCII знак в заголовке: раньше срез строки ронял импорт.
+        let nodes = parse(
+            r#"<DL><p><DT><A HREF="https://a.test/">Тег </я и </€ 😀</A><DT><H3>П </€</H3><DL></DL></DL>"#,
+        );
+        assert!(matches!(&nodes[0], ImportNode::Link { title, .. } if title == "Тег </я и </€ 😀"));
+        assert!(matches!(&nodes[1], ImportNode::Folder { title, .. } if title == "П </€"));
     }
 }

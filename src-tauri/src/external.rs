@@ -30,12 +30,15 @@ const DENIED: &[&str] = &[
     "file",
     "hcp",
     "ie.http",
+    "its",
     "javascript",
+    "mhtml",
     "mk",
     "ms-appinstaller",
     "ms-cxh",
     "ms-cxh-full",
     "ms-help",
+    "ms-its",
     "ms-msdt",
     "ms-officecmd",
     "nntp",
@@ -381,6 +384,8 @@ mod tests {
         assert_eq!(scheme_of("javascript:alert(1)"), None);
         assert_eq!(scheme_of("MS-MSDT:/id PCWDiagnostic"), None);
         assert_eq!(scheme_of("search-ms:query=x"), None);
+        assert_eq!(scheme_of("mhtml:https://x.test/a.mht!b"), None);
+        assert_eq!(scheme_of("ms-its:x.chm::/a.htm"), None);
         assert_eq!(scheme_of("1tg://x"), None);
         assert_eq!(scheme_of("no-colon"), None);
         assert_eq!(scheme_of(&format!("tg://{}", "a".repeat(MAX_URI))), None);

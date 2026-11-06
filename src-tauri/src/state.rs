@@ -237,14 +237,27 @@ fn on_main<R>(
 where
     R: Send + 'static,
 {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let (tx, rx) = mpsc::channel();
+    // Команда, которая не дождалась главного потока, получила ошибку. Если
+    // задача доберётся до него позже, она не выполняется: иначе, например,
+    // открылась бы вкладка, о которой интерфейс уже не знает.
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let late = abandoned.clone();
     app.run_on_main_thread(move || {
+        if late.load(Ordering::SeqCst) {
+            tracing::debug!("задача главного потока опоздала — не выполняется");
+            return;
+        }
         let _ = tx.send(f());
     })
     .map_err(|e| e.to_string())?;
 
-    rx.recv_timeout(MAIN_THREAD_TIMEOUT)
-        .map_err(|_| "главный поток не ответил".to_string())?
+    rx.recv_timeout(MAIN_THREAD_TIMEOUT).map_err(|_| {
+        abandoned.store(true, Ordering::SeqCst);
+        "главный поток не ответил".to_string()
+    })?
 }
 
 /// Снимок вкладок всех окон для общего монитора процессов.
