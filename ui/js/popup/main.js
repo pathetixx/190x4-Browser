@@ -1627,9 +1627,21 @@ function mediaView({ url, services }) {
 
     if (media.info) {
       const card = el("div", "media__card");
-      const thumb = el("img", "media__thumb");
-      if (/^https:/.test(media.info.thumbnail ?? "")) thumb.src = media.info.thumbnail;
-      thumb.alt = "";
+      // Обложки нет или она не открылась — значок видео, а не сломанная картинка.
+      const placeholder = () => {
+        const empty = el("div", "media__thumb media__thumb--empty");
+        empty.append(icon("video", 20));
+        return empty;
+      };
+      let thumb;
+      if (/^https:/.test(media.info.thumbnail ?? "")) {
+        thumb = el("img", "media__thumb");
+        thumb.alt = "";
+        thumb.addEventListener("error", () => thumb.replaceWith(placeholder()), { once: true });
+        thumb.src = media.info.thumbnail;
+      } else {
+        thumb = placeholder();
+      }
       const text = el("div");
       text.append(
         el("div", "media__title", media.info.title || media.url),
