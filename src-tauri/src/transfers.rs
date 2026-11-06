@@ -474,11 +474,28 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
             // закрывается сама (`TabEvent::CloseRequested`); если файла по
             // ссылке больше нет, вкладка останется со страницей сайта — а не
             // уведёт со своего места страницу, открытую у пользователя.
+            // Запись удаляется, только когда вкладка открылась: иначе неудачный
+            // повтор стирал бы загрузку из списка. Обычного окна нет (открыты
+            // только приватные) — повтор получает новое обычное окно.
             let url = download.url.clone();
+            match crate::browser_windows::normal_label(app) {
+                Some(label) => {
+                    crate::state::with_host(app, &label, move |host| host.open(&url).map(|_| ()))
+                        .map_err(anyhow::Error::msg)??;
+                }
+                None => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::browser_windows::open(
+                            &app,
+                            crate::browser_windows::WindowKind::Normal,
+                            Some(url),
+                        )
+                    })
+                    .await??;
+                }
+            }
             state.store.remove_download(id)?;
-            let label = crate::browser_windows::foreground_label(app);
-            crate::state::with_host(app, &label, move |host| host.open(&url).map(|_| ()))
-                .map_err(anyhow::Error::msg)??;
         }
         "remove" => {
             anyhow::ensure!(!download.state.is_active(), "сначала отмените загрузку");

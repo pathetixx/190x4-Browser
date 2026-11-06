@@ -934,13 +934,6 @@ pub fn normal_label(app: &AppHandle) -> Option<String> {
     focused.cloned().or_else(|| normal.first().cloned())
 }
 
-/// Окно, которому отдать ссылку из другой программы: то, что сейчас впереди,
-/// иначе первое обычное. В приватное окно чужие ссылки не уходят — его
-/// содержимое не должно смешиваться с обычной работой.
-pub fn foreground_label(app: &AppHandle) -> String {
-    normal_label(app).unwrap_or_else(|| FIRST.to_string())
-}
-
 /// Открыть новое окно браузера по требованию интерфейса.
 pub fn open(app: &AppHandle, kind: WindowKind, url: Option<String>) -> tauri::Result<String> {
     let label = create(app, kind, false, false)?;
