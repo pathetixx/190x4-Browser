@@ -22,6 +22,7 @@ import {
 } from "../dom.js";
 import * as model from "../downloads-model.js";
 import { ONCE, PERMISSIONS, UNSAVED } from "../permissions.js";
+import { editableAt, editMenu } from "../edit-menu.js";
 import { AUTO, LANGUAGES } from "../languages.js";
 import { EXTENSIONS, extensionById, missingService } from "../extensions.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "../prefs.js";
@@ -52,9 +53,69 @@ listen("popup-closed", () => {
 const pending = await invoke("popup_pending").catch(() => null);
 if (pending) render(pending);
 
+// Меню движка здесь не нужно нигде: в полях ввода и в выделенном тексте —
+// своё меню правки поверх попапа, остальное открывает свои меню само.
 document.addEventListener("contextmenu", (event) => {
-  if (!event.target.closest("input, textarea")) event.preventDefault();
+  if (event.defaultPrevented) return;
+  event.preventDefault();
+  const field = editableAt(event.target);
+  if (!field && !String(getSelection() ?? "")) return;
+  showEditMenu(field, event);
 });
+
+/** Меню правки у курсора — поверх попапа, по образцу меню закладок в папке. */
+function showEditMenu(field, event) {
+  root.querySelector(".menu--edit")?.remove();
+  const { items, run } = editMenu(field);
+  const menu = el("div", "menu menu--float menu--edit");
+  menu.setAttribute("role", "menu");
+  const dismiss = () => {
+    menu.remove();
+    document.removeEventListener("mousedown", outside, true);
+  };
+  const outside = (down) => {
+    if (!menu.contains(down.target)) dismiss();
+  };
+  for (const item of items) {
+    if (item.separator) {
+      menu.append(el("div", "menu__sep"));
+      continue;
+    }
+    const row = el("button", "menu__item");
+    row.type = "button";
+    row.disabled = Boolean(item.disabled);
+    const slot = el("span", "menu__icon");
+    if (item.icon) slot.append(icon(item.icon, sizeOf(item.icon)));
+    row.append(slot, el("span", "menu__label", item.label));
+    if (item.keys) row.append(el("span", "menu__keys", item.keys));
+    row.addEventListener("mouseenter", () => {
+      for (const other of menu.querySelectorAll(".menu__item")) other.dataset.selected = "false";
+      row.dataset.selected = "true";
+    });
+    // mousedown не уводит фокус из поля: выделение в нём остаётся на месте.
+    row.addEventListener("mousedown", (down) => down.preventDefault());
+    row.addEventListener("click", () => {
+      dismiss();
+      run(item.id);
+    });
+    menu.append(row);
+  }
+  menu.addEventListener("dismiss", dismiss);
+  root.append(menu);
+  document.addEventListener("mousedown", outside, true);
+
+  const { offsetWidth: width, offsetHeight: height } = menu;
+  const need = height + 8;
+  if (root.clientHeight < need) {
+    root.style.minHeight = `${need}px`;
+    fit();
+  }
+  const room = Math.max(root.clientHeight, need);
+  const left = Math.max(4, Math.min(event.clientX, root.clientWidth - width - 4));
+  const top = event.clientY + height + 4 <= room ? event.clientY : Math.max(4, event.clientY - height);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
 document.addEventListener("keydown", onKey);
 
 if (!isNative) demo();

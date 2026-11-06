@@ -23,6 +23,7 @@ import { initBookmarksBar, renderBarVisibility } from "./bookmarks-bar.js";
 import { initContextMenu, openContextMenu, paneOffset, wantsBackgroundTab } from "./context-menu.js";
 import { initDialogs, onDialog, onDialogsClosed, onNavigation } from "./dialogs.js";
 import { displayHost, displayUrl, el, hostOf } from "./dom.js";
+import { editableAt, editMenu } from "./edit-menu.js";
 import { initDownloads } from "./downloads-model.js";
 import { closeFind, findAgain, initFind, isFindOpen, openFind, renderFindResult } from "./find.js";
 import { initFullscreen, isFullscreen, onPageFullscreen, toggleWindowFullscreen } from "./fullscreen.js";
@@ -31,7 +32,7 @@ import { initLayout, isPageHidden, setPageHidden, syncDuring } from "./layout.js
 import { focusOmnibox, initOmnibox, renderOmnibox, siteKey } from "./omnibox.js";
 import { closePalette, initPalette, isPaletteOpen, openPalette } from "./palette.js";
 import { initPanels, isPanelOpen, openPanel, refreshLivePanel, toggle } from "./panels.js";
-import { closePopup, initPopups, onPopupAction, onPopupClosed, openPopup, openPopupKey } from "./popups.js";
+import { closePopup, initPopups, onPopupAction, onPopupClosed, openMenu, openPopup, openPopupKey } from "./popups.js";
 import { confirmAction, downloadsText } from "./confirm.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "./prefs.js";
 import {
@@ -258,11 +259,17 @@ loadWindowState();
 document.getElementById("rail-settings").addEventListener("click", () => openSettings());
 
 // Меню движка в интерфейсе браузера («Назад», «Обновить», «Проверить») —
-// чужая деталь. Оставляем его только в полях ввода.
+// чужая деталь. В полях ввода и в выделенном тексте встроенных страниц — своё
+// меню правки; кнопки и строка вкладок открывают свои меню сами.
 document.addEventListener("contextmenu", (event) => {
-  if (event.target.closest("input, textarea, [contenteditable='true']")) return;
-  if (event.target.closest(".internal") && getSelection()?.toString()) return;
+  if (event.defaultPrevented) return;
   event.preventDefault();
+  const field = editableAt(event.target);
+  const selected = event.target.closest(".internal") && getSelection()?.toString();
+  if (!field && !selected) return;
+  const { items, run } = editMenu(field);
+  const anchor = { x: event.clientX, y: event.clientY, width: 0, height: 0 };
+  openMenu("edit", anchor, items, (action) => run(action), { width: 240 }).catch(() => {});
 });
 
 onPref((key) => {
