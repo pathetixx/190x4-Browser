@@ -3,8 +3,10 @@
 //! Канал открыт любому документу и любому фрейму, а разбирается всё на главном
 //! потоке — том же, что рисует окна и пропускает сетевые запросы вкладок.
 //! Поэтому сообщение разбирается один раз, ровно настолько, чтобы узнать имя
-//! события, и уходит сразу своему обработчику; а вкладка, которая шлёт
-//! сообщения в цикле, упирается в лимит, и лишнее выбрасывается.
+//! события, и уходит сразу своему обработчику; а документ, который шлёт
+//! сообщения в цикле, упирается в лимит, и лишнее выбрасывается. Лимит свой у
+//! вкладки и у каждого её фрейма: рекламный фрейм, засыпающий канал
+//! сообщениями, не отнимает его у страницы.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -25,7 +27,7 @@ pub fn event_name(payload: &str) -> Option<Cow<'_, str>> {
         .map(|envelope| envelope.evt)
 }
 
-/// Сколько сообщений вкладка может прислать разом и сколько в секунду потом.
+/// Сколько сообщений документ может прислать разом и сколько в секунду потом.
 /// Свои скрипты шлют единицы в секунду: косметика — пачкой раз в четверть
 /// секунды из страницы и из каждого фрейма со своими правилами, остальные — по
 /// событиям страницы.
@@ -61,17 +63,21 @@ impl Bucket {
     }
 }
 
-static BUCKETS: LazyLock<Mutex<HashMap<u32, Bucket>>> = LazyLock::new(Mutex::default);
+static BUCKETS: LazyLock<Mutex<HashMap<(u32, Option<u32>), Bucket>>> =
+    LazyLock::new(Mutex::default);
 
-/// Пропустить ли ещё одно сообщение вкладки.
-pub fn allow(tab: u32) -> bool {
+/// Пропустить ли ещё одно сообщение документа вкладки или её фрейма.
+pub fn allow(tab: u32, frame: Option<u32>) -> bool {
     let now = Instant::now();
     let mut buckets = BUCKETS.lock();
-    let bucket = buckets.entry(tab).or_insert_with(|| Bucket::new(now));
+    let bucket = buckets
+        .entry((tab, frame))
+        .or_insert_with(|| Bucket::new(now));
     let allowed = bucket.take(now);
     if !allowed && !bucket.dropping {
         tracing::debug!(
             tab,
+            ?frame,
             "страница шлёт сообщения слишком часто — лишние выброшены"
         );
     }
@@ -79,9 +85,14 @@ pub fn allow(tab: u32) -> bool {
     allowed
 }
 
-/// Вкладку закрыли — её счёт больше не нужен.
+/// Вкладку закрыли — счёт её и её фреймов больше не нужен.
 pub fn forget(tab: u32) {
-    BUCKETS.lock().remove(&tab);
+    BUCKETS.lock().retain(|(id, _), _| *id != tab);
+}
+
+/// Фрейм исчез — его счёт больше не нужен.
+pub fn forget_frame(tab: u32, frame: u32) {
+    BUCKETS.lock().remove(&(tab, Some(frame)));
 }
 
 #[cfg(test)]

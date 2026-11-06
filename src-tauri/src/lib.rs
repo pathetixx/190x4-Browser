@@ -407,6 +407,7 @@ pub(crate) fn route_event(
         TabEvent::FrameGone { id, frame } => {
             app.state::<App>().documents.forget(*id, Some(*frame));
             passwords::on_frame_gone(app, *id, *frame);
+            page_messages::forget_frame(*id, *frame);
             return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
@@ -522,7 +523,7 @@ fn route_message(
     let Some(evt) = page_messages::event_name(payload) else {
         return;
     };
-    if !page_messages::allow(id) {
+    if !page_messages::allow(id, frame) {
         return;
     }
     let top = frame.is_none();
