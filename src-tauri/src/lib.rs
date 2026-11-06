@@ -402,12 +402,11 @@ pub(crate) fn route_event(
                 label,
                 state.windows.is_private(label),
             );
-            passwords::on_frame_navigation(app, *id, *frame);
             return;
         }
         TabEvent::FrameGone { id, frame } => {
             app.state::<App>().documents.forget(*id, Some(*frame));
-            passwords::on_frame_navigation(app, *id, *frame);
+            passwords::on_frame_gone(app, *id, *frame);
             return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
@@ -451,6 +450,17 @@ pub(crate) fn route_event(
         // выхода для всех окон профиля, значит, и помечать его надо во всех.
         TabEvent::Insecure { host, .. } => {
             let _ = app.emit("insecure-host", host);
+        }
+        // Переход закончился: документ на экране либо сменился, либо остался
+        // прежним (переход отменили или он ушёл в загрузку).
+        TabEvent::Finished { id, url, .. } => {
+            let state = app.state::<App>();
+            if state
+                .documents
+                .settle(*id, url, label, state.windows.is_private(label))
+            {
+                passwords::on_document(app, *id);
+            }
         }
         TabEvent::Started { id, url } => {
             let state = app.state::<App>();
