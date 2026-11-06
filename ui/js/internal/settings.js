@@ -382,6 +382,7 @@ const BUILDERS = {
             [
               ["kurogane", "Тёмная", "Kurogane"],
               ["shiro", "Светлая", "Shiro"],
+              ["bloodmoon", "Кровавая луна", "Bloodmoon"],
               ["system", "Как в системе", ""],
             ],
             { onChange: applyTheme }

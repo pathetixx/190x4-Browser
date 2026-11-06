@@ -171,6 +171,59 @@
   --spill: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 12px);
 }
 
+/* Кровавая луна (Bloodmoon): чёрная тушь с пепельными брызгами, бледная луна
+   и цепи, которые светятся кровью изнутри. Токены здесь, картинки и детали —
+   в bloodmoon.css. Блок стоит до приватного окна, чтобы тот перекрашивал
+   акцент и в этой теме. */
+:root[data-theme="bloodmoon"] {
+  --font-grunge: "Rubik Dirt", "Oswald", sans-serif;
+  --font-label: "Oswald", "Inter Tight", sans-serif;
+
+  --ink-0: #050404;
+  --ink-1: #0A0909;
+  --ink-2: #100E0E;
+  --ink-3: #181515;
+  --ink-4: #221E1E;
+
+  --line-1: rgba(230, 226, 218, 0.045);
+  --line-2: rgba(230, 226, 218, 0.08);
+  --line-3: rgba(230, 226, 218, 0.13);
+
+  --edge-top: linear-gradient(180deg, rgba(230, 226, 218, 0.06) 0%, rgba(230, 226, 218, 0) 50%);
+
+  --overlay-1: rgba(230, 226, 218, 0.025);
+  --overlay-2: rgba(230, 226, 218, 0.045);
+  --overlay-3: rgba(230, 226, 218, 0.07);
+  --overlay-4: rgba(230, 226, 218, 0.11);
+
+  --shine-1: rgba(230, 226, 218, 0.04);
+  --shine-2: rgba(230, 226, 218, 0.07);
+  --shadow-strong: rgba(0, 0, 0, 0.78);
+
+  --text-hi: #E6E2DA;
+  --text-mid: #9C978F;
+  --text-lo: #66615A;
+  --text-faint: #3F3B37;
+
+  --on-accent: #F4F1EA;
+  --accent: #C4102A;
+  --accent-bright: #EC2A43;
+  --accent-deep: #5C0814;
+  --accent-soft: rgba(196, 16, 42, 0.16);
+  --accent-glow: rgba(236, 42, 67, 0.45);
+
+  /* В этой теме и «закрыть окно» — кровь, а не системный красный. */
+  --caption-close: #C4102A;
+
+  /* HUD-скобки, светящиеся кромки и развёртка в Bloodmoon не нужны: их место
+     занимает светящаяся цепь (bloodmoon.css). */
+  --corner: transparent;
+  --brackets: none;
+  --hairline: none;
+  --scan: none;
+  --spill: none;
+}
+
 /* Приватное окно: тот же лак, другой стежок. Единственный случай, когда
    акцент меняется не по воле пользователя — чтобы окно нельзя было спутать. */
 :root[data-private="true"] {

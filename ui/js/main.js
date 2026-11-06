@@ -219,9 +219,17 @@ initPalette([
     group: "Браузер",
     title: "Сменить тему",
     icon: "paint",
-    run: () => setPref("theme", document.documentElement.dataset.theme === "shiro" ? "kurogane" : "shiro"),
+    keywords: "kurogane shiro bloodmoon тёмная светлая кровавая луна",
+    run: () => setPref("theme", nextTheme(document.documentElement.dataset.theme)),
   },
 ], { found: openTabCommands });
+
+/** Темы по кругу: тёмная → светлая → кровавая луна → тёмная. */
+const THEMES = ["kurogane", "shiro", "bloodmoon"];
+
+function nextTheme(current) {
+  return THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+}
 
 /** Открытые вкладки окна для Ctrl+K: набрали часть заголовка или адреса — переход на неё. */
 function openTabCommands() {
@@ -1260,7 +1268,8 @@ if (!isNative) {
   mock.paintStage();
 
   // ?demo=palette|find|settings|downloads|shield|bookmarks|history
-  // ?section=passwords — раздел настроек; ?motion=off — без анимаций.
+  // ?section=passwords — раздел настроек; ?motion=off — без анимаций;
+  // ?theme=shiro|bloodmoon — тема (mock.js).
   const params = new URLSearchParams(location.search);
   if (params.get("motion") === "off") document.documentElement.dataset.motion = "off";
   const demo = params.get("demo");

@@ -16,6 +16,8 @@
   const MAX_TILES = 24;
   const WEATHER_EVERY = 20 * 60 * 1000;
   const ICON_KEY = "190x4:icon:";
+  // Темы, у которых есть своя раскраска страницы; «как в системе» раскрывается в первые две.
+  const THEMES = ["kurogane", "shiro", "bloodmoon"];
 
   const $ = (id) => document.getElementById(id);
   const root = document.documentElement;
@@ -177,7 +179,8 @@
 
   function applyTheme() {
     const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    root.dataset.theme = state.theme === "system" ? (dark ? "kurogane" : "shiro") : state.theme === "shiro" ? "shiro" : "kurogane";
+    root.dataset.theme =
+      state.theme === "system" ? (dark ? "kurogane" : "shiro") : THEMES.includes(state.theme) ? state.theme : "kurogane";
     // Следующая новая вкладка встанет в эту тему с первого кадра (newtab.html).
     try {
       localStorage.setItem("190x4-theme", root.dataset.theme);

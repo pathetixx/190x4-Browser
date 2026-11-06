@@ -91,12 +91,15 @@ pub fn tab_close_request(app: AppHandle, id: u32) -> Result<bool, String> {
 }
 
 /// Цвет страниц браузера под тему: `#08080A` у тёмной, `#FAFAF8` у светлой,
-/// «как в системе» — по настройке Windows для приложений.
+/// `#050404` у кровавой луны, «как в системе» — по настройке Windows для
+/// приложений.
 pub fn page_color(store: &Store) -> [u8; 3] {
     const DARK: [u8; 3] = [0x08, 0x08, 0x0A];
     const LIGHT: [u8; 3] = [0xFA, 0xFA, 0xF8];
+    const BLOODMOON: [u8; 3] = [0x05, 0x04, 0x04];
     match store.setting_str("theme").as_deref() {
         Some("shiro") => LIGHT,
+        Some("bloodmoon") => BLOODMOON,
         Some("system") if system_prefers_light() => LIGHT,
         _ => DARK,
     }
