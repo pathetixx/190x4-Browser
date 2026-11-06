@@ -54,12 +54,15 @@ static PASSWORDS_ENGINE: LazyLock<String> = LazyLock::new(|| engine_script(PASSW
 ///   доигравший ролик (`src-tauri/src/autoscroll.rs`);
 /// * расширение Twitch собирает бонусы баллов канала и рисует в чате смайлы
 ///   7TV, BetterTTV и FrankerFaceZ (`src-tauri/src/twitch.rs`);
-/// * YouTube NonStop закрывает «Продолжить просмотр?» (`src-tauri/src/nonstop.rs`).
-const SITE_SCRIPTS: [(&str, &str); 4] = [
+/// * YouTube NonStop закрывает «Продолжить просмотр?» (`src-tauri/src/nonstop.rs`);
+/// * строка состояния рисует адрес ссылки под курсором вместо плашки движка
+///   ([`wire_status`]), только в документе вкладки.
+const SITE_SCRIPTS: [(&str, &str); 5] = [
     ("SponsorBlock", include_str!("inject/sponsorblock.js")),
     ("автопролистывания", include_str!("inject/autoscroll.js")),
     ("Twitch", include_str!("inject/twitch.js")),
     ("NonStop", include_str!("inject/nonstop.js")),
+    ("строки состояния", include_str!("inject/status.js")),
 ];
 static SITE_ENGINE: LazyLock<Vec<(&str, String)>> = LazyLock::new(|| {
     SITE_SCRIPTS
@@ -1106,13 +1109,15 @@ fn wire_accelerators(
 ///
 /// Своё автозаполнение движка (список «Сохранённые сведения» у поля и
 /// предложение сохранить пароль) выключено: учётки подставляет менеджер паролей
-/// браузера, и у поля логина иначе открывались бы два списка сразу.
+/// браузера, и у поля логина иначе открывались бы два списка сразу. Плашка
+/// движка с адресом ссылки тоже: её рисует браузер ([`wire_status`]).
 pub(crate) fn configure(core: &ICoreWebView2, site: bool) -> windows_core::Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Settings3, ICoreWebView2Settings4, ICoreWebView2Settings8,
     };
 
     let settings = unsafe { core.Settings()? };
+    unsafe { settings.SetIsStatusBarEnabled(false)? };
     if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
         unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false)? };
     }
@@ -1189,6 +1194,38 @@ fn wire_audio(id: TabId, core: &ICoreWebView2, sink: EventSink) {
             })),
             &mut token,
         );
+    }
+}
+
+/// Адрес ссылки под курсором — скрипту строки состояния в документе вкладки
+/// (`inject/status.js`): плашка движка выключена в [`configure`], а своя
+/// рисуется в странице, поверх которой окно браузера ничего нарисовать не может.
+fn wire_status(core: &ICoreWebView2) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_12;
+    use webview2_com::StatusBarTextChangedEventHandler;
+
+    let Ok(core12) = core.cast::<ICoreWebView2_12>() else {
+        return;
+    };
+    let mut token = 0i64;
+    let result = unsafe {
+        core12.add_StatusBarTextChanged(
+            &StatusBarTextChangedEventHandler::create(Box::new(move |sender, _| {
+                let Some(core12) = sender.and_then(|core| core.cast::<ICoreWebView2_12>().ok())
+                else {
+                    return Ok(());
+                };
+                let mut raw = PWSTR::null();
+                core12.StatusBarText(&mut raw)?;
+                let message = serde_json::json!({ "cmd": "x4_status", "text": take_pwstr(raw) });
+                let _ = core12.PostWebMessageAsJson(&HSTRING::from(message.to_string()));
+                Ok(())
+            })),
+            &mut token,
+        )
+    };
+    if let Err(err) = result {
+        tracing::debug!(%err, "строка состояния вкладки не подключена");
     }
 }
 
@@ -1924,6 +1961,7 @@ impl Tab {
         downloads::wire(id, &core, downloads.clone(), sink.clone())?;
         wire_zoom(id, &controller, sink.clone())?;
         wire_audio(id, &core, sink.clone());
+        wire_status(&core);
         let menu = MenuSlot::default();
         wire_context_menu(id, &core, sink.clone(), menu.clone());
         let frames = FrameMap::default();
