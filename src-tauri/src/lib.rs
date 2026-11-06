@@ -1016,12 +1016,24 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
         );
         let _ = app.emit("adblock-ready", count);
 
-        // Снимок пишется после того, как фильтр уже работает: ключ — последним,
-        // иначе оборванная запись выглядела бы готовым снимком.
+        // Снимок пишется после того, как фильтр уже работает. Прежний ключ
+        // стирается первым, новый пишется последним: оборванная запись не
+        // выглядит готовым снимком, а ключ не достаётся чужому снимку. Сборки
+        // пишут по одной, и устаревшая свежую не перезаписывает.
         if let Some(bytes) = bytes {
+            static WRITING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+            let _writing = WRITING.lock();
+            if FILTER_BUILD.load(Ordering::SeqCst) != build {
+                return;
+            }
+            let key_path = downloaded.join(SNAPSHOT_KEY);
             let saved = std::fs::create_dir_all(&downloaded)
+                .and_then(|()| match std::fs::remove_file(&key_path) {
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+                    _ => Ok(()),
+                })
                 .and_then(|()| write_replacing(&snapshot, &bytes))
-                .and_then(|()| write_replacing(&downloaded.join(SNAPSHOT_KEY), key.as_bytes()));
+                .and_then(|()| write_replacing(&key_path, key.as_bytes()));
             if let Err(err) = saved {
                 tracing::debug!(%err, "снимок фильтра не записан");
             }
@@ -1078,9 +1090,12 @@ fn snapshot_key(lists: &[ListFile]) -> String {
     lines.join("\n")
 }
 
-/// Записать файл целиком: через временный рядом и переименование.
+/// Записать файл целиком: через временный рядом (у каждого файла свой) и
+/// переименование.
 fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    let temp = path.with_extension("tmp");
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = std::path::PathBuf::from(temp);
     std::fs::write(&temp, bytes)?;
     std::fs::rename(&temp, path)
 }
