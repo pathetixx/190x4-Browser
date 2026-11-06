@@ -1103,14 +1103,24 @@ fn wire_accelerators(
 ///
 /// SmartScreen (`site`) проверяет только сайты во вкладках, и то по настройке:
 /// адреса окон интерфейса проверять незачем.
+///
+/// Своё автозаполнение движка (список «Сохранённые сведения» у поля и
+/// предложение сохранить пароль) выключено: учётки подставляет менеджер паролей
+/// браузера, и у поля логина иначе открывались бы два списка сразу.
 pub(crate) fn configure(core: &ICoreWebView2, site: bool) -> windows_core::Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Settings3, ICoreWebView2Settings8,
+        ICoreWebView2Settings3, ICoreWebView2Settings4, ICoreWebView2Settings8,
     };
 
     let settings = unsafe { core.Settings()? };
     if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
         unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false)? };
+    }
+    if let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() {
+        unsafe {
+            settings4.SetIsGeneralAutofillEnabled(false)?;
+            settings4.SetIsPasswordAutosaveEnabled(false)?;
+        }
     }
     if let Ok(settings8) = settings.cast::<ICoreWebView2Settings8>() {
         let check = site && REPUTATION.load(Ordering::Relaxed);
