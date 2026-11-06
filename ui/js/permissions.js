@@ -16,7 +16,12 @@ export const PERMISSIONS = {
   fonts: { icon: "text-font", ask: "Использовать шрифты, установленные на компьютере", name: "Шрифты компьютера" },
   midi: { icon: "music", ask: "Полностью управлять MIDI-устройствами", name: "MIDI-устройства" },
   windows: { icon: "window-multiple", ask: "Открывать и располагать окна на всех экранах", name: "Окна на всех экранах" },
+  // Вид, который движок не называет: ответ действует только в этот раз.
+  other: { icon: "shield", ask: "Получить дополнительный доступ к устройству или браузеру", name: "Другое" },
 };
 
 /** «Разрешить в этот раз» — там, где разовое разрешение имеет смысл, как в Chrome. */
-export const ONCE = new Set(["camera", "microphone", "geolocation", "sensors", "clipboard", "files", "fonts", "midi", "windows"]);
+export const ONCE = new Set(["camera", "microphone", "geolocation", "sensors", "clipboard", "files", "fonts", "midi", "windows", "other"]);
+
+/** Разрешения, ответ на которые не запоминается: спрашивать о них можно только на этот раз. */
+export const UNSAVED = new Set(["other"]);

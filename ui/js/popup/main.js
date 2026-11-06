@@ -21,7 +21,7 @@ import {
   textButton,
 } from "../dom.js";
 import * as model from "../downloads-model.js";
-import { ONCE, PERMISSIONS } from "../permissions.js";
+import { ONCE, PERMISSIONS, UNSAVED } from "../permissions.js";
 import { AUTO, LANGUAGES } from "../languages.js";
 import { EXTENSIONS, extensionById, missingService } from "../extensions.js";
 import { applyTheme, loadPrefs, onPref, pref, setPref } from "../prefs.js";
@@ -1250,9 +1250,15 @@ const DIALOGS = {
 
     const stack = el("div", "dialog__stack");
     const option = (label, action) => stack.append(textButton(label, () => answer(action, {}, { guard: true }), "btn"));
-    option("Разрешить при посещении сайта", "allow");
-    if (permissions.every((name) => ONCE.has(name))) option("Разрешить в этот раз", "allow_once");
-    option("Никогда не разрешать", "deny");
+    // Ответ, который браузер не запомнит, — только «в этот раз».
+    if (permissions.some((name) => UNSAVED.has(name))) {
+      option("Разрешить в этот раз", "allow_once");
+      option("Не разрешать", "cancel");
+    } else {
+      option("Разрешить при посещении сайта", "allow");
+      if (permissions.every((name) => ONCE.has(name))) option("Разрешить в этот раз", "allow_once");
+      option("Никогда не разрешать", "deny");
+    }
     bubble.append(stack);
     return () => answer("cancel");
   },
@@ -1295,6 +1301,44 @@ const DIALOGS = {
     }
     const actions = el("div", "bubble__actions");
     actions.append(textButton("Отмена", () => answer("cancel"), "btn"), textButton("Войти", submit, "btn btn--primary"));
+    bubble.append(actions);
+    return () => answer("cancel");
+  },
+
+  /** Сайт просит сертификат для входа: выбрать один или войти без него. */
+  certificate(bubble, { host = "", port = 0, proxy = false, certificates = [] }, { answer }) {
+    bubble.append(dialogHead("Выберите сертификат"));
+    const where = port && port !== 443 ? `${host}:${port}` : host;
+    bubble.append(
+      el("p", "bubble__text", proxy ? `Прокси ${where} просит сертификат для входа.` : `Сайт ${where} просит сертификат для входа.`)
+    );
+
+    let chosen = 0;
+    const list = el("div", "dialog__certs scroll");
+    const rows = certificates.map((certificate, index) => {
+      const row = el("button", "cert");
+      row.type = "button";
+      const until = Number(certificate.valid_to) > 0 ? new Date(certificate.valid_to * 1000).toLocaleDateString("ru-RU") : "";
+      row.append(
+        el("span", "cert__name", certificate.name || certificate.subject || "Без названия"),
+        el("span", "cert__meta", [certificate.issuer && `Выдан: ${certificate.issuer}`, until && `до ${until}`].filter(Boolean).join(" · "))
+      );
+      row.addEventListener("click", () => select(index));
+      row.addEventListener("dblclick", () => answer("accept", { choice: index }, { guard: true }));
+      list.append(row);
+      return row;
+    });
+    const select = (index) => {
+      chosen = index;
+      rows.forEach((row, at) => row.setAttribute("aria-pressed", String(at === index)));
+    };
+    select(0);
+    bubble.append(list);
+
+    const actions = el("div", "bubble__actions");
+    const pick = textButton("Выбрать", () => answer("accept", { choice: chosen }, { guard: true }), "btn btn--primary");
+    pick.setAttribute("autofocus", "");
+    actions.append(textButton("Без сертификата", () => answer("cancel"), "btn"), pick);
     bubble.append(actions);
     return () => answer("cancel");
   },
