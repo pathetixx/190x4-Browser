@@ -432,6 +432,7 @@ pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
         "label": label,
         "private": registry.is_private(&label),
         "session": registry.session(&label),
+        "startup": registry.is_startup(&label),
         "windows": registry.len(),
         "closed_windows": windows::closed_count(&app),
     })

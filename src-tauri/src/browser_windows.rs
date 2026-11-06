@@ -48,14 +48,34 @@ pub struct WindowMeta {
     /// (Ctrl+N, вкладка в новое окно) начинается с чистого листа, даже если
     /// под его номером в базе что-то осталось.
     pub restore: bool,
+    /// Первое окно запуска: только оно открывает страницы из настройки «При
+    /// запуске». Ctrl+N и окно под вытащенную вкладку начинают с новой вкладки.
+    pub startup: bool,
 }
 
 #[derive(Default)]
 pub struct WindowRegistry(Mutex<HashMap<String, WindowMeta>>);
 
 impl WindowRegistry {
-    pub fn add(&self, label: &str, meta: WindowMeta) {
-        self.0.lock().insert(label.to_string(), meta);
+    /// Записать окно и выдать ему номер сессии под одним замком: два окна,
+    /// открытые разом, иначе получили бы один номер и затирали бы вкладки друг
+    /// друга.
+    fn reserve(&self, label: &str, kind: WindowKind, restore: bool, startup: bool) -> Option<i64> {
+        let mut windows = self.0.lock();
+        let session = (!kind.is_private()).then(|| {
+            let taken: Vec<i64> = windows.values().filter_map(|meta| meta.session).collect();
+            (0..).find(|index| !taken.contains(index)).unwrap_or(0)
+        });
+        windows.insert(
+            label.to_string(),
+            WindowMeta {
+                kind,
+                session,
+                restore,
+                startup,
+            },
+        );
+        session
     }
 
     pub fn remove(&self, label: &str) {
@@ -108,15 +128,9 @@ impl WindowRegistry {
         self.0.lock().keys().cloned().collect()
     }
 
-    /// Свободный номер сессии: окна нумеруются подряд, дыры занимают новые окна.
-    fn free_session(&self) -> i64 {
-        let taken: Vec<i64> = self
-            .0
-            .lock()
-            .values()
-            .filter_map(|meta| meta.session)
-            .collect();
-        (0..).find(|index| !taken.contains(index)).unwrap_or(0)
+    /// Первое окно запуска (см. [`WindowMeta::startup`]).
+    pub fn is_startup(&self, label: &str) -> bool {
+        self.get(label).is_some_and(|meta| meta.startup)
     }
 }
 
@@ -304,28 +318,31 @@ fn create_window(app: &AppHandle, kind: WindowKind, opening: Opening) -> tauri::
         app.state::<crate::launch::Launch>().push_adopt(&label, tab);
     }
 
-    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
-        .additional_browser_args(crate::browser_args())
-        .build()?;
-
-    let session = if kind.is_private() {
-        None
-    } else {
-        Some(app.state::<App>().windows.free_session())
-    };
+    // Окно записывается в реестр до того, как его интерфейс начнёт грузиться:
+    // он сразу спрашивает, что это за окно и какие вкладки восстановить.
+    let session = app.state::<App>().windows.reserve(
+        &label,
+        kind,
+        opening.restore || opening.tabs.is_some(),
+        opening.first,
+    );
     if let (Some(session), Some(tabs)) = (session, opening.tabs) {
         if let Err(err) = app.state::<App>().store.save_session(session, tabs) {
             tracing::warn!(%err, "вкладки закрытого окна не записаны");
         }
     }
-    app.state::<App>().windows.add(
-        &label,
-        WindowMeta {
-            kind,
-            session,
-            restore: opening.restore || opening.tabs.is_some(),
-        },
-    );
+
+    let window = match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|builder| {
+        builder
+            .additional_browser_args(crate::browser_args())
+            .build()
+    }) {
+        Ok(window) => window,
+        Err(err) => {
+            app.state::<App>().windows.remove(&label);
+            return Err(err);
+        }
+    };
 
     #[cfg(windows)]
     {

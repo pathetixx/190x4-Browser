@@ -30,7 +30,7 @@ export const state = {
   adblockOn: true,
   maximized: false,
   /// Это окно: обычное или приватное, и под каким номером его сессия.
-  window: { label: "chrome", private: false, session: 0, windows: 1 },
+  window: { label: "chrome", private: false, session: 0, startup: false, windows: 1 },
   /// Доступность сервисов 190x4: без ключей интерфейс не должен обещать того,
   /// чего не будет.
   services: { translate: false, media: false },

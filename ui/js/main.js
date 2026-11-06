@@ -1150,47 +1150,44 @@ try {
 }
 
 /**
- * Что открыть при запуске — по настройке «При запуске». Если браузер запустили
- * ссылкой или файлом, пустая новая вкладка не нужна: откроется сама ссылка.
+ * Что открыть в новом окне. Вкладки, которые Rust отдал этому окну (сессия
+ * прошлого запуска по настройке «При запуске» или окно, возвращённое
+ * Ctrl+Shift+T), восстанавливаются всегда. Стартовые страницы открывает только
+ * первое окно запуска: Ctrl+N и окно под вытащенную вкладку их не получают.
+ * Если окно открыли ссылкой, файлом или вкладкой, пустая новая вкладка не
+ * нужна.
  *
  * Вкладки прошлого сеанса сначала спят: место в строке есть, страницы нет.
  * Так двадцать вкладок в сессии не поднимают двадцать страниц на старте.
  */
 async function restoreSession() {
-  const mode = pref("startup");
   const launched = await invoke("launch_take").catch(() => []);
   // Окно открыли под вкладку, которую вытащили из другого окна: она переедет
   // сюда живой, пустая новая вкладка не нужна.
   const adopted = await invoke("launch_adopt_take").catch(() => []);
   const blank = !launched.length && !adopted.length;
+  const saved = await invoke("session_restore").catch(() => []);
+  const pages = state.window.startup && pref("startup") === "pages"
+    ? (pref("startup_pages") ?? []).filter(Boolean)
+    : [];
 
-  if (mode === "pages") {
-    const pages = (pref("startup_pages") ?? []).filter(Boolean);
-    if (!pages.length) {
-      if (blank) await open("about:newtab");
-    } else {
-      const ids = [];
-      for (const url of pages) ids.push(await open(url, { background: true }));
-      if (blank) await activate(ids[0]);
+  if (saved.length) {
+    let activeIndex = saved.findIndex((tab) => tab.active);
+    if (activeIndex < 0) activeIndex = 0;
+    const ids = [];
+    for (const tab of saved) {
+      // Встроенные страницы рисует сам интерфейс — им спать незачем.
+      ids.push(
+        parseInternal(tab.url)
+          ? await open(tab.url, { background: true })
+          : openSleeping(tab)
+      );
     }
-  } else if (mode === "restore") {
-    const saved = await invoke("session_restore").catch(() => []);
-    if (!saved.length) {
-      if (blank) await open("about:newtab");
-    } else {
-      let activeIndex = saved.findIndex((tab) => tab.active);
-      if (activeIndex < 0) activeIndex = 0;
-      const ids = [];
-      for (const tab of saved) {
-        // Встроенные страницы рисует сам интерфейс — им спать незачем.
-        ids.push(
-          parseInternal(tab.url)
-            ? await open(tab.url, { background: true })
-            : openSleeping(tab)
-        );
-      }
-      if (blank && ids[activeIndex] != null) await activate(ids[activeIndex]);
-    }
+    if (blank && ids[activeIndex] != null) await activate(ids[activeIndex]);
+  } else if (pages.length) {
+    const ids = [];
+    for (const url of pages) ids.push(await open(url, { background: true }));
+    if (blank) await activate(ids[0]);
   } else if (blank) {
     await open("about:newtab");
   }

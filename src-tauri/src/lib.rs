@@ -280,7 +280,9 @@ pub fn run() {
                     tracing::warn!(%err, "сессии окон не пронумерованы");
                 }
             }
-            browser_windows::create(&handle, WindowKind::Normal, true, true)?;
+            // Вкладки прошлого сеанса первое окно берёт, только если так
+            // настроено: в базе они лежат всегда.
+            browser_windows::create(&handle, WindowKind::Normal, true, restores_session(&store))?;
             restore_windows(&handle, &store);
             Ok(())
         })

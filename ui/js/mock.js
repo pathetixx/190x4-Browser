@@ -125,7 +125,7 @@ export async function invoke(command, args = {}) {
     case "window_state":
       return { maximized: false };
     case "window_info":
-      return { label: "chrome", private: false, session: 0, windows: 1 };
+      return { label: "chrome", private: false, session: 0, startup: true, windows: 1 };
     case "window_open":
     case "tab_split":
     case "tab_zoom_set":
