@@ -242,9 +242,15 @@ impl Store {
                 if left == 0 {
                     tx.execute("DELETE FROM history WHERE url = ?1", [&url])?;
                 } else {
+                    // Сводка — по последнему оставшемуся посещению, вместе с
+                    // заголовком: удалённое не должно находиться в подсказках.
                     tx.execute(
                         "UPDATE history SET visits = ?2,
-                         visited_at = (SELECT MAX(visited_at) FROM visits WHERE url = ?1)
+                         visited_at = (SELECT MAX(visited_at) FROM visits WHERE url = ?1),
+                         title = (SELECT title FROM visits WHERE url = ?1
+                                  ORDER BY visited_at DESC, id DESC LIMIT 1),
+                         search = (SELECT search FROM visits WHERE url = ?1
+                                   ORDER BY visited_at DESC, id DESC LIMIT 1)
                          WHERE url = ?1",
                         rusqlite::params![&url, left],
                     )?;
@@ -278,18 +284,38 @@ impl Store {
     pub fn clear_history_since(&self, since: i64) -> anyhow::Result<()> {
         self.with(|db| {
             let tx = db.unchecked_transaction()?;
+            // Трогаем только адреса, которые посещали за этот срок. Старые
+            // сводки без подробных посещений (их чистит `prune_visits`, их
+            // приносит импорт) к сроку не относятся и остаются.
+            let touched = "(history.visited_at >= ?1
+                OR history.url IN (SELECT url FROM visits WHERE visited_at >= ?1))";
+            tx.execute(
+                &format!(
+                    "DELETE FROM history WHERE {touched}
+                     AND url NOT IN (SELECT url FROM visits WHERE visited_at < ?1)"
+                ),
+                [since],
+            )?;
+            // Остальным сводка — по последнему посещению до срока, вместе с
+            // заголовком: удалённое не должно находиться в подсказках.
+            tx.execute(
+                &format!(
+                    "UPDATE history SET
+                        visits = MAX(1, visits - (SELECT COUNT(*) FROM visits
+                            WHERE visits.url = history.url AND visited_at >= ?1)),
+                        visited_at = (SELECT MAX(visited_at) FROM visits
+                            WHERE visits.url = history.url AND visited_at < ?1),
+                        title = (SELECT title FROM visits
+                            WHERE visits.url = history.url AND visited_at < ?1
+                            ORDER BY visited_at DESC, id DESC LIMIT 1),
+                        search = (SELECT search FROM visits
+                            WHERE visits.url = history.url AND visited_at < ?1
+                            ORDER BY visited_at DESC, id DESC LIMIT 1)
+                     WHERE {touched}"
+                ),
+                [since],
+            )?;
             tx.execute("DELETE FROM visits WHERE visited_at >= ?1", [since])?;
-            // Сводка пересобирается по тому, что осталось.
-            tx.execute(
-                "DELETE FROM history WHERE url NOT IN (SELECT url FROM visits)",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE history SET
-                    visits = (SELECT COUNT(*) FROM visits WHERE visits.url = history.url),
-                    visited_at = (SELECT MAX(visited_at) FROM visits WHERE visits.url = history.url)",
-                [],
-            )?;
             tx.commit()
         })?;
         Ok(())
@@ -528,6 +554,31 @@ mod tests {
         let left = store.history_visits("", None, 10).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].url, "https://old.example/");
+    }
+
+    #[test]
+    fn clearing_a_period_restores_the_older_title_and_keeps_other_summaries() {
+        let store = Store::memory().unwrap();
+        store.record_visit("https://a.example/", "Обычная").unwrap();
+        store.record_visit("https://kept.example/", "Сводка").unwrap();
+        let now = super::now_secs();
+        store
+            .with(|db| {
+                db.execute("UPDATE visits SET visited_at = ?1", [now - 7200])?;
+                db.execute("UPDATE history SET visited_at = ?1", [now - 7200])?;
+                // Подробное посещение уже забыто, сводка осталась.
+                db.execute("DELETE FROM visits WHERE url = 'https://kept.example/'", [])
+            })
+            .unwrap();
+        store.record_visit("https://a.example/", "Секрет").unwrap();
+
+        store.clear_history_since(now - 3600).unwrap();
+        let left = store.recent_history(10).unwrap();
+        assert_eq!(left.len(), 2);
+        let a = left.iter().find(|entry| entry.url == "https://a.example/").unwrap();
+        assert_eq!(a.title, "Обычная");
+        assert_eq!(a.visits, 1);
+        assert!(left.iter().any(|entry| entry.url == "https://kept.example/"));
     }
 
     /// Частый сайт не теряется за двумя сотнями свежих разовых совпадений.
