@@ -2235,9 +2235,10 @@ pub async fn media_download(
             .map_err(text)?
     };
     let window_label = owner(&window);
-    let cancelled = state
-        .transfers
-        .register_media(id, job_id.clone(), window_label.clone(), private);
+    let cancelled =
+        state
+            .transfers
+            .register_media(id, job_id.clone(), window_label.clone(), private);
     // Приватное окно закрыли, пока сервер ставил задание: закрытие его ещё не
     // видело, и загрузка из закрытого окна пошла бы дальше.
     if private && app.get_webview_window(&window_label).is_none() {

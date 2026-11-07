@@ -560,7 +560,9 @@ mod tests {
     fn clearing_a_period_restores_the_older_title_and_keeps_other_summaries() {
         let store = Store::memory().unwrap();
         store.record_visit("https://a.example/", "Обычная").unwrap();
-        store.record_visit("https://kept.example/", "Сводка").unwrap();
+        store
+            .record_visit("https://kept.example/", "Сводка")
+            .unwrap();
         let now = super::now_secs();
         store
             .with(|db| {
