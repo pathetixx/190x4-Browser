@@ -6,10 +6,11 @@
 //! списка загрузок.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -51,6 +52,28 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 /// номером записи, а какое окно её начало — неизвестно.
 static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
 
+/// Пути, которые уже отданы идущим загрузкам всех окон. Файла на диске у
+/// загрузки ещё нет (движок пишет во временный), и без этого списка два
+/// одинаковых файла, начатых подряд, получили бы одно имя и один затёр бы
+/// другой. Ключ — путь в нижнем регистре: имена в Windows регистр не различают.
+static RESERVED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+fn reserved_key(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
+}
+
+fn release_path(path: &Path) {
+    if let Ok(mut reserved) = RESERVED.lock() {
+        reserved.remove(&reserved_key(path));
+    }
+}
+
+fn reserve_path(path: &Path) {
+    if let Ok(mut reserved) = RESERVED.lock() {
+        reserved.insert(reserved_key(path));
+    }
+}
+
 /// Куда сохранять. Меняется из настроек без перезапуска.
 #[derive(Debug, Clone, Default)]
 pub struct DownloadPolicy {
@@ -71,6 +94,9 @@ struct Pending {
     sink: EventSink,
     /// Вкладка так и не открыла документ — после ответа её можно закрыть.
     empty_tab: bool,
+    /// Путь, занятый под эту загрузку в папке загрузок, пока человек выбирает
+    /// свой: после ответа он освобождается.
+    reserved: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -171,6 +197,9 @@ pub fn answer(registry: &SharedDownloads, key: u64, path: Option<PathBuf>) -> an
         .borrow_mut()
         .remove(&key)
         .ok_or_else(|| anyhow::anyhow!("запрос на загрузку уже закрыт"))?;
+    if let Some(reserved) = &pending.reserved {
+        release_path(reserved);
+    }
 
     let result = match path {
         Some(path) => unsafe {
@@ -262,10 +291,13 @@ pub fn wire(
                 let total = (total > 0).then_some(total);
 
                 let policy = registry.policy.borrow().clone();
-                let target = match &policy.dir {
-                    Some(dir) => unique_path(dir, &file_name_of(&suggested)),
-                    None => PathBuf::from(&suggested),
-                };
+                let reserved = policy
+                    .dir
+                    .as_ref()
+                    .map(|dir| reserve_unique_path(dir, &file_name_of(&suggested)));
+                let target = reserved
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(&suggested));
                 let key = registry.next_key();
                 tracing::debug!(tab, key, ask = policy.ask, "загрузка началась");
 
@@ -282,6 +314,7 @@ pub fn wire(
                             total,
                             sink: sink.clone(),
                             empty_tab,
+                            reserved,
                         },
                     );
                     sink(TabEvent::DownloadAsk {
@@ -333,6 +366,7 @@ fn track(
 ) -> windows_core::Result<()> {
     registry.ops.borrow_mut().insert(key, operation.clone());
     registry.owners.borrow_mut().insert(key, tab);
+    reserve_path(Path::new(&path));
     sink(TabEvent::Download {
         id: tab,
         key,
@@ -412,6 +446,9 @@ fn track(
                     }
                     _ => false,
                 };
+                if finished {
+                    release_path(Path::new(&path));
+                }
                 let registry = registry.upgrade();
                 if let Some(registry) = &registry {
                     if finished {
@@ -500,23 +537,61 @@ fn file_name_of(path: &str) -> String {
         .unwrap_or_else(|| "download".into())
 }
 
+/// Свободное имя в папке загрузок — на диске и среди идущих загрузок — сразу
+/// занятое под новую загрузку.
+fn reserve_unique_path(dir: &Path, name: &str) -> PathBuf {
+    let mut reserved = RESERVED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = unique_path_with(dir, name, |candidate| {
+        candidate.exists() || reserved.contains(&reserved_key(candidate))
+    });
+    reserved.insert(reserved_key(&path));
+    path
+}
+
 /// `отчёт.pdf` → `отчёт (1).pdf`, если такой файл уже есть.
 pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    unique_path_with(dir, name, Path::exists)
+}
+
+/// `отчёт.pdf` → `отчёт (1).pdf`, `архив.tar.gz` → `архив (1).tar.gz`, если
+/// имя занято (`taken`).
+fn unique_path_with(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
     let candidate = dir.join(name);
-    if !candidate.exists() {
+    if !taken(&candidate) {
         return candidate;
     }
-    let path = Path::new(name);
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.to_string());
-    let ext = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let (stem, ext) = split_extension(name);
     (1..10_000)
         .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|candidate| !candidate.exists())
+        .find(|candidate| !taken(candidate))
         .unwrap_or(candidate)
+}
+
+/// Имя и расширение; у `.tar.gz` и подобных расширение двойное.
+fn split_extension(name: &str) -> (&str, &str) {
+    let lower = name.to_ascii_lowercase();
+    if let Some(at) = lower.rfind(".tar.") {
+        if at > 0 {
+            return name.split_at(at);
+        }
+    }
+    match name.rfind('.') {
+        Some(at) if at > 0 => name.split_at(at),
+        _ => (name, ""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_extension;
+
+    #[test]
+    fn extensions_are_split_like_chrome() {
+        assert_eq!(split_extension("отчёт.pdf"), ("отчёт", ".pdf"));
+        assert_eq!(split_extension("архив.tar.gz"), ("архив", ".tar.gz"));
+        assert_eq!(split_extension("README"), ("README", ""));
+        assert_eq!(split_extension(".bashrc"), (".bashrc", ""));
+    }
 }
