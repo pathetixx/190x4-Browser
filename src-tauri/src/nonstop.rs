@@ -66,6 +66,26 @@ pub fn handle_message(
     true
 }
 
+/// Настройки NonStop сменились: открытые страницы YouTube берут их сразу.
+pub fn apply(app: &AppHandle) {
+    let state = app.state::<App>();
+    for label in state.windows.labels() {
+        let _ = crate::state::with_host(app, &label, |host| {
+            for brief in host.tabs_brief() {
+                let Some(origin) = youtube_origin(&brief.url) else {
+                    continue;
+                };
+                let message = json!({ "cmd": "nonstop_refresh", "origin": origin }).to_string();
+                host.with_tab(browser190x4_webview::TabId(brief.id), |view| {
+                    if let Err(err) = view.post(&message) {
+                        tracing::debug!(%err, "YouTube не сказали о новых настройках");
+                    }
+                });
+            }
+        });
+    }
+}
+
 /// Origin документа YouTube или YouTube Music: только https.
 fn youtube_origin(source: &str) -> Option<String> {
     let url = reqwest::Url::parse(source).ok()?;

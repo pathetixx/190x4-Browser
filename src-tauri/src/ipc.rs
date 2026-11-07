@@ -1181,6 +1181,10 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
             }
         }
         "drm_widevine" | "drm_playready" | "drm_widevine_off_sites" => crate::drm::apply(app),
+        "ext_nonstop_enabled" => crate::nonstop::apply(app),
+        key if key == "ext_sponsorblock_enabled" || key.starts_with("sponsorblock_") => {
+            crate::sponsorblock::apply(app)
+        }
         "ext_twitch_enabled" | "twitch_quality" | "twitch_points" | "twitch_bttv"
         | "twitch_ffz" | "twitch_7tv" | "twitch_proxy_token" => crate::twitch::apply(app),
         "search_engine" => {

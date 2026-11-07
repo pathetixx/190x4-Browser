@@ -144,6 +144,12 @@
 
   const onMessage = (event) => {
     const data = event.data;
+    // Настройки сменились: прежние сегменты не годятся, браузер пришлёт новые.
+    if (data && data.cmd === "sponsorblock_refresh" && data.origin === location.origin) {
+      video = "";
+      sync();
+      return;
+    }
     if (!data || data.cmd !== "sponsorblock_segments" || data.origin !== location.origin || data.video !== video) return;
     segments = (Array.isArray(data.segments) ? data.segments : [])
       .filter((segment) => segment && Number.isFinite(segment.start) && Number.isFinite(segment.end) && LABELS[segment.category])
