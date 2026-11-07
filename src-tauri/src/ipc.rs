@@ -2230,9 +2230,17 @@ pub async fn media_download(
             .start_download(DownloadKind::Media, &url, "", None)
             .map_err(text)?
     };
-    state
+    let window_label = owner(&window);
+    let cancelled = state
         .transfers
-        .register_media(id, job_id.clone(), owner(&window), private);
+        .register_media(id, job_id.clone(), window_label.clone(), private);
+    // Приватное окно закрыли, пока сервер ставил задание: закрытие его ещё не
+    // видело, и загрузка из закрытого окна пошла бы дальше.
+    if private && app.get_webview_window(&window_label).is_none() {
+        state.transfers.finish_media(id);
+        let _ = services.media_cancel(&job_id).await;
+        return Err("окно закрыто".into());
+    }
     transfers::emit_media(&app, id, "started", &url, "", 0, None, "");
 
     let job = job_id.clone();
@@ -2341,6 +2349,7 @@ pub async fn media_download(
                         &target_dir,
                         &progress.file_name,
                         (!private).then_some(url.as_str()),
+                        &cancelled,
                     )
                     .await
                 {
@@ -2376,6 +2385,9 @@ pub async fn media_download(
                         );
                         app.state::<App>().transfers.finish_media(id);
                     }
+                    Err(_) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => {
+                        fail(&app, "cancelled", progress.downloaded, &name, "");
+                    }
                     Err(err) => {
                         tracing::error!(job = %job, %err, "файл не забран с сервера");
                         fail(&app, "failed", progress.downloaded, &name, &text(err));
@@ -2392,6 +2404,8 @@ pub async fn media_download(
 /// Отменить загрузку видео из окна расширения.
 #[tauri::command]
 pub async fn media_cancel(state: State<'_, App>, job: String) -> Result<(), String> {
+    // Файл уже может идти на компьютер: эту запись сервер не остановит.
+    state.transfers.cancel_media(&job);
     state.services.media_cancel(&job).await.map_err(text)
 }
 
