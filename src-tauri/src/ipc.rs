@@ -1638,16 +1638,25 @@ pub async fn passwords_import(
     let (logins, skipped) =
         passwords_csv::parse_logins(&String::from_utf8_lossy(&bytes)).map_err(text)?;
 
+    // Уже сохранённые учётки не перезаписываются и идут в «пропущено». Список
+    // в настройках обновляется и тогда, когда импорт оборвался посередине:
+    // часть учёток уже в базе.
     let mut imported = 0;
-    for login in &logins {
-        let secret = vault::protect(&login.password).map_err(text)?;
-        state
+    let mut skipped = skipped;
+    let result = logins.iter().try_for_each(|login| {
+        let secret = vault::protect(&login.password)?;
+        if state
             .store
-            .save_password(&login.origin, &login.username, &secret)
-            .map_err(text)?;
-        imported += 1;
-    }
+            .import_password(&login.origin, &login.username, &secret)?
+        {
+            imported += 1;
+        } else {
+            skipped += 1;
+        }
+        anyhow::Ok(())
+    });
     passwords_changed(&app);
+    result.map_err(text)?;
     Ok(Some(PasswordImport { imported, skipped }))
 }
 

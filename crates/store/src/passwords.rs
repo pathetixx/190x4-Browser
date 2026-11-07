@@ -168,6 +168,26 @@ impl Store {
         })
     }
 
+    /// Добавить учётку из импорта. Уже сохранённую пару «сайт + логин» импорт
+    /// не трогает: старый файл не должен затирать свежий пароль. `false` —
+    /// такая учётка уже была.
+    pub fn import_password(
+        &self,
+        origin: &str,
+        username: &str,
+        secret: &[u8],
+    ) -> anyhow::Result<bool> {
+        let now = crate::history::now_secs();
+        let added = self.with(|db| {
+            db.execute(
+                "INSERT INTO passwords (origin, username, secret, created_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(origin, username) DO NOTHING",
+                rusqlite::params![origin, username, secret, now],
+            )
+        })?;
+        Ok(added == 1)
+    }
+
     /// Поменять логин и, если передан, пароль. Совпадение с другой учёткой того
     /// же сайта — ошибка: тихо склеивать две записи нельзя.
     pub fn update_password(
@@ -260,6 +280,24 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::Store;
+
+    #[test]
+    fn import_keeps_saved_password() {
+        let store = Store::memory().unwrap();
+        let id = store
+            .save_password("https://habr.com", "me", b"fresh")
+            .unwrap();
+        assert!(!store
+            .import_password("https://habr.com", "me", b"old")
+            .unwrap());
+        assert!(store
+            .import_password("https://habr.com", "work", b"new")
+            .unwrap());
+        assert_eq!(
+            store.password_secret(id).unwrap().unwrap().1,
+            b"fresh".to_vec()
+        );
+    }
 
     #[test]
     fn password_is_upserted_per_login() {
