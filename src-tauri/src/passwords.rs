@@ -122,10 +122,18 @@ pub struct Passwords {
     /// начало навигации приходят разными путями, и порядок между ними не
     /// гарантирован: логин может приехать уже после ухода со страницы.
     navigations: Mutex<HashMap<u32, Instant>>,
+    /// То же для фреймов: вход внутри iframe уводит на другой адрес только его.
+    frame_navigations: Mutex<HashMap<(u32, u32), Instant>>,
+    /// Логин с первого шага входа (логин и пароль на разных страницах): сайт,
+    /// логин и когда его ввели. Скрипт страницы его не переживёт.
+    logins: Mutex<HashMap<u32, (String, String, Instant)>>,
 }
 
 /// Навигация раньше отправленного логина на столько — всё ещё «вход по нему».
 const NAVIGATION_SLACK: Duration = Duration::from_millis(1200);
+
+/// Логин первого шага ждёт шага с паролем не дольше этого.
+const LOGIN_TTL: Duration = Duration::from_secs(300);
 
 /// Чаще этого одна и та же форма учётки не запрашивает.
 const ASK_EVERY: Duration = Duration::from_secs(1);
@@ -180,6 +188,9 @@ enum PageEvent {
     },
     #[serde(rename = "password_commit")]
     Commit,
+    /// Шаг входа без пароля: логин понадобится на следующей странице.
+    #[serde(rename = "password_login")]
+    Login { username: String },
     #[serde(rename = "password_form")]
     Form,
     /// Человек встал в поле логина или пароля (`keyboard` — стрелкой вниз):
@@ -230,6 +241,15 @@ pub fn handle_message(
             if !state.documents.is_origin(tab, frame, source) {
                 return true;
             }
+            let mut username = username;
+            if username.is_empty() {
+                let mut logins = state.passwords.logins.lock();
+                if let Some((site, login, at)) = logins.remove(&tab) {
+                    if site == origin && at.elapsed() < LOGIN_TTL {
+                        username = login;
+                    }
+                }
+            }
             state.passwords.candidates.lock().insert(
                 (tab, frame),
                 Candidate {
@@ -245,13 +265,35 @@ pub fn handle_message(
                 .navigations
                 .lock()
                 .get(&tab)
-                .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK);
+                .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
+                || frame.is_some_and(|frame| {
+                    state
+                        .passwords
+                        .frame_navigations
+                        .lock()
+                        .get(&(tab, frame))
+                        .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
+                });
             if navigated {
                 commit(app, tab, Some(frame));
             }
         }
         // Форма исчезла: вход подтверждает только тот документ, где она была.
         PageEvent::Commit => commit(app, tab, Some(frame)),
+        PageEvent::Login { username } => {
+            let username = username.trim().to_string();
+            if username.is_empty()
+                || username.len() > 512
+                || !state.documents.is_origin(tab, frame, source)
+            {
+                return true;
+            }
+            state
+                .passwords
+                .logins
+                .lock()
+                .insert(tab, (origin, username, Instant::now()));
+        }
         PageEvent::Form => {
             let Some(document) = state.documents.capture(tab, frame, source) else {
                 return true;
@@ -372,6 +414,17 @@ pub fn on_navigation(app: &AppHandle, tab: u32) {
     commit(app, tab, None);
 }
 
+/// Фрейм начал переход: логин, отправленный в нём, — вход, как и при уходе
+/// всей вкладки со страницы.
+pub fn on_frame_navigation(app: &AppHandle, tab: u32, frame: u32) {
+    app.state::<App>()
+        .passwords
+        .frame_navigations
+        .lock()
+        .insert((tab, frame), Instant::now());
+    commit(app, tab, Some(Some(frame)));
+}
+
 /// На вкладке другой документ: учётки прежнего и его фреймов больше не нужны.
 pub fn on_document(app: &AppHandle, tab: u32) {
     app.state::<App>().passwords.forget_document(tab, None);
@@ -379,9 +432,9 @@ pub fn on_document(app: &AppHandle, tab: u32) {
 
 /// Фрейм вкладки исчез: учётки, найденные для него, больше не нужны.
 pub fn on_frame_gone(app: &AppHandle, tab: u32, frame: u32) {
-    app.state::<App>()
-        .passwords
-        .forget_document(tab, Some(frame));
+    let state = app.state::<App>();
+    state.passwords.forget_document(tab, Some(frame));
+    state.passwords.frame_navigations.lock().remove(&(tab, frame));
 }
 
 pub fn forget_tab(app: &AppHandle, tab: u32) {
@@ -393,6 +446,12 @@ pub fn forget_tab(app: &AppHandle, tab: u32) {
         .retain(|(id, _), _| *id != tab);
     state.passwords.offers.lock().remove(&tab);
     state.passwords.navigations.lock().remove(&tab);
+    state
+        .passwords
+        .frame_navigations
+        .lock()
+        .retain(|(id, _), _| *id != tab);
+    state.passwords.logins.lock().remove(&tab);
     state.passwords.forget_document(tab, None);
     state.passwords.windows.lock().remove(&tab);
 }

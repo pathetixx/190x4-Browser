@@ -397,6 +397,7 @@ pub(crate) fn route_event(
         }
         // Фрейм ушёл на другой адрес: учётки прежнего документа ему не отдаются.
         TabEvent::FrameStarted { id, frame, url } => {
+            passwords::on_frame_navigation(app, *id, *frame);
             let state = app.state::<App>();
             state.documents.navigate(
                 *id,
