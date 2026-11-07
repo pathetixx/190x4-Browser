@@ -194,29 +194,46 @@ fn decide(
         }
         return;
     }
+    let origin = clean_origin(origin);
+    let launch_now =
+        user_initiated && !origin.is_empty() && is_allowed(&allowed(&state.store), origin, &scheme);
+    let name = if launch_now {
+        String::new()
+    } else {
+        app_name(&scheme).unwrap_or_default()
+    };
     // Вопрос этой вкладке уже на экране: страница, открывающая ссылку на
     // приложение в цикле, иначе засыпала бы человека одинаковыми окнами.
     // Щелчок человека по ссылке другой схемы — новый вопрос.
-    let pending = state
-        .external
-        .0
-        .lock()
-        .iter()
-        .filter(|((owner, _), _)| *owner == tab)
-        .map(|(_, offer)| offer.scheme.clone())
-        .collect::<Vec<_>>();
-    if !pending.is_empty() && (!user_initiated || pending.contains(&scheme)) {
-        tracing::debug!(%scheme, "вопрос о приложении уже открыт");
-        return;
+    // Проверка и запись нового вопроса — под одним замком: запросы решаются в
+    // пуле потоков, и два одновременных иначе прошли бы оба.
+    {
+        let mut offers = state.external.0.lock();
+        let pending = offers
+            .iter()
+            .filter(|((owner, _), _)| *owner == tab)
+            .map(|(_, offer)| offer.scheme.as_str())
+            .collect::<Vec<_>>();
+        if !pending.is_empty() && (!user_initiated || pending.contains(&scheme.as_str())) {
+            tracing::debug!(%scheme, "вопрос о приложении уже открыт");
+            return;
+        }
+        if !launch_now {
+            offers.insert(
+                (tab, token),
+                Offer {
+                    uri: uri.to_string(),
+                    scheme: scheme.clone(),
+                    origin: origin.to_string(),
+                    app: name.clone(),
+                },
+            );
+        }
     }
-    let origin = clean_origin(origin);
-    // «Всегда» не распространяется на ссылки, которые страница открывает сама,
-    // без щелчка: иначе сайт запускал бы приложение при каждой загрузке.
-    if user_initiated && !origin.is_empty() && is_allowed(&allowed(&state.store), origin, &scheme) {
+    if launch_now {
         launch(uri);
         return;
     }
-    let name = app_name(&scheme).unwrap_or_default();
     let payload = serde_json::json!({
         "kind": "dialog",
         "id": tab,
@@ -229,15 +246,6 @@ fn decide(
             "remember": can_remember(origin),
         },
     });
-    state.external.0.lock().insert(
-        (tab, token),
-        Offer {
-            uri: uri.to_string(),
-            scheme,
-            origin: origin.to_string(),
-            app: name,
-        },
-    );
     let _ = app.emit_to(window, "tab", payload);
 }
 
