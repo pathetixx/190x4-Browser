@@ -43,8 +43,8 @@ struct Candidate {
     password: String,
     at: Instant,
     /// Учётка того же сайта с этим логином, но другим паролем: «Обновить»
-    /// меняет её, а не заводит копию под новым адресом.
-    replaces: Option<i64>,
+    /// меняет её, а не заводит копию под новым адресом. Номер и адрес записи.
+    replaces: Option<(i64, String)>,
 }
 
 /// Учётка в списке окна браузера: логин и адрес, без пароля.
@@ -450,7 +450,7 @@ fn commit(app: &AppHandle, tab: u32, frame: Option<Option<u32>>) {
                     return;
                 }
                 _ => {
-                    candidate.replaces = Some(saved.id);
+                    candidate.replaces = Some((saved.id, saved.origin));
                     true
                 }
             },
@@ -491,7 +491,13 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
     match action {
         "save" => {
             let secret = vault::protect(&candidate.password)?;
-            let id = match candidate.replaces {
+            // Учётку могли удалить, а её номер — отдать другой: обновляем,
+            // только если под ним всё ещё тот же сайт и логин.
+            let replaces = candidate.replaces.as_ref().and_then(|(id, origin)| {
+                let (entry, _) = state.store.password_secret(*id).ok().flatten()?;
+                (&entry.origin == origin && entry.username == candidate.username).then_some(*id)
+            });
+            let id = match replaces {
                 Some(id) => {
                     state
                         .store
@@ -599,20 +605,27 @@ fn offer_accounts(app: &AppHandle, document: Context) {
 /// Учётка, которую человек выбрал в окне браузера, — в документ вкладки или
 /// во фрейм, которому её показали.
 pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::Result<()> {
-    let document = app
+    let (document, offered) = app
         .state::<App>()
         .passwords
         .pages
         .lock()
         .get(&(tab, frame))
-        .filter(|offer| offer.accounts.iter().any(|account| account.id == id))
-        .map(|offer| offer.document.clone())
+        .and_then(|offer| {
+            let account = offer.accounts.iter().find(|account| account.id == id)?;
+            Some((offer.document.clone(), account.clone()))
+        })
         .ok_or_else(|| anyhow::anyhow!("учётки нет среди учёток страницы"))?;
     let state = app.state::<App>();
     let (entry, secret) = state
         .store
         .password_secret(id)?
         .ok_or_else(|| anyhow::anyhow!("пароль удалён"))?;
+    // Номер удалённой учётки SQLite отдаёт следующей новой: под старым номером
+    // из меню может лежать уже учётка другого сайта.
+    if entry.origin != offered.origin || entry.username != offered.username {
+        anyhow::bail!("учётка изменилась, откройте список заново");
+    }
     let password = vault::reveal(&secret)?;
     let _ = state.store.touch_password(id);
     fill_tab(app, document, entry.username, password);

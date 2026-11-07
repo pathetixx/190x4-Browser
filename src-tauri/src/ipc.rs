@@ -1951,6 +1951,9 @@ pub fn browsing_data_clear(
         rx.recv_timeout(Duration::from_secs(60))
             .map_err(|_| "Движок не подтвердил удаление данных. Повторите попытку".to_string())??;
     }
+    if site_data {
+        crate::twitch::forget_tokens(&app);
+    }
     Ok(())
 }
 

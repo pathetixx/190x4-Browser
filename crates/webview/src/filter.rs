@@ -289,12 +289,16 @@ impl Intercepts {
 /// origin и разрешение учётных данных, иначе заглушка для страницы — та же
 /// сетевая ошибка, что и блокировка.
 fn cors_headers(request: &ICoreWebView2WebResourceRequest) -> String {
-    let origin = unsafe { request.Headers() }.ok().and_then(|headers| {
+    cors_for(request_origin(request).as_deref())
+}
+
+/// Заголовок `Origin` запроса — его ставит движок, страница подделать не может.
+fn request_origin(request: &ICoreWebView2WebResourceRequest) -> Option<String> {
+    unsafe { request.Headers() }.ok().and_then(|headers| {
         let mut raw = PWSTR::null();
         unsafe { headers.GetHeader(h!("Origin"), &mut raw) }.ok()?;
         Some(take_pwstr(raw))
-    });
-    cors_for(origin.as_deref())
+    })
 }
 
 fn cors_for(origin: Option<&str>) -> String {
@@ -367,9 +371,15 @@ pub(crate) fn install(
                 // Плейлист Twitch берёт браузер (src-tauri/src/twitch.rs): запрос
                 // ждёт под отсрочкой, пока не придёт ответ или «пусть идёт».
                 if TWITCH_PLAYLISTS.load(Ordering::Relaxed) && is_twitch_playlist(&url) {
+                    let origin = request_origin(&request);
                     let deferral = args.GetDeferral()?;
                     let token = intercepts.hold(args.clone(), deferral);
-                    sink(TabEvent::Intercept { id, token, url });
+                    sink(TabEvent::Intercept {
+                        id,
+                        token,
+                        url,
+                        origin,
+                    });
                     return Ok(());
                 }
                 // Блокировка выключена или сайт в исключениях — дальше смотреть

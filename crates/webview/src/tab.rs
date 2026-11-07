@@ -282,6 +282,8 @@ pub enum TabEvent {
         id: u32,
         token: u64,
         url: String,
+        /// Заголовок `Origin` запроса: кто просит плейлист.
+        origin: Option<String>,
     },
     /// Иконка сайта сменилась. `page` — адрес страницы, к которой она относится.
     Favicon {

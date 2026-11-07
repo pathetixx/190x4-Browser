@@ -105,7 +105,8 @@
   /** Токен входа — браузеру, только если человек включил его передачу. */
   const sendToken = () => {
     const match = /(?:^|;\s*)auth-token=([^;]+)/.exec(document.cookie);
-    if (match) post({ evt: "twitch_token", token: decodeURIComponent(match[1]) });
+    // Без cookie человек вышел или данные сайта удалили: пустой токен — браузер забывает прежний.
+    post({ evt: "twitch_token", token: match ? decodeURIComponent(match[1]) : "" });
   };
 
   /* ── Исправления Twitch ───────────────────────────────────── */
