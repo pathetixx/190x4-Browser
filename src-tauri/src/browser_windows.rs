@@ -654,6 +654,8 @@ pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<(
                 fullscreen_frame::enter(&window);
                 window.set_fullscreen(true)
             } else {
+                // Окно снова может двигаться: tao возвращает его на прежнее место.
+                fullscreen_frame::unpin(&window);
                 let result = window.set_fullscreen(false);
                 fullscreen_frame::leave(&window);
                 result
@@ -677,6 +679,11 @@ pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<(
 /// окно всё это время оставалось развёрнутым, и Windows оба вызова пропускает:
 /// окно так и стояло бы размером с монитор, поверх панели задач. Это место
 /// [`leave`] возвращает сам.
+///
+/// Пока окно во весь экран, оно ещё и прибито к монитору (`WM_WINDOWPOSCHANGING`).
+/// Развёрнутое окно Windows подгоняет под рабочую область, когда её меняют, —
+/// например, оболочка 190x4 Desktop возвращает резерв под HUD и док. Без этого
+/// видео во весь экран съезжало под HUD, а сбоку оставались полосы.
 #[cfg(windows)]
 mod fullscreen_frame {
     use parking_lot::Mutex;
@@ -687,8 +694,9 @@ mod fullscreen_frame {
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsZoomed, RemovePropW, SetPropW, SetWindowPos, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE,
+        GetWindowRect, IsIconic, IsZoomed, RemovePropW, SetPropW, SetWindowPos,
+        SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, WINDOWPOS, WM_NCCALCSIZE, WM_WINDOWPOSCHANGING,
     };
 
     const SUBCLASS_ID: usize = 0x1904;
@@ -696,6 +704,9 @@ mod fullscreen_frame {
     /// Окна во весь экран — по HWND, с местом до полного экрана. Их одно-два,
     /// список короче любого множества.
     static MARKED: Mutex<Vec<(isize, RECT)>> = Mutex::new(Vec::new());
+
+    /// Окна во весь экран, прибитые к монитору: HWND и прямоугольник монитора.
+    static PINNED: Mutex<Vec<(isize, RECT)>> = Mutex::new(Vec::new());
 
     /// Поставить обработчик окну браузера. Один раз при создании окна.
     pub fn install(window: &tauri::WebviewWindow) {
@@ -726,9 +737,6 @@ mod fullscreen_frame {
         // Метка для оболочки 190x4 Desktop: развёрнутое окно во весь экран снаружи
         // не отличить от просто развёрнутого, а док и HUD на время видео прячутся.
         let _ = unsafe { SetPropW(hwnd, w!("190x4.Fullscreen"), Some(HANDLE(1 as _))) };
-        if !unsafe { IsZoomed(hwnd) }.as_bool() {
-            return;
-        }
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -738,6 +746,14 @@ mod fullscreen_frame {
             return;
         }
         let screen = info.rcMonitor;
+        {
+            let mut pinned = PINNED.lock();
+            pinned.retain(|(other, _)| *other != key);
+            pinned.push((key, screen));
+        }
+        if !unsafe { IsZoomed(hwnd) }.as_bool() {
+            return;
+        }
         let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
         let _ = unsafe {
             SetWindowPos(
@@ -750,6 +766,15 @@ mod fullscreen_frame {
                 flags,
             )
         };
+    }
+
+    /// Окно выходит из полного экрана: отпустить его с монитора, чтобы tao
+    /// вернул прежнее место. Рамку отметка держит до [`leave`].
+    pub fn unpin(window: &tauri::WebviewWindow) {
+        if let Ok(hwnd) = window.hwnd() {
+            let key = hwnd.0 as isize;
+            PINNED.lock().retain(|(other, _)| *other != key);
+        }
     }
 
     /// Окно вышло из полного экрана: рамка снова за tao, место — прежнее.
@@ -789,6 +814,7 @@ mod fullscreen_frame {
     fn take(hwnd: HWND) -> Option<RECT> {
         let _ = unsafe { RemovePropW(hwnd, w!("190x4.Fullscreen")) };
         let key = hwnd.0 as isize;
+        PINNED.lock().retain(|(other, _)| *other != key);
         let mut marked = MARKED.lock();
         let index = marked.iter().position(|(other, _)| *other == key)?;
         Some(marked.swap_remove(index).1)
@@ -812,6 +838,28 @@ mod fullscreen_frame {
         {
             return LRESULT(0);
         }
+        // Окно во весь экран двигают или меняют ему размер (Windows подгоняет
+        // развёрнутое окно под новую рабочую область) — оно остаётся по монитору.
+        if message == WM_WINDOWPOSCHANGING && lparam.0 != 0 {
+            let screen = PINNED
+                .lock()
+                .iter()
+                .find(|(other, _)| *other == key)
+                .map(|(_, screen)| *screen);
+            if let Some(screen) = screen {
+                let pos = &mut *(lparam.0 as *mut WINDOWPOS);
+                let fixed = SWP_NOMOVE.0 | SWP_NOSIZE.0;
+                // Свернуть окно можно: свёрнутое Windows уносит в (−32000, −32000).
+                let minimizing = IsIconic(hwnd).as_bool() || (pos.x == -32000 && pos.y == -32000);
+                if pos.flags.0 & fixed != fixed && !minimizing {
+                    pos.x = screen.left;
+                    pos.y = screen.top;
+                    pos.cx = screen.right - screen.left;
+                    pos.cy = screen.bottom - screen.top;
+                    pos.flags = SET_WINDOW_POS_FLAGS(pos.flags.0 & !fixed);
+                }
+            }
+        }
         DefSubclassProc(hwnd, message, wparam, lparam)
     }
 }
@@ -820,6 +868,7 @@ mod fullscreen_frame {
 mod fullscreen_frame {
     pub fn install(_window: &tauri::WebviewWindow) {}
     pub fn enter(_window: &tauri::WebviewWindow) {}
+    pub fn unpin(_window: &tauri::WebviewWindow) {}
     pub fn leave(_window: &tauri::WebviewWindow) {}
     pub fn forget(_window: &tauri::WebviewWindow) {}
 }
