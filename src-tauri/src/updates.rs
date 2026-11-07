@@ -59,8 +59,13 @@ async fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     let updater = app.updater().map_err(|err| err.to_string())?;
     let found = updater.check().await.map_err(|err| err.to_string())?;
     let info = found.as_ref().map(info);
-    *app.state::<Updates>().found.lock() = found;
-    if let Some(info) = &info {
+    let known = std::mem::replace(&mut *app.state::<Updates>().found.lock(), found)
+        .map(|update| update.version);
+    // Та же версия при фоновой проверке — уже показана, второй раз не зовём.
+    if let Some(info) = info
+        .as_ref()
+        .filter(|info| known.as_ref() != Some(&info.version))
+    {
         tracing::info!(version = %info.version, "доступно обновление");
         let _ = app.emit("update-available", info);
     }
@@ -73,8 +78,10 @@ pub fn spawn_checker(app: AppHandle) {
         tokio::time::sleep(FIRST_CHECK).await;
         loop {
             let enabled = app.state::<App>().store.setting_bool("updates_auto", true);
-            let known = app.state::<Updates>().found.lock().is_some();
-            if enabled && !known {
+            // Найденную версию могли отложить — проверка идёт дальше: вышла
+            // ещё более новая, и ставить нужно её.
+            let installing = app.state::<Updates>().installing.load(Ordering::SeqCst);
+            if enabled && !installing {
                 if let Err(err) = check(&app).await {
                     tracing::warn!(%err, "проверка обновлений не удалась");
                 }

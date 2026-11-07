@@ -93,6 +93,12 @@
       touch();
       keepAlive = setInterval(touch, KEEP_ALIVE_MS);
     }
+    // Настройку сменили: прежнее решение снимается, браузер ответит заново.
+    if (data.cmd === "nonstop_refresh") {
+      clearInterval(keepAlive);
+      keepAlive = 0;
+      post({ evt: "nonstop_hello" });
+    }
   };
   const subscribe = () => {
     const hook = bridge();

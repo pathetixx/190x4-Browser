@@ -680,7 +680,7 @@ const BUILDERS = {
         never.replaceChildren(
           ...sites.map((site) => {
             const row = el("div", "row row--simple");
-            row.append(favicon(`${site.origin}/favicon.ico`), el("span", "row__primary", hostOf(site.origin)));
+            row.append(siteIcon(site.origin), el("span", "row__primary", hostOf(site.origin)));
             const actions = el("div", "row__actions");
             actions.append(
               iconButton("dismiss-16", "Убрать из списка", () => invoke("password_never_forget", { origin: site.origin }))

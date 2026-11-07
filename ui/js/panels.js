@@ -228,7 +228,11 @@ const VIEWS = {
       historyQuery = input.value;
       clearTimeout(input._timer);
       input._timer = setTimeout(async () => {
+        // Панель уже другая или пришёл более свежий запрос — ответ не нужен.
+        if (current !== "history") return;
+        const token = ++renderToken;
         const nodes = await VIEWS.history();
+        if (token !== renderToken || current !== "history") return;
         body.replaceChildren(...nodes);
         const next = body.querySelector("input");
         next?.focus();

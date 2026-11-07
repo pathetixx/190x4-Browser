@@ -1033,6 +1033,7 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
   // открыть, поэтому меню рисуется внутри списка, у курсора.
   let menu = null;
   let swallowClick = false;
+  let alive = true;
 
   const closeMenu = () => {
     if (!menu) return;
@@ -1130,6 +1131,8 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
   );
 
   const draw = () => {
+    // Окно уже показывает другой попап: запоздавший ответ его не трогает.
+    if (!alive) return;
     const level = stack[stack.length - 1];
     const children = nodes
       .filter((node) => node.parent_id === level.id)
@@ -1208,6 +1211,10 @@ VIEWS["bookmark-folder"] = function bookmarkFolder({ folder, skip = 0, title }) 
       draw();
     })
     .catch(() => {});
+
+  return () => {
+    alive = false;
+  };
 };
 
 /* ── Окна страниц ──────────────────────────────────────────── */
@@ -1539,7 +1546,29 @@ function updateDownloadRow(row, item) {
 /* ── Расширение: загрузчик видео ───────────────────────────── */
 
 /** Состояние расширения переживает закрытие окна: загрузка идёт дальше. */
-const media = { url: "", info: null, busy: false, error: null, job: null, progress: null, done: null };
+const media = { url: "", info: null, busy: false, error: null, job: null, progress: null, done: null, starting: false };
+
+/** Перерисовать открытый загрузчик; без открытого окна — ничего. */
+let mediaRedraw = null;
+
+// Слушатель живёт весь сеанс, как и задание: конец загрузки, пока окно было
+// закрыто, иначе пропал бы, и старое задание держало бы загрузчик.
+listen("media", (event) => {
+  if (!media.job || event.job !== media.job) return;
+  if (event.phase === "progress") {
+    media.progress = event;
+  } else {
+    media.progress = null;
+    media.job = null;
+    if (event.phase === "done") {
+      const item = model.downloads().find((d) => d.kind === "media" && d.path === event.path);
+      media.done = { name: event.path.split(/[\\/]/).pop(), id: item?.id ?? null };
+    } else if (event.phase === "failed") {
+      media.error = event.error || "Загрузка прервалась";
+    }
+  }
+  mediaRedraw?.();
+});
 
 function mediaView({ url, services }) {
   const head = el("div", "ext-head");
@@ -1662,29 +1691,36 @@ function mediaView({ url, services }) {
   const formatRow = (format) => {
     const row = el("button", "format");
     row.type = "button";
-    row.disabled = Boolean(media.job);
+    row.disabled = Boolean(media.job || media.starting);
     row.append(icon("download-16", 16), el("span", "format__label", format.label || format.spec));
     row.append(el("span", "format__size", format.approx_mb ? `≈ ${String(format.approx_mb).replace(".", ",")} МБ` : ""));
     row.addEventListener("click", () => start(format.spec));
     return row;
   };
 
+  // `busy` — адрес, который сейчас определяется: ответ про прежнее видео в
+  // загрузчик другого не попадёт.
   const probe = async () => {
-    media.busy = true;
+    const target = media.url;
+    media.busy = target;
     media.error = null;
     draw();
     try {
-      media.info = await invoke("media_probe", { url: media.url });
+      const info = await invoke("media_probe", { url: target });
+      if (media.url === target) media.info = info;
     } catch (error) {
-      media.error = String(error?.message ?? error);
+      if (media.url === target) media.error = String(error?.message ?? error);
     } finally {
-      media.busy = false;
-      draw();
+      if (media.busy === target) media.busy = false;
+      mediaRedraw?.();
     }
   };
 
   const start = async (spec) => {
-    if (media.job) return;
+    // Задание появляется только после ответа сервера: второй щелчок до него
+    // создал бы второе.
+    if (media.job || media.starting) return;
+    media.starting = true;
     media.error = null;
     media.done = null;
     media.progress = { percent: 0, file_name: "" };
@@ -1694,32 +1730,20 @@ function mediaView({ url, services }) {
     } catch (error) {
       media.progress = null;
       media.error = String(error?.message ?? error);
+    } finally {
+      media.starting = false;
     }
-    draw();
+    mediaRedraw?.();
   };
 
-  if (services?.media && media.url && !media.info && !media.busy && !media.job) probe();
+  mediaRedraw = draw;
+  if (services?.media && media.url && !media.info && media.busy !== media.url && !media.job) probe();
   else draw();
-
-  const offMedia = listen("media", (event) => {
-    if (event.job !== media.job) return;
-    if (event.phase === "progress") {
-      media.progress = event;
-    } else {
-      media.progress = null;
-      media.job = null;
-      if (event.phase === "done") {
-        const item = model.downloads().find((d) => d.kind === "media" && d.path === event.path);
-        media.done = { name: event.path.split(/[\\/]/).pop(), id: item?.id ?? null };
-      } else if (event.phase === "failed") {
-        media.error = event.error || "Загрузка прервалась";
-      }
-    }
-    draw();
-  });
   model.initDownloads();
 
-  return () => offMedia.then((off) => off?.());
+  return () => {
+    if (mediaRedraw === draw) mediaRedraw = null;
+  };
 }
 
 /* ── Переводчик ────────────────────────────────────────────── */

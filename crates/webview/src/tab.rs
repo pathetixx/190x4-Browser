@@ -282,6 +282,8 @@ pub enum TabEvent {
         id: u32,
         token: u64,
         url: String,
+        /// Заголовок `Origin` запроса: кто просит плейлист.
+        origin: Option<String>,
     },
     /// Иконка сайта сменилась. `page` — адрес страницы, к которой она относится.
     Favicon {
@@ -2643,7 +2645,8 @@ impl Tab {
     ) -> windows_core::Result<()> {
         *self.route.borrow_mut() = sink;
         *self.popups.borrow_mut() = popups;
-        *self.downloads.borrow_mut() = downloads;
+        let previous = self.downloads.replace(downloads.clone());
+        downloads::move_tab(&previous, &downloads, self.id.0);
         unsafe {
             self.controller.SetParentWindow(parent)?;
             self.controller.SetBounds(bounds)?;

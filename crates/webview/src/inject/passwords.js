@@ -128,7 +128,10 @@
     if (!filled.length) {
       // Шаг с одним логином: на шаге с паролем поля логина уже не видно.
       const login = loginsIn(scope).find((input) => input.value);
-      if (login) lastLogin = login.value.trim();
+      const value = login ? login.value.trim() : "";
+      // Шаг с паролем будет уже другим документом: логин хранит браузер.
+      if (value && value !== lastLogin) post({ evt: "password_login", username: value });
+      if (value) lastLogin = value;
       return;
     }
     // На формах смены пароля их два-три: сохранять нужно последний, новый.

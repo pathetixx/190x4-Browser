@@ -355,12 +355,19 @@ export async function activate(id) {
 export async function splitWith(id) {
   let tab = state.tabs.get(id);
   if (!tab || tab.internal || id === state.activeId) return;
+  // Рядом со страницей браузера (настройки, история) делить нечего: движок
+  // показал бы две прежние нативные вкладки под её адресом.
+  if (state.tabs.get(state.activeId)?.internal) return;
   if (tab.sleeping) {
     const realId = await wake(tab);
     if (realId == null) return;
     id = realId;
   }
-  await invoke("tab_split", { id }).catch(() => {});
+  const ok = await invoke("tab_split", { id }).then(
+    () => true,
+    () => false
+  );
+  if (!ok) return;
   setSplit(id);
   setPageHidden("internal", false);
 }
@@ -372,6 +379,13 @@ export async function endSplit() {
 }
 
 /* ── «Покинуть сайт?» перед закрытием ──────────────────────── */
+
+/** Запись сессии перед закрытием окна последней вкладкой (ставит main.js). */
+let beforeWindowClose = async () => {};
+
+export function onBeforeWindowClose(callback) {
+  beforeWindowClose = callback;
+}
 
 /** Вкладки, которые ждут ответа страницы: номер → { promise, finish }. */
 const leaving = new Map();
@@ -447,6 +461,7 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   // окно вернётся с ней при запуске, другое вернёт Ctrl+Shift+T.
   if (![...state.tabs.values()].some((other) => other.id !== id && !other.closing)) {
     if (!force && !tab.internal && !tab.sleeping && !(await confirmClose(id))) return;
+    await beforeWindowClose().catch(() => {});
     invoke("window_command", { action: "close_asked" }).catch(() => {});
     return;
   }
@@ -504,7 +519,9 @@ export function returnLeaving(id) {
  */
 export function confirmWindowClose() {
   const ids = [...state.tabs.values()]
-    .filter((tab) => tab.id > 0 && !tab.internal && !tab.sleeping && !tab.closing)
+    // Вкладка, которая уже ждёт ответа на закрытие, тоже в счёт: confirmClose
+    // вернёт тот же ответ.
+    .filter((tab) => tab.id > 0 && !tab.internal && !tab.sleeping && (!tab.closing || leaving.has(tab.id)))
     .map((tab) => tab.id);
   if (!ids.length) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -823,9 +840,11 @@ export function groupTab(id, group = null) {
     };
   upsertTab(id, { group: next, pinned: false });
   // Вкладки группы стоят рядом: место новой — сразу за последней из группы.
+  // Вкладка левее группы, уходя со своего места, сдвигает её на одну влево.
   const members = groupTabs(next.id).filter((other) => other.id !== id);
   if (members.length) {
-    moveTab(id, tabIndex(members[members.length - 1].id) + 1);
+    const last = tabIndex(members[members.length - 1].id);
+    moveTab(id, tabIndex(id) < last ? last : last + 1);
   }
   return next;
 }

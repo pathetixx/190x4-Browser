@@ -1,10 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::{timeouts, Services};
+
+/// Текст ошибки отменённой записи файла (`media_fetch`).
+const CANCELLED: &str = "загрузка отменена";
 
 /// Ответ `/api/yt-ext/info` как есть плюс готовые для интерфейса варианты.
 ///
@@ -289,13 +293,15 @@ impl Services {
     /// перезапишет эту. Сам файл пишется рядом, в `.part`, и встаёт на место
     /// целиком — оборванная загрузка не оставляет обрубка под настоящим именем.
     /// `page_url` — страница ролика для отметки «скачано из интернета»; в
-    /// приватном окне её нет.
+    /// приватном окне её нет. `cancelled` — человек отменил загрузку или
+    /// закрыл приватное окно: запись бросается, файлы удаляются.
     pub async fn media_fetch(
         &self,
         job_id: &str,
         dir: &Path,
         file_name: &str,
         page_url: Option<&str>,
+        cancelled: &AtomicBool,
     ) -> anyhow::Result<PathBuf> {
         let response = self
             .http
@@ -314,7 +320,7 @@ impl Services {
         let partial = PathBuf::from(partial);
 
         let written = async {
-            write_body(response, &partial).await?;
+            write_body(response, &partial, cancelled).await?;
             mark_from_internet(&partial, page_url);
             tokio::fs::rename(&partial, &target).await?;
             anyhow::Ok(())
@@ -408,10 +414,17 @@ async fn reserve_path(dir: &Path, file_name: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// Тело ответа — в файл, потоком.
-async fn write_body(response: reqwest::Response, path: &Path) -> anyhow::Result<()> {
+async fn write_body(
+    response: reqwest::Response,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> anyhow::Result<()> {
     let mut file = tokio::fs::File::create(path).await?;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancelled.load(Ordering::Relaxed) {
+            anyhow::bail!(CANCELLED);
+        }
         file.write_all(&chunk?).await?;
     }
     file.flush().await?;

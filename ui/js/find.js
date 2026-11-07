@@ -64,6 +64,8 @@ export function openFind() {
 }
 
 export function closeFind() {
+  // Набранный, но ещё не отправленный запрос не должен искать после закрытия.
+  clearTimeout(debounce);
   bar.hidden = true;
   delete document.documentElement.dataset.find;
   counter.textContent = "0/0";
@@ -99,6 +101,8 @@ export function renderFindResult({ id, total, current }) {
 }
 
 function run() {
+  // Строку закрыли или ушли на другую вкладку, пока ждали паузу в наборе.
+  if (bar.hidden || searched !== state.activeId) return;
   const tab = activeTab();
   const query = field.value;
   if (!tab || !query) {

@@ -279,6 +279,27 @@ fn valid_video(video: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// Настройки SponsorBlock сменились: открытые страницы YouTube берут их сразу.
+pub fn apply(app: &AppHandle) {
+    let state = app.state::<App>();
+    for label in state.windows.labels() {
+        let _ = crate::state::with_host(app, &label, |host| {
+            for brief in host.tabs_brief() {
+                let Some(origin) = youtube_origin(&brief.url) else {
+                    continue;
+                };
+                let message =
+                    json!({ "cmd": "sponsorblock_refresh", "origin": origin }).to_string();
+                host.with_tab(browser190x4_webview::TabId(brief.id), |view| {
+                    if let Err(err) = view.post(&message) {
+                        tracing::debug!(%err, "YouTube не сказали о новых настройках");
+                    }
+                });
+            }
+        });
+    }
+}
+
 /// Origin документа, если это YouTube (с поддоменами) или его плеер без кук.
 fn youtube_origin(source: &str) -> Option<String> {
     let url = reqwest::Url::parse(source).ok()?;

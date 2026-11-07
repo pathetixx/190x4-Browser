@@ -100,6 +100,11 @@ impl Tokens {
     }
 }
 
+/// Данные сайтов удалили: вместе с cookie уходит и запомненный вход Twitch.
+pub fn forget_tokens(app: &AppHandle) {
+    *app.state::<Twitch>().tokens.lock() = Tokens::default();
+}
+
 /// Последнее приватное окно закрыли — его вход больше не нужен.
 pub fn forget_private(app: &AppHandle) {
     app.state::<Twitch>().tokens.lock().private = None;
@@ -170,7 +175,9 @@ pub fn handle_message(
     match event {
         PageEvent::Token { token } => {
             let store = &app.state::<App>().store;
-            if store.setting_bool("twitch_proxy_token", false) && valid_token(&token) {
+            if token.is_empty() {
+                *app.state::<Twitch>().tokens.lock().slot(private) = None;
+            } else if store.setting_bool("twitch_proxy_token", false) && valid_token(&token) {
                 *app.state::<Twitch>().tokens.lock().slot(private) = Some(token);
             }
         }
@@ -505,10 +512,17 @@ async fn channel_id(app: &AppHandle, login: &str) -> Option<String> {
 
 /// Движок держит запрос плейлиста и ждёт ответа: ответ приходит всегда — либо
 /// плейлист от сервера, либо «пусть идёт к Twitch как был».
-pub fn intercept(app: &AppHandle, tab: u32, private: bool, token: u64, url: String) {
+pub fn intercept(
+    app: &AppHandle,
+    tab: u32,
+    private: bool,
+    token: u64,
+    url: String,
+    origin: Option<String>,
+) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let reply = playlist(&app, &url, private).await;
+        let reply = playlist(&app, &url, private, origin.as_deref()).await;
         if reply.is_none() {
             tracing::debug!("плейлист Twitch идёт напрямую");
         }
@@ -546,6 +560,7 @@ async fn playlist(
     app: &AppHandle,
     url: &str,
     private: bool,
+    origin: Option<&str>,
 ) -> Option<browser190x4_webview::InterceptReply> {
     let store = app.state::<App>().store.clone();
     if !(store.setting_bool("ext_twitch_enabled", true)
@@ -558,7 +573,12 @@ async fn playlist(
     if russia_only(app, &servers[0]).await.contains(&channel) {
         return None;
     }
-    let token = app.state::<Twitch>().tokens.lock().slot(private).clone();
+    // Вход человека — только для самого Twitch: плейлист с его токеном
+    // чужой странице читать незачем.
+    let twitch = origin.and_then(twitch_origin);
+    let token = twitch
+        .as_ref()
+        .and_then(|_| app.state::<Twitch>().tokens.lock().slot(private).clone());
     let client = app.state::<crate::newtab::NewTab>().client().clone();
     for server in servers.iter().take(TRIES) {
         let mut target = format!("{server}{url}");
@@ -572,13 +592,16 @@ async fn playlist(
         }
         match fetch_playlist(&client, &target).await {
             Ok(body) => {
+                let allow = twitch.as_deref().unwrap_or("*");
                 return Some(browser190x4_webview::InterceptReply {
                     status: 200,
                     reason: "OK".into(),
-                    headers: "Content-Type: application/vnd.apple.mpegurl\r\n\
-                              Access-Control-Allow-Origin: *\r\n\
-                              Cache-Control: no-cache, no-store"
-                        .into(),
+                    headers: format!(
+                        "Content-Type: application/vnd.apple.mpegurl\r\n\
+                         Access-Control-Allow-Origin: {allow}\r\n\
+                         Vary: Origin\r\n\
+                         Cache-Control: no-cache, no-store"
+                    ),
                     body: clean_playlist(&body).into_bytes(),
                 });
             }
@@ -589,7 +612,14 @@ async fn playlist(
 }
 
 async fn fetch_playlist(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
-    let mut response = client.get(url).timeout(PLAYLIST_TIMEOUT).send().await?;
+    // В адресе токен входа (`auth=`): ошибка reqwest печатает адрес, а она
+    // уходит в журнал.
+    let mut response = client
+        .get(url)
+        .timeout(PLAYLIST_TIMEOUT)
+        .send()
+        .await
+        .map_err(reqwest::Error::without_url)?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("ответ {status}");
@@ -603,7 +633,8 @@ async fn fetch_playlist(client: &reqwest::Client, url: &str) -> anyhow::Result<S
     // Длину сервер может и не назвать: читаем кусками и бросаем ответ, как
     // только он перерос лимит, а не после того, как он целиком лёг в память.
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    let strip = reqwest::Error::without_url;
+    while let Some(chunk) = response.chunk().await.map_err(strip)? {
         if bytes.len() + chunk.len() > PLAYLIST_LIMIT {
             anyhow::bail!("плейлист слишком большой");
         }

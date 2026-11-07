@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use browser190x4_store::{DownloadKind, DownloadState};
@@ -42,6 +44,8 @@ struct MediaJob {
     job: String,
     window: String,
     private: bool,
+    /// Отмена для записи готового файла на компьютер: сервер о ней не знает.
+    cancelled: Arc<AtomicBool>,
 }
 
 struct Entry {
@@ -88,15 +92,34 @@ impl Transfers {
         }
     }
 
-    pub fn register_media(&self, id: i64, job: String, window: String, private: bool) {
+    /// Возвращает флаг отмены: его проверяет запись файла на компьютер.
+    pub fn register_media(
+        &self,
+        id: i64,
+        job: String,
+        window: String,
+        private: bool,
+    ) -> Arc<AtomicBool> {
+        let cancelled = Arc::new(AtomicBool::new(false));
         self.inner.lock().media_jobs.insert(
             id,
             MediaJob {
                 job,
                 window,
                 private,
+                cancelled: cancelled.clone(),
             },
         );
+        cancelled
+    }
+
+    /// Отменить запись файла задания на компьютер (сервер отменяют отдельно).
+    pub fn cancel_media(&self, job: &str) {
+        for entry in self.inner.lock().media_jobs.values() {
+            if entry.job == job {
+                entry.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn finish_media(&self, id: i64) {
@@ -123,6 +146,7 @@ impl Transfers {
         inner.media_jobs.retain(|_, job| {
             let remove = job.private && job.window == window;
             if remove {
+                job.cancelled.store(true, Ordering::Relaxed);
                 cancelled.push(job.job.clone());
             }
             !remove
@@ -420,6 +444,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
         // Видео из приватного окна качает сервер: отменяется задание там.
         if action == "cancel" {
             if let Some(job) = state.transfers.media_job(id) {
+                state.transfers.cancel_media(&job);
                 state.services.media_cancel(&job).await?;
                 return Ok(());
             }
@@ -459,6 +484,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
                 .transfers
                 .media_job(id)
                 .ok_or_else(|| anyhow::anyhow!("загрузка уже завершена"))?;
+            state.transfers.cancel_media(&job);
             state.services.media_cancel(&job).await?;
         }
         "cancel" | "pause" | "resume" => {
@@ -505,7 +531,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
                         crate::browser_windows::open(
                             &app,
                             crate::browser_windows::WindowKind::Normal,
-                            Some(url),
+                            vec![url],
                         )
                     })
                     .await??;

@@ -397,6 +397,7 @@ pub(crate) fn route_event(
         }
         // Фрейм ушёл на другой адрес: учётки прежнего документа ему не отдаются.
         TabEvent::FrameStarted { id, frame, url } => {
+            passwords::on_frame_navigation(app, *id, *frame);
             let state = app.state::<App>();
             state.documents.navigate(
                 *id,
@@ -414,9 +415,14 @@ pub(crate) fn route_event(
             return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
-        TabEvent::Intercept { id, token, url } => {
+        TabEvent::Intercept {
+            id,
+            token,
+            url,
+            origin,
+        } => {
             let private = app.state::<App>().windows.is_private(label);
-            twitch::intercept(app, *id, private, *token, url.clone());
+            twitch::intercept(app, *id, private, *token, url.clone(), origin.clone());
             return;
         }
         // Ссылку на приложение открывает браузер: спросить или открыть сразу.

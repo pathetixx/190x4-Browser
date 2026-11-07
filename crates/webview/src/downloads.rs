@@ -97,6 +97,8 @@ struct Pending {
     /// Путь, занятый под эту загрузку в папке загрузок, пока человек выбирает
     /// свой: после ответа он освобождается.
     reserved: Option<PathBuf>,
+    /// Реестр окна, где вкладка живёт сейчас (`wire`).
+    route: Weak<RefCell<SharedDownloads>>,
 }
 
 #[derive(Default)]
@@ -190,6 +192,42 @@ impl Downloads {
     }
 }
 
+/// Вкладку унесли в другое окно: её идущие загрузки и вопросы «куда
+/// сохранить» переезжают в реестр того окна — управлять ими и ждать их при
+/// закрытии теперь будет оно.
+pub fn move_tab(from: &Downloads, to: &Downloads, tab: u32) {
+    if std::ptr::eq(from, to) {
+        return;
+    }
+    let keys: Vec<u64> = from
+        .owners
+        .borrow()
+        .iter()
+        .filter(|(_, owner)| **owner == tab)
+        .map(|(key, _)| *key)
+        .collect();
+    for key in keys {
+        if let Some(owner) = from.owners.borrow_mut().remove(&key) {
+            to.owners.borrow_mut().insert(key, owner);
+        }
+        if let Some(operation) = from.ops.borrow_mut().remove(&key) {
+            to.ops.borrow_mut().insert(key, operation);
+        }
+    }
+    let asked: Vec<u64> = from
+        .pending
+        .borrow()
+        .iter()
+        .filter(|(_, pending)| pending.tab == tab)
+        .map(|(key, _)| *key)
+        .collect();
+    for key in asked {
+        if let Some(pending) = from.pending.borrow_mut().remove(&key) {
+            to.pending.borrow_mut().insert(key, pending);
+        }
+    }
+}
+
 /// Ответ на «куда сохранить»: путь или отказ.
 pub fn answer(registry: &SharedDownloads, key: u64, path: Option<PathBuf>) -> anyhow::Result<()> {
     let pending = registry
@@ -217,6 +255,7 @@ pub fn answer(registry: &SharedDownloads, key: u64, path: Option<PathBuf>) -> an
                         path.to_string_lossy().into_owned(),
                         pending.total,
                         pending.sink.clone(),
+                        pending.route.clone(),
                     )
                     .map_err(anyhow::Error::from)
                 })
@@ -315,6 +354,7 @@ pub fn wire(
                             sink: sink.clone(),
                             empty_tab,
                             reserved,
+                            route: Rc::downgrade(&route),
                         },
                     );
                     sink(TabEvent::DownloadAsk {
@@ -337,6 +377,7 @@ pub fn wire(
                     target.to_string_lossy().into_owned(),
                     total,
                     sink.clone(),
+                    Rc::downgrade(&route),
                 )?;
                 if empty_tab {
                     sink(TabEvent::CloseRequested {
@@ -363,6 +404,7 @@ fn track(
     path: String,
     total: Option<i64>,
     sink: EventSink,
+    route: Weak<RefCell<SharedDownloads>>,
 ) -> windows_core::Result<()> {
     registry.ops.borrow_mut().insert(key, operation.clone());
     registry.owners.borrow_mut().insert(key, tab);
@@ -417,9 +459,9 @@ fn track(
             &mut token,
         )?;
 
-        // Слабая ссылка: операция держит обработчик, обработчик — реестр,
-        // реестр — операцию. Сильная ссылка здесь замкнула бы круг.
-        let registry: Weak<Downloads> = Rc::downgrade(registry);
+        // Реестр — того окна, где вкладка сейчас: её могли унести вместе с
+        // загрузкой (`move_tab`). Слабая ссылка: операция держит обработчик,
+        // обработчик — реестр, реестр — операцию; сильная замкнула бы круг.
         operation.add_StateChanged(
             &StateChangedEventHandler::create(Box::new(move |sender, _| {
                 let Some(operation) = sender else {
@@ -449,7 +491,7 @@ fn track(
                 if finished {
                     release_path(Path::new(&path));
                 }
-                let registry = registry.upgrade();
+                let registry = route.upgrade().map(|route| route.borrow().clone());
                 if let Some(registry) = &registry {
                     if finished {
                         registry.ops.borrow_mut().remove(&key);

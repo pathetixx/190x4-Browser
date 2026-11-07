@@ -438,19 +438,26 @@ pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
     })
 }
 
-/// Новое окно браузера: обычное или приватное, с адресом или пустое.
+/// Новое окно браузера: обычное или приватное, с адресом, несколькими
+/// адресами («Открыть все в новом окне») или пустое.
 #[tauri::command(async)]
 pub fn window_open(
     app: AppHandle,
     private: Option<bool>,
     url: Option<String>,
+    urls: Option<Vec<String>>,
 ) -> Result<(), String> {
     let kind = if private.unwrap_or(false) {
         WindowKind::Private
     } else {
         WindowKind::Normal
     };
-    windows::open(&app, kind, url).map(|_| ()).map_err(text)
+    let urls: Vec<String> = url
+        .into_iter()
+        .chain(urls.unwrap_or_default())
+        .take(100)
+        .collect();
+    windows::open(&app, kind, urls).map(|_| ()).map_err(text)
 }
 
 /// Окно с единственной вкладкой, которую вытащили из строки, переезжает туда,
@@ -1181,6 +1188,10 @@ fn apply_setting(app: &AppHandle, state: &App, key: &str) {
             }
         }
         "drm_widevine" | "drm_playready" | "drm_widevine_off_sites" => crate::drm::apply(app),
+        "ext_nonstop_enabled" => crate::nonstop::apply(app),
+        key if key == "ext_sponsorblock_enabled" || key.starts_with("sponsorblock_") => {
+            crate::sponsorblock::apply(app)
+        }
         "ext_twitch_enabled" | "twitch_quality" | "twitch_points" | "twitch_bttv"
         | "twitch_ffz" | "twitch_7tv" | "twitch_proxy_token" => crate::twitch::apply(app),
         "search_engine" => {
@@ -1951,6 +1962,9 @@ pub fn browsing_data_clear(
         rx.recv_timeout(Duration::from_secs(60))
             .map_err(|_| "Движок не подтвердил удаление данных. Повторите попытку".to_string())??;
     }
+    if site_data {
+        crate::twitch::forget_tokens(&app);
+    }
     Ok(())
 }
 
@@ -2220,9 +2234,18 @@ pub async fn media_download(
             .start_download(DownloadKind::Media, &url, "", None)
             .map_err(text)?
     };
-    state
-        .transfers
-        .register_media(id, job_id.clone(), owner(&window), private);
+    let window_label = owner(&window);
+    let cancelled =
+        state
+            .transfers
+            .register_media(id, job_id.clone(), window_label.clone(), private);
+    // Приватное окно закрыли, пока сервер ставил задание: закрытие его ещё не
+    // видело, и загрузка из закрытого окна пошла бы дальше.
+    if private && app.get_webview_window(&window_label).is_none() {
+        state.transfers.finish_media(id);
+        let _ = services.media_cancel(&job_id).await;
+        return Err("окно закрыто".into());
+    }
     transfers::emit_media(&app, id, "started", &url, "", 0, None, "");
 
     let job = job_id.clone();
@@ -2331,6 +2354,7 @@ pub async fn media_download(
                         &target_dir,
                         &progress.file_name,
                         (!private).then_some(url.as_str()),
+                        &cancelled,
                     )
                     .await
                 {
@@ -2366,6 +2390,9 @@ pub async fn media_download(
                         );
                         app.state::<App>().transfers.finish_media(id);
                     }
+                    Err(_) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => {
+                        fail(&app, "cancelled", progress.downloaded, &name, "");
+                    }
                     Err(err) => {
                         tracing::error!(job = %job, %err, "файл не забран с сервера");
                         fail(&app, "failed", progress.downloaded, &name, &text(err));
@@ -2382,6 +2409,8 @@ pub async fn media_download(
 /// Отменить загрузку видео из окна расширения.
 #[tauri::command]
 pub async fn media_cancel(state: State<'_, App>, job: String) -> Result<(), String> {
+    // Файл уже может идти на компьютер: эту запись сервер не остановит.
+    state.transfers.cancel_media(&job);
     state.services.media_cancel(&job).await.map_err(text)
 }
 

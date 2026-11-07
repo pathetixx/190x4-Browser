@@ -75,6 +75,11 @@ export function openInNewWindow(url) {
   return invoke("window_open", { private: Boolean(state.window.private), url }).catch(() => {});
 }
 
+/** Несколько адресов — вкладками одного нового окна. */
+export function openAllInNewWindow(urls) {
+  return invoke("window_open", { private: Boolean(state.window.private), urls }).catch(() => {});
+}
+
 export function openInPrivateWindow(url) {
   return invoke("window_open", { private: true, url }).catch(() => {});
 }

@@ -59,6 +59,7 @@ import {
   isLeaving,
   measureTabs,
   moveActive,
+  onBeforeWindowClose,
   open,
   openSleeping,
   parseInternal,
@@ -122,6 +123,7 @@ hooks.openFind = () => {
 };
 hooks.toast = toast;
 hooks.saveSession = saveSessionNow;
+onBeforeWindowClose(saveSessionNow);
 
 initLayout(document.getElementById("stage"));
 initPopups();
@@ -751,6 +753,8 @@ listen("close-asked", async () => {
   closingWindow = true;
   try {
     const allowed = await confirmWindowClose();
+    // Отложенная запись сессии не успела бы: Rust берёт последнюю записанную.
+    if (allowed) await saveSessionNow().catch(() => {});
     await invoke("window_command", { action: allowed ? "close_asked" : "close_cancelled" });
   } catch {
     invoke("window_command", { action: "close_cancelled" }).catch(() => {});

@@ -43,8 +43,8 @@ struct Candidate {
     password: String,
     at: Instant,
     /// Учётка того же сайта с этим логином, но другим паролем: «Обновить»
-    /// меняет её, а не заводит копию под новым адресом.
-    replaces: Option<i64>,
+    /// меняет её, а не заводит копию под новым адресом. Номер и адрес записи.
+    replaces: Option<(i64, String)>,
 }
 
 /// Учётка в списке окна браузера: логин и адрес, без пароля.
@@ -122,10 +122,18 @@ pub struct Passwords {
     /// начало навигации приходят разными путями, и порядок между ними не
     /// гарантирован: логин может приехать уже после ухода со страницы.
     navigations: Mutex<HashMap<u32, Instant>>,
+    /// То же для фреймов: вход внутри iframe уводит на другой адрес только его.
+    frame_navigations: Mutex<HashMap<(u32, u32), Instant>>,
+    /// Логин с первого шага входа (логин и пароль на разных страницах): сайт,
+    /// логин и когда его ввели. Скрипт страницы его не переживёт.
+    logins: Mutex<HashMap<u32, (String, String, Instant)>>,
 }
 
 /// Навигация раньше отправленного логина на столько — всё ещё «вход по нему».
 const NAVIGATION_SLACK: Duration = Duration::from_millis(1200);
+
+/// Логин первого шага ждёт шага с паролем не дольше этого.
+const LOGIN_TTL: Duration = Duration::from_secs(300);
 
 /// Чаще этого одна и та же форма учётки не запрашивает.
 const ASK_EVERY: Duration = Duration::from_secs(1);
@@ -180,6 +188,9 @@ enum PageEvent {
     },
     #[serde(rename = "password_commit")]
     Commit,
+    /// Шаг входа без пароля: логин понадобится на следующей странице.
+    #[serde(rename = "password_login")]
+    Login { username: String },
     #[serde(rename = "password_form")]
     Form,
     /// Человек встал в поле логина или пароля (`keyboard` — стрелкой вниз):
@@ -230,6 +241,15 @@ pub fn handle_message(
             if !state.documents.is_origin(tab, frame, source) {
                 return true;
             }
+            let mut username = username;
+            if username.is_empty() {
+                let first_step = state.passwords.logins.lock().remove(&tab);
+                if let Some((site, login, at)) = first_step {
+                    if site == origin && at.elapsed() < LOGIN_TTL {
+                        username = login;
+                    }
+                }
+            }
             state.passwords.candidates.lock().insert(
                 (tab, frame),
                 Candidate {
@@ -246,12 +266,34 @@ pub fn handle_message(
                 .lock()
                 .get(&tab)
                 .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK);
-            if navigated {
+            let frame_navigated = frame.is_some_and(|frame| {
+                state
+                    .passwords
+                    .frame_navigations
+                    .lock()
+                    .get(&(tab, frame))
+                    .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
+            });
+            if navigated || frame_navigated {
                 commit(app, tab, Some(frame));
             }
         }
         // Форма исчезла: вход подтверждает только тот документ, где она была.
         PageEvent::Commit => commit(app, tab, Some(frame)),
+        PageEvent::Login { username } => {
+            let username = username.trim().to_string();
+            if username.is_empty()
+                || username.len() > 512
+                || !state.documents.is_origin(tab, frame, source)
+            {
+                return true;
+            }
+            state
+                .passwords
+                .logins
+                .lock()
+                .insert(tab, (origin, username, Instant::now()));
+        }
         PageEvent::Form => {
             let Some(document) = state.documents.capture(tab, frame, source) else {
                 return true;
@@ -372,6 +414,17 @@ pub fn on_navigation(app: &AppHandle, tab: u32) {
     commit(app, tab, None);
 }
 
+/// Фрейм начал переход: логин, отправленный в нём, — вход, как и при уходе
+/// всей вкладки со страницы.
+pub fn on_frame_navigation(app: &AppHandle, tab: u32, frame: u32) {
+    app.state::<App>()
+        .passwords
+        .frame_navigations
+        .lock()
+        .insert((tab, frame), Instant::now());
+    commit(app, tab, Some(Some(frame)));
+}
+
 /// На вкладке другой документ: учётки прежнего и его фреймов больше не нужны.
 pub fn on_document(app: &AppHandle, tab: u32) {
     app.state::<App>().passwords.forget_document(tab, None);
@@ -379,9 +432,13 @@ pub fn on_document(app: &AppHandle, tab: u32) {
 
 /// Фрейм вкладки исчез: учётки, найденные для него, больше не нужны.
 pub fn on_frame_gone(app: &AppHandle, tab: u32, frame: u32) {
-    app.state::<App>()
+    let state = app.state::<App>();
+    state.passwords.forget_document(tab, Some(frame));
+    state
         .passwords
-        .forget_document(tab, Some(frame));
+        .frame_navigations
+        .lock()
+        .remove(&(tab, frame));
 }
 
 pub fn forget_tab(app: &AppHandle, tab: u32) {
@@ -393,6 +450,12 @@ pub fn forget_tab(app: &AppHandle, tab: u32) {
         .retain(|(id, _), _| *id != tab);
     state.passwords.offers.lock().remove(&tab);
     state.passwords.navigations.lock().remove(&tab);
+    state
+        .passwords
+        .frame_navigations
+        .lock()
+        .retain(|(id, _), _| *id != tab);
+    state.passwords.logins.lock().remove(&tab);
     state.passwords.forget_document(tab, None);
     state.passwords.windows.lock().remove(&tab);
 }
@@ -450,7 +513,7 @@ fn commit(app: &AppHandle, tab: u32, frame: Option<Option<u32>>) {
                     return;
                 }
                 _ => {
-                    candidate.replaces = Some(saved.id);
+                    candidate.replaces = Some((saved.id, saved.origin));
                     true
                 }
             },
@@ -491,7 +554,14 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
     match action {
         "save" => {
             let secret = vault::protect(&candidate.password)?;
-            let id = match candidate.replaces {
+            // Учётку могли удалить, а её номер — отдать другой: обновляем,
+            // только если под ним всё ещё тот же сайт и логин.
+            let replaces = candidate
+                .replaces
+                .as_ref()
+                .filter(|(id, origin)| same_login(&state.store, *id, origin, &candidate.username))
+                .map(|(id, _)| *id);
+            let id = match replaces {
                 Some(id) => {
                     state
                         .store
@@ -511,6 +581,15 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Под номером `id` всё ещё учётка этого сайта с этим логином.
+fn same_login(store: &browser190x4_store::Store, id: i64, origin: &str, username: &str) -> bool {
+    store
+        .password_secret(id)
+        .ok()
+        .flatten()
+        .is_some_and(|(entry, _)| entry.origin == origin && entry.username == username)
 }
 
 /// На странице форма входа: найти учётки документа и запомнить их. Документ
@@ -599,20 +678,27 @@ fn offer_accounts(app: &AppHandle, document: Context) {
 /// Учётка, которую человек выбрал в окне браузера, — в документ вкладки или
 /// во фрейм, которому её показали.
 pub fn fill(app: &AppHandle, tab: u32, frame: Option<u32>, id: i64) -> anyhow::Result<()> {
-    let document = app
+    let (document, offered) = app
         .state::<App>()
         .passwords
         .pages
         .lock()
         .get(&(tab, frame))
-        .filter(|offer| offer.accounts.iter().any(|account| account.id == id))
-        .map(|offer| offer.document.clone())
+        .and_then(|offer| {
+            let account = offer.accounts.iter().find(|account| account.id == id)?;
+            Some((offer.document.clone(), account.clone()))
+        })
         .ok_or_else(|| anyhow::anyhow!("учётки нет среди учёток страницы"))?;
     let state = app.state::<App>();
     let (entry, secret) = state
         .store
         .password_secret(id)?
         .ok_or_else(|| anyhow::anyhow!("пароль удалён"))?;
+    // Номер удалённой учётки SQLite отдаёт следующей новой: под старым номером
+    // из меню может лежать уже учётка другого сайта.
+    if entry.origin != offered.origin || entry.username != offered.username {
+        anyhow::bail!("учётка изменилась, откройте список заново");
+    }
     let password = vault::reveal(&secret)?;
     let _ = state.store.touch_password(id);
     fill_tab(app, document, entry.username, password);
