@@ -601,8 +601,18 @@ fn closing(app: &AppHandle, label: &str) {
         fullscreen_frame::forget(&window);
     }
     let state = app.state::<App>();
-    let tabs = state.sessions.lock().remove(label).unwrap_or_default();
+    let tabs = state.sessions.lock().remove(label);
     let Some(session) = state.windows.session(label) else {
+        return;
+    };
+    // Интерфейс ещё ни разу не записал вкладки (окно закрыли, пока шло
+    // восстановление): в базе остаётся прежняя сессия, а не пустая.
+    let Some(tabs) = tabs else {
+        if state.windows.others_normal(label) {
+            if let Err(err) = state.store.forget_session(session) {
+                tracing::warn!(%err, "сессия окна не забыта");
+            }
+        }
         return;
     };
     let result = if state.windows.others_normal(label) {
