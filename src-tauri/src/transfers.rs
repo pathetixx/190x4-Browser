@@ -374,8 +374,24 @@ pub fn ask_target(app: &AppHandle, window: &str, key: u64, suggested: String) {
         let target = dialog
             .blocking_save_file()
             .and_then(|path| path.into_path().ok());
-        if let Err(err) = with_download(&app, key, move |host| host.download_answer(key, target)) {
-            tracing::warn!(%err, "ответ на загрузку не принят");
+        // Хост окна бывает занят как раз в этот миг — тогда ещё раз: без ответа
+        // движок держит загрузку подвешенной, а её вкладку — живой до выхода.
+        for attempt in 1..=20 {
+            let answer = target.clone();
+            match with_download(&app, key, move |host| host.download_answer(key, answer)) {
+                Err(err) if err == crate::state::BUSY && attempt < 20 => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "ответ на загрузку не принят");
+                    return;
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(%err, "ответ на загрузку не принят");
+                    return;
+                }
+                Ok(Ok(())) => return,
+            }
         }
     });
 }
