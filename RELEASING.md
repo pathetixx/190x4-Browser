@@ -31,9 +31,9 @@ python scripts/gitlab_mirror.py --rollback X.Y.Z`.
 
 Канал фильтров (`filters.yml`) подписан своим ключом — секрет
 `FILTERS_SIGNING_PRIVATE_KEY`, публичный ключ — `PUBLIC_KEY` в
-`src-tauri/src/filters.rs` (`manifest.json.v2.sig`). Ключом обновлений канал
-подписывает манифест только для версий до 0.12.1 включительно
-(`manifest.json.sig`); когда их не останется, эту подпись из `filters.yml` убрать.
+`src-tauri/src/filters.rs` (`manifest.json.v2.sig`). Ключа обновлений в
+`filters.yml` нет: версии до 0.12.1 включительно, проверявшие канал им, новых
+фильтров не получают, пока не обновятся сами.
 
 Секреты репозитория: `TAURI_SIGNING_PRIVATE_KEY`, `FILTERS_SIGNING_PRIVATE_KEY`,
 `GITLAB_TOKEN`.
