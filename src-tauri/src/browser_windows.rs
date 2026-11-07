@@ -630,13 +630,12 @@ fn closing(app: &AppHandle, label: &str) {
 
 /// Окно во весь экран (видео, F11) и обратно.
 ///
-/// Развёрнутое окно так и остаётся развёрнутым: tao у окна без рамки, пока оно
-/// развёрнуто, сжимает клиентскую область до рабочей области монитора
-/// (`WM_NCCALCSIZE`, чтобы не закрывать панель задач), и во весь экран снизу
-/// оставалась бы полоса высотой с панель задач. Эту поправку на время полного
-/// экрана снимает свой обработчик окна ([`fullscreen_frame`]), и окно встаёт на
-/// весь монитор одним шагом, без промежуточного обычного размера. При выходе
-/// окно возвращается на прежнее место тоже одним шагом.
+/// Развёрнутое окно на время полного экрана перестаёт быть развёрнутым, как в
+/// Chrome: tao у развёрнутого окна без рамки сжимает клиентскую область до
+/// рабочей области монитора (`WM_NCCALCSIZE`), и место под панель задач или HUD
+/// оставалось бы незакрытым. Окно встаёт на весь монитор одним шагом
+/// ([`fullscreen_frame`]), а при выходе возвращается на прежнее место и снова
+/// развёрнутым.
 pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(label) else {
         return Ok(());
@@ -674,16 +673,14 @@ pub fn set_fullscreen(app: &AppHandle, label: &str, on: bool) -> tauri::Result<(
 /// с отметкой: предложенный прямоугольник окна остаётся клиентской областью
 /// целиком. Остальные сообщения и окна без отметки идут в tao как есть.
 ///
-/// Отметка хранит и место окна до полного экрана. Развёрнутое окно на выходе
-/// tao возвращает через `ShowWindow(SW_MAXIMIZE)` и `SetWindowPlacement`, но
-/// окно всё это время оставалось развёрнутым, и Windows оба вызова пропускает:
-/// окно так и стояло бы размером с монитор, поверх панели задач. Это место
-/// [`leave`] возвращает сам.
+/// Отметка хранит и место окна до полного экрана (`WINDOWPLACEMENT`): tao на
+/// выходе возвращает место, запомненное уже после того, как окно перестало быть
+/// развёрнутым, и [`leave`] возвращает настоящее.
 ///
-/// Пока окно во весь экран, оно ещё и прибито к монитору (`WM_WINDOWPOSCHANGING`).
-/// Развёрнутое окно Windows подгоняет под рабочую область, когда её меняют, —
-/// например, оболочка 190x4 Desktop возвращает резерв под HUD и док. Без этого
-/// видео во весь экран съезжало под HUD, а сбоку оставались полосы.
+/// Пока окно во весь экран, оно ещё и прибито к монитору (`WM_WINDOWPOSCHANGING`):
+/// так развёрнутое окно сразу встаёт на весь монитор, минуя обычный размер, и
+/// никакие перестановки — например, когда 190x4 Desktop возвращает резерв под
+/// HUD и док, — не сдвигают его с монитора.
 #[cfg(windows)]
 mod fullscreen_frame {
     use parking_lot::Mutex;
@@ -694,48 +691,59 @@ mod fullscreen_frame {
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsIconic, IsZoomed, RemovePropW, SetPropW, SetWindowPos,
-        SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, WINDOWPOS, WM_NCCALCSIZE, WM_WINDOWPOSCHANGING,
+        GetWindowPlacement, IsIconic, IsZoomed, RemovePropW, SetPropW, SetWindowPlacement,
+        SetWindowPos, SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNORMAL, WINDOWPLACEMENT, WINDOWPOS, WM_NCCALCSIZE,
+        WM_WINDOWPOSCHANGING,
     };
 
     const SUBCLASS_ID: usize = 0x1904;
 
-    /// Окна во весь экран — по HWND, с местом до полного экрана. Их одно-два,
-    /// список короче любого множества.
-    static MARKED: Mutex<Vec<(isize, RECT)>> = Mutex::new(Vec::new());
+    /// Окна во весь экран — по HWND, с местом и состоянием до полного экрана.
+    /// Их одно-два, список короче любого множества.
+    static MARKED: Mutex<Vec<(isize, WINDOWPLACEMENT)>> = Mutex::new(Vec::new());
 
     /// Окна во весь экран, прибитые к монитору: HWND и прямоугольник монитора.
     static PINNED: Mutex<Vec<(isize, RECT)>> = Mutex::new(Vec::new());
 
     /// Поставить обработчик окну браузера. Один раз при создании окна.
+    /// Подкласс ставится только с потока окна, а новые окна создают команды
+    /// из пула — поэтому через главный поток.
     pub fn install(window: &tauri::WebviewWindow) {
         let Ok(hwnd) = window.hwnd() else { return };
-        let installed = unsafe { SetWindowSubclass(hwnd, Some(procedure), SUBCLASS_ID, 0) };
-        if !installed.as_bool() {
-            tracing::warn!("обработчик полноэкранной рамки не поставлен");
-        }
+        let hwnd_bits = hwnd.0 as isize;
+        let _ = window.run_on_main_thread(move || {
+            let hwnd = HWND(hwnd_bits as *mut core::ffi::c_void);
+            let installed = unsafe { SetWindowSubclass(hwnd, Some(procedure), SUBCLASS_ID, 0) };
+            if !installed.as_bool() {
+                tracing::warn!("обработчик полноэкранной рамки не поставлен");
+            }
+        });
     }
 
     /// Окно уходит во весь экран: запомнить его место и отвечать за рамку.
     ///
-    /// Развёрнутое окно сразу встаёт на весь монитор. Иначе с отметкой, но
-    /// ещё на месте развёрнутого, клиентской областью на миг стало бы всё окно
-    /// вместе с краями за экраном, и страница успела бы получить этот размер.
+    /// Развёрнутое окно сперва перестаёт быть развёрнутым — как в Chrome. Иначе
+    /// tao разворачивает его ещё раз (`SW_MAXIMIZE`) и у развёрнутого окна без
+    /// рамки сам сжимает клиентскую область до рабочей области монитора: место
+    /// под HUD 190x4 Desktop или панель задач оставалось незакрытым. Окно сразу
+    /// встаёт на весь монитор: обычный размер подменяет прибивка к монитору.
     pub fn enter(window: &tauri::WebviewWindow) {
         let Ok(hwnd) = window.hwnd() else { return };
-        let mut rect = RECT::default();
-        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        let mut placement = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
             return;
         }
         let key = hwnd.0 as isize;
         {
             let mut marked = MARKED.lock();
             marked.retain(|(other, _)| *other != key);
-            marked.push((key, rect));
+            marked.push((key, placement));
         }
-        // Метка для оболочки 190x4 Desktop: развёрнутое окно во весь экран снаружи
-        // не отличить от просто развёрнутого, а док и HUD на время видео прячутся.
+        // Метка для оболочки 190x4 Desktop: по ней док и HUD на время видео прячутся.
         let _ = unsafe { SetPropW(hwnd, w!("190x4.Fullscreen"), Some(HANDLE(1 as _))) };
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -754,18 +762,13 @@ mod fullscreen_frame {
         if !unsafe { IsZoomed(hwnd) }.as_bool() {
             return;
         }
-        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
-        let _ = unsafe {
-            SetWindowPos(
-                hwnd,
-                None,
-                screen.left,
-                screen.top,
-                screen.right - screen.left,
-                screen.bottom - screen.top,
-                flags,
-            )
+        let normal = WINDOWPLACEMENT {
+            showCmd: SW_SHOWNORMAL.0 as u32,
+            ..placement
         };
+        let _ = unsafe { SetWindowPlacement(hwnd, &normal) };
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE;
+        let _ = unsafe { SetWindowPos(hwnd, None, 0, 0, 0, 0, flags) };
     }
 
     /// Окно выходит из полного экрана: отпустить его с монитора, чтобы tao
@@ -777,27 +780,17 @@ mod fullscreen_frame {
         }
     }
 
-    /// Окно вышло из полного экрана: рамка снова за tao, место — прежнее.
+    /// Окно вышло из полного экрана: рамка снова за tao, место и состояние —
+    /// прежние. tao возвращает место, запомненное уже после того, как окно
+    /// перестало быть развёрнутым, — развёрнутым его делает это место.
     pub fn leave(window: &tauri::WebviewWindow) {
         let Ok(hwnd) = window.hwnd() else { return };
-        let Some(rect) = take(hwnd) else { return };
-        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+        let Some(placement) = take(hwnd) else { return };
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE;
         let result = unsafe {
-            if IsZoomed(hwnd).as_bool() {
-                SetWindowPos(
-                    hwnd,
-                    None,
-                    rect.left,
-                    rect.top,
-                    rect.right - rect.left,
-                    rect.bottom - rect.top,
-                    flags,
-                )
-            } else {
-                // Место вернул `SetWindowPlacement`, но рамку он пересчитал
-                // ещё с отметкой — без отступов под тень окна.
-                SetWindowPos(hwnd, None, 0, 0, 0, 0, flags | SWP_NOMOVE | SWP_NOSIZE)
-            }
+            SetWindowPlacement(hwnd, &placement)
+                // Рамку место пересчитало ещё с отметкой — без отступов под тень окна.
+                .and_then(|()| SetWindowPos(hwnd, None, 0, 0, 0, 0, flags))
         };
         if let Err(err) = result {
             tracing::warn!(%err, "окно не вернулось на место после полного экрана");
@@ -811,7 +804,7 @@ mod fullscreen_frame {
         }
     }
 
-    fn take(hwnd: HWND) -> Option<RECT> {
+    fn take(hwnd: HWND) -> Option<WINDOWPLACEMENT> {
         let _ = unsafe { RemovePropW(hwnd, w!("190x4.Fullscreen")) };
         let key = hwnd.0 as isize;
         PINNED.lock().retain(|(other, _)| *other != key);
