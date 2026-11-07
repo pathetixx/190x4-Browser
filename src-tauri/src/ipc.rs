@@ -646,8 +646,9 @@ fn normalize_url(input: &str, engine: &str) -> String {
         && !trimmed.starts_with('.')
         && !trimmed.ends_with('.')
         && (names_a_site(trimmed) || is_local_address(trimmed));
-    // localhost, localhost:5173, localhost/app — точки в них нет.
-    if looks_like_host || (!spaced && !email && is_local_address(trimmed)) {
+    // localhost, localhost:5173, localhost/app и [::1]:8080 — точки в них нет.
+    let ipv6 = !spaced && ipv6_host(trimmed).is_some();
+    if looks_like_host || ipv6 || (!spaced && !email && is_local_address(trimmed)) {
         // Домашний роутер и сосед по локальной сети по https не отвечают:
         // туда идём по http, во внешний интернет — по https.
         let scheme = if is_local_address(trimmed) {
@@ -735,6 +736,11 @@ fn file_path_url(input: &str) -> Option<String> {
 
 /// Адрес внутри локальной сети: его открываем по http.
 fn is_local_address(input: &str) -> bool {
+    // IPv6 — только в скобках, как в адресе: `[::1]:8080`, `[fd00::2]/admin`.
+    if let Some(ip) = ipv6_host(input) {
+        let first = ip.segments()[0];
+        return ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80;
+    }
     // Хост — до пути; порт отрезается, только если он из цифр. «192.168.1.1/admin»
     // раньше терял хост вместе с путём и уходил по https.
     let address = input.split(['/', '?', '#']).next().unwrap_or(input);
@@ -755,7 +761,26 @@ fn is_local_address(input: &str) -> bool {
     let Ok(ip) = host.parse::<std::net::Ipv4Addr>() else {
         return false;
     };
-    ip.is_private() || ip.is_loopback() || ip.is_link_local()
+    // 100.64.0.0/10 — адреса за NAT провайдера и в Tailscale: тоже по http.
+    let shared = ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64;
+    ip.is_private() || ip.is_loopback() || ip.is_link_local() || shared
+}
+
+/// Адрес IPv6 в скобках в начале ввода: `[::1]`, `[fd00::2]:8080/path`.
+fn ipv6_host(input: &str) -> Option<std::net::Ipv6Addr> {
+    let rest = input.strip_prefix('[')?;
+    let (host, after) = rest.split_once(']')?;
+    let tail_ok = match after.strip_prefix(':') {
+        Some(port) => {
+            let port = port.split(['/', '?', '#']).next().unwrap_or(port);
+            !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+        }
+        None => after.is_empty() || after.starts_with(['/', '?', '#']),
+    };
+    if !tail_ok {
+        return None;
+    }
+    host.parse().ok()
 }
 
 fn urlencode(value: &str) -> String {
@@ -817,6 +842,22 @@ mod tests {
         assert_eq!(normalize_url("nas.local", "google"), "http://nas.local");
         assert_eq!(normalize_url("habr.com", "google"), "https://habr.com");
         assert_eq!(normalize_url("8.8.8.8", "google"), "https://8.8.8.8");
+        assert_eq!(normalize_url("100.101.2.3", "google"), "http://100.101.2.3");
+        assert_eq!(
+            normalize_url("100.200.2.3", "google"),
+            "https://100.200.2.3"
+        );
+        assert_eq!(
+            normalize_url("[::1]:8080/x", "google"),
+            "http://[::1]:8080/x"
+        );
+        assert_eq!(normalize_url("[fd00::2]", "google"), "http://[fd00::2]");
+        assert_eq!(
+            normalize_url("[2001:db8::1]", "google"),
+            "https://[2001:db8::1]"
+        );
+        let search = normalize_url("[не адрес]", "google");
+        assert!(search.starts_with("https://www.google.com/"));
     }
 
     #[test]

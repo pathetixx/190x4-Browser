@@ -578,14 +578,15 @@ function buildRows(value, history, words) {
     return out;
   }
 
-  // Так же решает Rust (`normalize_url`): localhost и адреса с точкой — переход,
+  // Так же решает Rust (`normalize_url`): localhost, [IPv6] и адреса с точкой — переход,
   // почта и телефон со схемой (`mailto:`, `tel:`) — тоже, а «имя@mail.ru» без
   // схемы — поиск.
   const email = /^[^/?#\s]*@/.test(value);
   const looksLikeUrl =
     OPAQUE.test(value) ||
     /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(value) ||
-    (!/\s/.test(value) && !email && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value)));
+    (!/\s/.test(value) && !email && (/\./.test(value) || /^localhost(:\d+)?(\/|$)/i.test(value))) ||
+    /^\[[0-9a-f:.]+\](:\d+)?([/?#]|$)/i.test(value);
   // Адрес дописан в строке — первая строка ведёт на него, как и Enter.
   const filled = inline?.typed === value ? inline : null;
   out.push(
