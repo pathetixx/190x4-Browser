@@ -589,7 +589,7 @@ async fn playlist(
 }
 
 async fn fetch_playlist(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
-    let response = client.get(url).timeout(PLAYLIST_TIMEOUT).send().await?;
+    let mut response = client.get(url).timeout(PLAYLIST_TIMEOUT).send().await?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("ответ {status}");
@@ -600,8 +600,17 @@ async fn fetch_playlist(client: &reqwest::Client, url: &str) -> anyhow::Result<S
     {
         anyhow::bail!("плейлист слишком большой");
     }
-    let body = response.text().await?;
-    if !body.starts_with("#EXTM3U") || body.len() > PLAYLIST_LIMIT {
+    // Длину сервер может и не назвать: читаем кусками и бросаем ответ, как
+    // только он перерос лимит, а не после того, как он целиком лёг в память.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > PLAYLIST_LIMIT {
+            anyhow::bail!("плейлист слишком большой");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8(bytes)?;
+    if !body.starts_with("#EXTM3U") {
         anyhow::bail!("в ответе не плейлист");
     }
     Ok(body)
