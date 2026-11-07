@@ -751,6 +751,8 @@ listen("close-asked", async () => {
   closingWindow = true;
   try {
     const allowed = await confirmWindowClose();
+    // Отложенная запись сессии не успела бы: Rust берёт последнюю записанную.
+    if (allowed) await saveSessionNow().catch(() => {});
     await invoke("window_command", { action: allowed ? "close_asked" : "close_cancelled" });
   } catch {
     invoke("window_command", { action: "close_cancelled" }).catch(() => {});

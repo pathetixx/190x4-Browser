@@ -8,6 +8,7 @@
  * сессии больше не поднимают двадцать страниц на старте.
  */
 
+import { hooks } from "./actions.js";
 import { invoke, listen } from "./bridge.js";
 import { dismissLeaveDialogs, hasLeaveDialog } from "./dialogs.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
@@ -447,6 +448,7 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   // окно вернётся с ней при запуске, другое вернёт Ctrl+Shift+T.
   if (![...state.tabs.values()].some((other) => other.id !== id && !other.closing)) {
     if (!force && !tab.internal && !tab.sleeping && !(await confirmClose(id))) return;
+    await hooks.saveSession().catch(() => {});
     invoke("window_command", { action: "close_asked" }).catch(() => {});
     return;
   }
@@ -504,7 +506,9 @@ export function returnLeaving(id) {
  */
 export function confirmWindowClose() {
   const ids = [...state.tabs.values()]
-    .filter((tab) => tab.id > 0 && !tab.internal && !tab.sleeping && !tab.closing)
+    // Вкладка, которая уже ждёт ответа на закрытие, тоже в счёт: confirmClose
+    // вернёт тот же ответ.
+    .filter((tab) => tab.id > 0 && !tab.internal && !tab.sleeping && (!tab.closing || leaving.has(tab.id)))
     .map((tab) => tab.id);
   if (!ids.length) return Promise.resolve(true);
   return new Promise((resolve) => {
