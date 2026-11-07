@@ -75,13 +75,10 @@ jobs:
 
       # Подпись — своим ключом фильтров (manifest.json.v2.sig, его проверяет
       # браузер, src-tauri/src/filters.rs): скриптлеты из канала выполняются на
-      # каждом сайте. Прежняя подпись ключом обновлений (manifest.json.sig) —
-      # для версий до 0.12.1 включительно; подписывается ею уже манифест,
-      # собранный здесь, а не сборкой. Снять, когда эти версии уйдут.
+      # каждом сайте. Ключа обновлений браузера в этом workflow нет.
       - name: Sign manifest
         env:
           FILTERS_SIGNING_PRIVATE_KEY: ${{ secrets.FILTERS_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           if [ -z "$FILTERS_SIGNING_PRIVATE_KEY" ]; then
@@ -91,9 +88,7 @@ jobs:
           rm -f filters-out/*.sig
           npx --yes @tauri-apps/cli@2.11.4 signer sign --private-key "$FILTERS_SIGNING_PRIVATE_KEY" --password "" filters-out/manifest.json
           mv filters-out/manifest.json.sig filters-out/manifest.json.v2.sig
-          npx --yes @tauri-apps/cli@2.11.4 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "" filters-out/manifest.json
           test -s filters-out/manifest.json.v2.sig
-          test -s filters-out/manifest.json.sig
 
       # Основной источник. Подпись и manifest.json — последними: браузер сверяет
       # файлы с манифестом, и неполная выкладка не должна выглядеть готовой.
@@ -117,7 +112,6 @@ jobs:
             esac
           done
           upload filters-out/manifest.json.v2.sig
-          upload filters-out/manifest.json.sig
           upload filters-out/manifest.json
 
       # Резервный источник. Prerelease: иначе релиз фильтров стал бы Latest и
@@ -145,5 +139,9 @@ jobs:
           mapfile -d '' files < <(find filters-out -maxdepth 1 -type f ! -name manifest.json ! -name '*.sig' -print0)
           retry gh release upload filters "${files[@]}" --clobber
           retry gh release upload filters filters-out/manifest.json.v2.sig --clobber
-          retry gh release upload filters filters-out/manifest.json.sig --clobber
           retry gh release upload filters filters-out/manifest.json --clobber
+          # Подпись ключом обновлений больше не выкладывается: прежний файл
+          # к новому манифесту всё равно не подходит.
+          if gh release view filters --json assets --jq '.assets[].name' | grep -qx manifest.json.sig; then
+            retry gh release delete-asset filters manifest.json.sig --yes
+          fi
