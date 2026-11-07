@@ -59,6 +59,7 @@ import {
   isLeaving,
   measureTabs,
   moveActive,
+  onBeforeWindowClose,
   open,
   openSleeping,
   parseInternal,
@@ -122,6 +123,7 @@ hooks.openFind = () => {
 };
 hooks.toast = toast;
 hooks.saveSession = saveSessionNow;
+onBeforeWindowClose(saveSessionNow);
 
 initLayout(document.getElementById("stage"));
 initPopups();

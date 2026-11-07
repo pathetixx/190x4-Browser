@@ -19,6 +19,7 @@ import {
   editBookmark,
   isNewTabUrl,
   navigate,
+  openAllInNewWindow,
   openInNewTab,
   openInNewWindow,
   openInPrivateWindow,
@@ -259,10 +260,8 @@ function showMenu(node, event) {
       case "open-all":
         return links().forEach((url) => openInNewTab(url));
       case "open-all-window": {
-        const [first, ...rest] = links();
-        if (!first) return undefined;
-        openInNewWindow(first);
-        return rest.forEach((url) => openInNewTab(url));
+        const urls = links();
+        return urls.length ? openAllInNewWindow(urls) : undefined;
       }
       case "edit":
         return editBookmark(node, target);

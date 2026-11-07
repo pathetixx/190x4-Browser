@@ -20,7 +20,7 @@ import { hooks, navigate } from "../actions.js";
 
 export function createDownloadsPage(root) {
   let query = "";
-  let order = "";
+  let order = null;
   const cards = new Map();
 
   const page = el("div", "page page--single");
@@ -37,7 +37,8 @@ export function createDownloadsPage(root) {
   input.placeholder = "Поиск в загрузках";
   input.addEventListener("input", () => {
     query = input.value.trim().toLowerCase();
-    order = "";
+    // Ключ пустой выборки — тоже пустая строка: сброс должен отличаться от неё.
+    order = null;
     render();
   });
   search.append(input);

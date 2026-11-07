@@ -505,7 +505,7 @@ pub async fn control(app: &AppHandle, id: i64, action: &str) -> anyhow::Result<(
                         crate::browser_windows::open(
                             &app,
                             crate::browser_windows::WindowKind::Normal,
-                            Some(url),
+                            vec![url],
                         )
                     })
                     .await??;

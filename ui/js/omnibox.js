@@ -236,6 +236,9 @@ export function renderOmnibox() {
     tab ? state.passwordSites.has(tab.id) : false,
     state.passwordOffer?.tab ?? null,
     state.insecureHosts.size,
+    // Щит: блокировку выключают и сайт добавляют в исключения и из другого окна.
+    state.adblockOn,
+    tab && !tab.internal && /^https?:\/\//i.test(url) ? siteBlocking(url) : null,
   ]);
   syncStar(tab?.internal || isNewTabUrl(url) ? "" : url);
   if (signature === rendered) return;

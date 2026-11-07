@@ -438,19 +438,22 @@ pub fn window_info(app: AppHandle, window: tauri::Window) -> Value {
     })
 }
 
-/// Новое окно браузера: обычное или приватное, с адресом или пустое.
+/// Новое окно браузера: обычное или приватное, с адресом, несколькими
+/// адресами («Открыть все в новом окне») или пустое.
 #[tauri::command(async)]
 pub fn window_open(
     app: AppHandle,
     private: Option<bool>,
     url: Option<String>,
+    urls: Option<Vec<String>>,
 ) -> Result<(), String> {
     let kind = if private.unwrap_or(false) {
         WindowKind::Private
     } else {
         WindowKind::Normal
     };
-    windows::open(&app, kind, url).map(|_| ()).map_err(text)
+    let urls: Vec<String> = url.into_iter().chain(urls.unwrap_or_default()).take(100).collect();
+    windows::open(&app, kind, urls).map(|_| ()).map_err(text)
 }
 
 /// Окно с единственной вкладкой, которую вытащили из строки, переезжает туда,

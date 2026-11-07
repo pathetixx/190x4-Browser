@@ -987,13 +987,12 @@ pub fn normal_label(app: &AppHandle) -> Option<String> {
 }
 
 /// Открыть новое окно браузера по требованию интерфейса.
-pub fn open(app: &AppHandle, kind: WindowKind, url: Option<String>) -> tauri::Result<String> {
+pub fn open(app: &AppHandle, kind: WindowKind, urls: Vec<String>) -> tauri::Result<String> {
     let label = create(app, kind, false, false)?;
-    if let Some(url) = url {
-        // Интерфейс нового окна ещё грузится: адрес ждёт в очереди запуска,
+    if !urls.is_empty() {
+        // Интерфейс нового окна ещё грузится: адреса ждут в очереди запуска,
         // её окно заберёт после восстановления сессии.
-        app.state::<crate::launch::Launch>()
-            .push_for(&label, vec![url]);
+        app.state::<crate::launch::Launch>().push_for(&label, urls);
     }
     Ok(label)
 }

@@ -183,16 +183,8 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
         // окна на главном потоке, а создание окна ждёт главный поток.
         tauri::async_runtime::spawn(async move {
             use crate::browser_windows::{open, WindowKind};
-            let mut urls = found.into_iter();
-            let first = urls.next();
-            match open(&app, WindowKind::Normal, first) {
-                Ok(label) => {
-                    let rest: Vec<String> = urls.collect();
-                    if !rest.is_empty() {
-                        app.state::<Launch>().push_for(&label, rest);
-                    }
-                }
-                Err(err) => tracing::warn!(%err, "окно для ссылки не открылось"),
+            if let Err(err) = open(&app, WindowKind::Normal, found) {
+                tracing::warn!(%err, "окно для ссылки не открылось");
             }
         });
         return;
