@@ -452,7 +452,11 @@ pub fn window_open(
     } else {
         WindowKind::Normal
     };
-    let urls: Vec<String> = url.into_iter().chain(urls.unwrap_or_default()).take(100).collect();
+    let urls: Vec<String> = url
+        .into_iter()
+        .chain(urls.unwrap_or_default())
+        .take(100)
+        .collect();
     windows::open(&app, kind, urls).map(|_| ()).map_err(text)
 }
 

@@ -567,7 +567,7 @@ mod tests {
                 db.execute("UPDATE visits SET visited_at = ?1", [now - 7200])?;
                 db.execute("UPDATE history SET visited_at = ?1", [now - 7200])?;
                 // Подробное посещение уже забыто, сводка осталась.
-                db.execute("DELETE FROM visits WHERE url = 'https://kept.example/'", [])
+                db.execute("DELETE FROM visits WHERE host = 'kept.example'", [])
             })
             .unwrap();
         store.record_visit("https://a.example/", "Секрет").unwrap();
@@ -575,10 +575,14 @@ mod tests {
         store.clear_history_since(now - 3600).unwrap();
         let left = store.recent_history(10).unwrap();
         assert_eq!(left.len(), 2);
-        let a = left.iter().find(|entry| entry.url == "https://a.example/").unwrap();
+        let a = left
+            .iter()
+            .find(|entry| entry.url == "https://a.example/")
+            .unwrap();
         assert_eq!(a.title, "Обычная");
         assert_eq!(a.visits, 1);
-        assert!(left.iter().any(|entry| entry.url == "https://kept.example/"));
+        let kept = left.iter().any(|e| e.url == "https://kept.example/");
+        assert!(kept);
     }
 
     /// Частый сайт не теряется за двумя сотнями свежих разовых совпадений.

@@ -243,8 +243,8 @@ pub fn handle_message(
             }
             let mut username = username;
             if username.is_empty() {
-                let mut logins = state.passwords.logins.lock();
-                if let Some((site, login, at)) = logins.remove(&tab) {
+                let first_step = state.passwords.logins.lock().remove(&tab);
+                if let Some((site, login, at)) = first_step {
                     if site == origin && at.elapsed() < LOGIN_TTL {
                         username = login;
                     }
@@ -265,16 +265,16 @@ pub fn handle_message(
                 .navigations
                 .lock()
                 .get(&tab)
-                .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
-                || frame.is_some_and(|frame| {
-                    state
-                        .passwords
-                        .frame_navigations
-                        .lock()
-                        .get(&(tab, frame))
-                        .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
-                });
-            if navigated {
+                .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK);
+            let frame_navigated = frame.is_some_and(|frame| {
+                state
+                    .passwords
+                    .frame_navigations
+                    .lock()
+                    .get(&(tab, frame))
+                    .is_some_and(|at| at.elapsed() < NAVIGATION_SLACK)
+            });
+            if navigated || frame_navigated {
                 commit(app, tab, Some(frame));
             }
         }
@@ -434,7 +434,11 @@ pub fn on_document(app: &AppHandle, tab: u32) {
 pub fn on_frame_gone(app: &AppHandle, tab: u32, frame: u32) {
     let state = app.state::<App>();
     state.passwords.forget_document(tab, Some(frame));
-    state.passwords.frame_navigations.lock().remove(&(tab, frame));
+    state
+        .passwords
+        .frame_navigations
+        .lock()
+        .remove(&(tab, frame));
 }
 
 pub fn forget_tab(app: &AppHandle, tab: u32) {
@@ -552,10 +556,11 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
             let secret = vault::protect(&candidate.password)?;
             // Учётку могли удалить, а её номер — отдать другой: обновляем,
             // только если под ним всё ещё тот же сайт и логин.
-            let replaces = candidate.replaces.as_ref().and_then(|(id, origin)| {
-                let (entry, _) = state.store.password_secret(*id).ok().flatten()?;
-                (&entry.origin == origin && entry.username == candidate.username).then_some(*id)
-            });
+            let replaces = candidate
+                .replaces
+                .as_ref()
+                .filter(|(id, origin)| same_login(&state.store, *id, origin, &candidate.username))
+                .map(|(id, _)| *id);
             let id = match replaces {
                 Some(id) => {
                     state
@@ -576,6 +581,15 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Под номером `id` всё ещё учётка этого сайта с этим логином.
+fn same_login(store: &browser190x4_store::Store, id: i64, origin: &str, username: &str) -> bool {
+    store
+        .password_secret(id)
+        .ok()
+        .flatten()
+        .is_some_and(|(entry, _)| entry.origin == origin && entry.username == username)
 }
 
 /// На странице форма входа: найти учётки документа и запомнить их. Документ

@@ -633,7 +633,8 @@ async fn fetch_playlist(client: &reqwest::Client, url: &str) -> anyhow::Result<S
     // Длину сервер может и не назвать: читаем кусками и бросаем ответ, как
     // только он перерос лимит, а не после того, как он целиком лёг в память.
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(reqwest::Error::without_url)? {
+    let strip = reqwest::Error::without_url;
+    while let Some(chunk) = response.chunk().await.map_err(strip)? {
         if bytes.len() + chunk.len() > PLAYLIST_LIMIT {
             anyhow::bail!("плейлист слишком большой");
         }

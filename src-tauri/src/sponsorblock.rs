@@ -288,7 +288,8 @@ pub fn apply(app: &AppHandle) {
                 let Some(origin) = youtube_origin(&brief.url) else {
                     continue;
                 };
-                let message = json!({ "cmd": "sponsorblock_refresh", "origin": origin }).to_string();
+                let message =
+                    json!({ "cmd": "sponsorblock_refresh", "origin": origin }).to_string();
                 host.with_tab(browser190x4_webview::TabId(brief.id), |view| {
                     if let Err(err) = view.post(&message) {
                         tracing::debug!(%err, "YouTube не сказали о новых настройках");

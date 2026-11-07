@@ -786,10 +786,11 @@ mod fullscreen_frame {
     pub fn leave(window: &tauri::WebviewWindow) {
         let Ok(hwnd) = window.hwnd() else { return };
         let Some(placement) = take(hwnd) else { return };
+        // Рамку место пересчитало ещё с отметкой — без отступов под тень окна:
+        // после него рамка пересчитывается заново.
         let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE;
         let result = unsafe {
             SetWindowPlacement(hwnd, &placement)
-                // Рамку место пересчитало ещё с отметкой — без отступов под тень окна.
                 .and_then(|()| SetWindowPos(hwnd, None, 0, 0, 0, 0, flags))
         };
         if let Err(err) = result {

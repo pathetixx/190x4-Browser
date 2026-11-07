@@ -62,7 +62,10 @@ async fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     let known = std::mem::replace(&mut *app.state::<Updates>().found.lock(), found)
         .map(|update| update.version);
     // Та же версия при фоновой проверке — уже показана, второй раз не зовём.
-    if let Some(info) = info.as_ref().filter(|info| known.as_ref() != Some(&info.version)) {
+    if let Some(info) = info
+        .as_ref()
+        .filter(|info| known.as_ref() != Some(&info.version))
+    {
         tracing::info!(version = %info.version, "доступно обновление");
         let _ = app.emit("update-available", info);
     }
