@@ -27,6 +27,9 @@ use std::time::Duration;
 pub struct Services {
     config: ServicesConfig,
     http: reqwest::Client,
+    /// Клиент без пула соединений: каждый запрос — по новому соединению.
+    /// Нужен для повтора, когда старое соединение из пула умерло молча.
+    fresh: reqwest::Client,
 }
 
 impl Services {
@@ -38,9 +41,22 @@ impl Services {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .user_agent(concat!("190x4-browser/", env!("CARGO_PKG_VERSION")))
+            // Простаивающее соединение могли оборвать по дороге (VPN
+            // переподключился, прокси закрыл туннель), не сказав нам: запрос в
+            // него висит до таймаута. Долго держать такие незачем.
+            .pool_idle_timeout(Duration::from_secs(20))
+            .build()?;
+        let fresh = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(8))
+            .user_agent(concat!("190x4-browser/", env!("CARGO_PKG_VERSION")))
+            .pool_max_idle_per_host(0)
             .build()?;
 
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            fresh,
+        })
     }
 
     pub fn config(&self) -> &ServicesConfig {
@@ -66,6 +82,10 @@ pub(crate) mod timeouts {
 
     /// Перевод: интерактивно, дольше — уже раздражает.
     pub const TRANSLATE: Duration = Duration::from_secs(25);
+    /// Первая попытка перевода. Сервер отвечает за секунду; молчание дольше —
+    /// почти всегда мёртвое соединение из пула, и повтор по новому быстрее,
+    /// чем ждать полный таймаут.
+    pub const TRANSLATE_FIRST: Duration = Duration::from_secs(8);
     /// Разбор ссылки: yt-dlp ходит на сайт и перебирает форматы.
     pub const MEDIA_INFO: Duration = Duration::from_secs(90);
     /// Постановка задания и опрос прогресса — быстрые операции.

@@ -50,21 +50,31 @@ impl Services {
         let target_lang =
             language(target_lang).ok_or_else(|| anyhow::anyhow!("не выбран язык перевода"))?;
 
-        let response = self
-            .http
-            .post(format!("{}/api/translate", self.config.base_url))
-            .header("X-Translate-Key", &self.config.translate_key)
-            .json(&TranslateRequest {
-                text: trimmed,
-                source_lang,
-                target_lang,
-            })
-            .timeout(timeouts::TRANSLATE)
-            .send()
-            .await
-            .map_err(|err| {
-                anyhow::anyhow!("перевод не удался: {}", Services::network_error(&err))
-            })?;
+        let request = TranslateRequest {
+            text: trimmed,
+            source_lang,
+            target_lang,
+        };
+        let send = |client: &reqwest::Client, timeout: std::time::Duration| {
+            client
+                .post(format!("{}/api/translate", self.config.base_url))
+                .header("X-Translate-Key", &self.config.translate_key)
+                .json(&request)
+                .timeout(timeout)
+                .send()
+        };
+        // Первая попытка — по соединению из пула. Если оно умерло молча,
+        // ответа не будет вовсе: тогда повторяем по новому соединению.
+        let sent = match send(&self.http, timeouts::TRANSLATE_FIRST).await {
+            Err(err) if err.is_timeout() || err.is_connect() || err.is_request() => {
+                tracing::debug!("перевод: повтор по новому соединению ({err})");
+                send(&self.fresh, timeouts::TRANSLATE).await
+            }
+            other => other,
+        };
+        let response = sent.map_err(|err| {
+            anyhow::anyhow!("перевод не удался: {}", Services::network_error(&err))
+        })?;
 
         let status = response.status();
         let body = response.text().await?;
