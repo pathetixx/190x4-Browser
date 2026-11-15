@@ -1510,9 +1510,16 @@ function bookmarkManager() {
     return row;
   };
 
+  // Папку нельзя положить ни в неё саму, ни в её подпапки — их в списке нет.
+  const inside = (node, map, exclude) => {
+    for (let cursor = node; cursor; cursor = map.get(cursor.parent_id)) {
+      if (cursor.id === exclude) return true;
+    }
+    return false;
+  };
   const folderOptions = (map, exclude) =>
     nodes
-      .filter((node) => node.kind === "folder" && node.id !== exclude)
+      .filter((node) => node.kind === "folder" && !inside(node, map, exclude))
       .map((node) => {
         const parts = [];
         for (let cursor = node; cursor; cursor = map.get(cursor.parent_id)) parts.unshift(cursor.title);

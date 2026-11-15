@@ -6,6 +6,8 @@
 //! (адрес документа сообщает движок), а ответ отправляется, только если вкладка
 //! всё ещё на странице браузера: в отчёте о ресурсах есть заголовки других вкладок.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -46,6 +48,12 @@ const DEFAULT_TILES: [(&str, &str); 6] = [
 #[derive(Default)]
 pub struct NewTab {
     client: OnceLock<reqwest::Client>,
+    /// Номер изменения в порядке прихода сообщений и последнее записанное по
+    /// каждой настройке. Записи уходят в пул и могут выполниться в любом
+    /// порядке: без номера старое изменение (плитки до второго удаления,
+    /// флажок до повторного щелчка) записалось бы последним.
+    changes: AtomicU64,
+    written: Mutex<HashMap<&'static str, u64>>,
     weather: Mutex<Option<(Instant, String, Value)>>,
     located: Mutex<Option<(Instant, Place, &'static str)>>,
     pub monitor: Monitor,
@@ -125,6 +133,12 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
         return true;
     }
     let app = app.clone();
+    // Номер — здесь, на главном потоке: в порядке, в котором человек менял.
+    let change = app
+        .state::<NewTab>()
+        .changes
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
 
     // Сообщение пришло на главный поток: всё, что трогает базу, уходит в пул.
     match event {
@@ -138,10 +152,7 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
                 .take(MAX_TILES)
                 .collect();
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(err) = store(&app).set_setting("newtab_tiles", &json!(tiles)) {
-                    tracing::warn!(%err, "плитки новой вкладки не сохранены");
-                }
-                post(&app, tab, page_state(&app));
+                write_ordered(&app, tab, change, &[("newtab_tiles", json!(tiles))]);
             });
         }
         PageEvent::Prefs {
@@ -150,16 +161,15 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
             seconds,
         } => {
             tauri::async_runtime::spawn_blocking(move || {
-                for (key, value) in [
+                let values: Vec<(&'static str, Value)> = [
                     ("newtab_weather", weather),
                     ("newtab_monitor", monitor),
                     ("newtab_seconds", seconds),
-                ] {
-                    if let Some(value) = value {
-                        let _ = store(&app).set_setting(key, &Value::Bool(value));
-                    }
-                }
-                post(&app, tab, page_state(&app));
+                ]
+                .into_iter()
+                .filter_map(|(key, value)| Some((key, Value::Bool(value?))))
+                .collect();
+                write_ordered(&app, tab, change, &values);
             });
         }
         PageEvent::Icon { url } => {
@@ -201,8 +211,7 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
             };
             *app.state::<NewTab>().weather.lock() = None;
             tauri::async_runtime::spawn_blocking(move || {
-                let _ = store(&app).set_setting("newtab_city", &value);
-                post(&app, tab, page_state(&app));
+                write_ordered(&app, tab, change, &[("newtab_city", value)]);
                 tauri::async_runtime::spawn(async move {
                     let message = weather_message(&app, false).await;
                     post_soon(app.clone(), tab, message);
@@ -217,6 +226,27 @@ pub fn handle_message(app: &AppHandle, tab: u32, source: &str, payload: &str) ->
         }
     }
     true
+}
+
+/// Записать изменение страницы, если по этой настройке уже не записано более
+/// позднее, и ответить странице тем, что теперь в базе. Запись и ответ — под
+/// одним замком: ответ со старым состоянием не придёт после нового.
+fn write_ordered(app: &AppHandle, tab: u32, change: u64, values: &[(&'static str, Value)]) {
+    let newtab = app.state::<NewTab>();
+    let mut written = newtab.written.lock();
+    let store = store(app);
+    for (key, value) in values {
+        if written.get(key).is_some_and(|last| *last > change) {
+            continue;
+        }
+        if let Err(err) = store.set_setting(key, value) {
+            tracing::warn!(%err, key = *key, "настройка новой вкладки не сохранена");
+            continue;
+        }
+        written.insert(*key, change);
+    }
+    post(app, tab, page_state(app));
+    drop(written);
 }
 
 fn store(app: &AppHandle) -> std::sync::Arc<Store> {

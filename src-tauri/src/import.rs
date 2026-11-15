@@ -242,10 +242,18 @@ type History = (Vec<chromium::ImportedPage>, Vec<chromium::ImportedVisit>);
 
 /// Базу истории браузер держит открытой — читается её копия.
 fn read_history_copy(profile: &Path) -> anyhow::Result<History> {
-    let copy = crate::profile_dir().join(format!("import-history-{}", std::process::id()));
+    // Своя копия у каждого импорта: два импорта из разных окон не должны
+    // перезаписывать и удалять файлы друг друга.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let operation = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let copy =
+        crate::profile_dir().join(format!("import-history-{}-{operation}", std::process::id()));
     let result = copy_and_read(&profile.join("History"), &copy);
     let _ = std::fs::remove_file(&copy);
     let _ = std::fs::remove_file(wal(&copy));
+    let mut shm = copy.into_os_string();
+    shm.push("-shm");
+    let _ = std::fs::remove_file(shm);
     result
 }
 

@@ -315,9 +315,13 @@ impl Services {
 
         tokio::fs::create_dir_all(dir).await?;
         let target = reserve_path(dir, file_name).await?;
-        let mut partial = target.clone().into_os_string();
-        partial.push(".part");
-        let partial = PathBuf::from(partial);
+        let partial = match reserve_partial(&target).await {
+            Ok(partial) => partial,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&target).await;
+                return Err(err);
+            }
+        };
 
         let written = async {
             write_body(response, &partial, cancelled).await?;
@@ -381,6 +385,31 @@ impl Services {
 /// Занять имя для файла: `video.mp4`, если свободно, иначе `video (2).mp4`…
 /// Имя занимается пустым файлом (`create_new`), а не проверкой «есть ли
 /// такой»: между проверкой и записью его успела бы занять другая загрузка.
+/// Временный файл рядом с `target`, занятый так же, как само имя: чужой
+/// `.part` в папке (другая программа, прошлая загрузка) не обрезается и не
+/// удаляется — берётся следующее имя.
+async fn reserve_partial(target: &Path) -> anyhow::Result<PathBuf> {
+    for index in 1..1000 {
+        let mut name = target.as_os_str().to_owned();
+        if index > 1 {
+            name.push(format!(".{index}"));
+        }
+        name.push(".part");
+        let candidate = PathBuf::from(name);
+        let created = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+            .await;
+        match created {
+            Ok(_) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    anyhow::bail!("в папке загрузок слишком много временных файлов")
+}
+
 async fn reserve_path(dir: &Path, file_name: &str) -> anyhow::Result<PathBuf> {
     let safe = sanitize(file_name);
     let path = Path::new(&safe);

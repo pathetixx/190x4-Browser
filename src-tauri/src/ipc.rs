@@ -1491,17 +1491,20 @@ pub fn bookmark_update(
     parent: Option<i64>,
 ) -> Result<(), String> {
     let store = &state.store;
-    store
-        .update_bookmark(id, &title, url.as_deref())
-        .map_err(text)?;
+    // Сначала перенос: он проверяет папку (не внутрь самой себя) и может
+    // отказать. Отказ не должен оставить в базе половину правки.
     if let Some(parent) = parent {
         let current = store.bookmark(id).map_err(text)?.and_then(|n| n.parent_id);
         if current != Some(parent) {
             store.move_bookmark(id, parent, usize::MAX).map_err(text)?;
         }
+    }
+    let updated = store.update_bookmark(id, &title, url.as_deref());
+    if let Some(parent) = parent {
         let _ = store.set_setting("bookmark_folder", &Value::from(parent));
     }
     bookmarks_changed(&app);
+    updated.map_err(text)?;
     Ok(())
 }
 
@@ -1832,6 +1835,10 @@ pub fn zoom_site_set(
     if host.is_empty() || host.len() > 255 {
         return Ok(());
     }
+    // Карта читается и пишется целиком: два окна, меняющие масштаб разных
+    // сайтов одновременно, без замка стёрли бы изменение друг друга.
+    static ZOOM_SITES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _guard = ZOOM_SITES.lock();
     let mut sites = match state.store.setting("zoom_sites").ok().flatten() {
         Some(Value::Object(map)) => map,
         _ => serde_json::Map::new(),

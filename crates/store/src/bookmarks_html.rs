@@ -117,7 +117,16 @@ pub fn parse(html: &str) -> Vec<ImportNode> {
                 }
             }
             (false, "dl") => {
-                if let Some(folder) = pending.take() {
+                if stack.len() >= MAX_DEPTH {
+                    // Глубже не вкладываем: содержимое ляжет в папку уровнем
+                    // выше. Иначе подготовленный файл с тысячами вложенных
+                    // папок переполнил бы стек рекурсивного импорта.
+                    pending = None;
+                    stack.push(Level {
+                        folder: None,
+                        children: Vec::new(),
+                    });
+                } else if let Some(folder) = pending.take() {
                     stack.push(Level {
                         folder: Some(folder),
                         children: Vec::new(),
@@ -153,6 +162,9 @@ pub fn parse(html: &str) -> Vec<ImportNode> {
     }
     stack.pop().map(|level| level.children).unwrap_or_default()
 }
+
+/// Глубже этого папки при импорте не вкладываются — у браузеров и такого не бывает.
+const MAX_DEPTH: usize = 64;
 
 fn attach(stack: &mut [Level], folder: Option<PendingFolder>, children: Vec<ImportNode>) {
     let Some(parent) = stack.last_mut() else {
@@ -472,6 +484,30 @@ mod tests {
         assert_eq!(kino.len(), 1);
 
         assert!(matches!(&tree[1], ImportNode::Link { url, .. } if url == "https://github.com/"));
+    }
+
+    #[test]
+    fn deep_nesting_is_capped() {
+        let depth = 100_000;
+        let mut html = String::from("<DL><p>");
+        for index in 0..depth {
+            html.push_str(&format!("<DT><H3>{index}</H3><DL><p>"));
+        }
+        html.push_str(r#"<DT><A HREF="https://deep.test/">дно</A>"#);
+        for _ in 0..depth {
+            html.push_str("</DL><p>");
+        }
+        html.push_str("</DL>");
+
+        let tree = parse(&html);
+        let mut levels = 0;
+        let mut node = &tree;
+        while let Some(ImportNode::Folder { children, .. }) = node.first() {
+            levels += 1;
+            node = children;
+        }
+        assert!(levels < MAX_DEPTH);
+        assert!(matches!(&node[0], ImportNode::Link { url, .. } if url == "https://deep.test/"));
     }
 
     #[test]
