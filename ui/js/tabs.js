@@ -8,7 +8,6 @@
  * сессии больше не поднимают двадцать страниц на старте.
  */
 
-import { hooks } from "./actions.js";
 import { invoke, listen } from "./bridge.js";
 import { dismissLeaveDialogs, hasLeaveDialog } from "./dialogs.js";
 import { el, favicon, hostOf, icon } from "./dom.js";
@@ -782,7 +781,6 @@ export async function moveToNewWindow(id, at = null) {
     try {
       await invoke("window_open", { private: Boolean(state.window.private), url: tab.url });
     } catch {
-      hooks.toast?.("Окно не открылось");
       return;
     }
     await close(id, { force: true });

@@ -412,6 +412,7 @@ pub(crate) fn route_event(
             app.state::<App>().documents.forget(*id, Some(*frame));
             passwords::on_frame_gone(app, *id, *frame);
             page_messages::forget_frame(*id, *frame);
+            sponsorblock::forget_frame(app, *id, *frame);
             return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
@@ -1024,12 +1025,17 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                 Guard::build(texts, resources())
             }
         };
+        let bytes = fresh.then(|| Guard::snapshot(&engine));
+        // Проверка поколения и замена — под одним замком: сборка, которая
+        // задержалась между ними, не заменит фильтр, уже собранный новее.
+        static PUBLISHING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let publishing = PUBLISHING.lock();
         if FILTER_BUILD.load(Ordering::SeqCst) != build {
             tracing::debug!("списки сменились, пока фильтр собирался — этот набор устарел");
             return;
         }
-        let bytes = fresh.then(|| Guard::snapshot(&engine));
         guard.swap(engine);
+        drop(publishing);
         tracing::info!(
             lists = count,
             snapshot = !fresh,

@@ -658,6 +658,22 @@ impl Guard {
     /// для `$third-party` и исключений по домену), `method` — HTTP-метод
     /// (правила с `$method=` без него не работают).
     pub fn check(&self, url: &str, source_url: &str, kind: ResourceKind, method: &str) -> Decision {
+        self.check_from(url, source_url, None, kind, method)
+    }
+
+    /// То же, что [`Guard::check`], для запроса из фрейма чужого сайта:
+    /// `initiator` — адрес документа фрейма. Правила с `domain=` пишут про
+    /// документ, сделавший запрос (`$script,domain=player.example` — про плеер,
+    /// встроенный в любую страницу), поэтому запрос сверяется и с документом
+    /// вкладки, и с фреймом: закрыт по любому из них — закрыт.
+    pub fn check_from(
+        &self,
+        url: &str,
+        source_url: &str,
+        initiator: Option<&str>,
+        kind: ResourceKind,
+        method: &str,
+    ) -> Decision {
         // Исключение сайта считается по документу вкладки: на выключенном сайте
         // проходят и его собственные запросы, и запросы встроенных в него фреймов.
         if !self.filters(source_url) {
@@ -669,7 +685,17 @@ impl Guard {
             // Невалидный URL (blob:, data:, кривая схема) — не наше дело.
             return Decision::Allow;
         };
-        let verdict = self.verdict(&request, url, source_url, kind);
+        let mut verdict = self.verdict(&request, url, source_url, kind);
+        if let Some(frame) =
+            initiator.filter(|frame| !verdict.block && !same_site(frame, source_url))
+        {
+            if let Ok(request) = Request::new(url, frame, kind.as_str(), method) {
+                let inner = self.verdict(&request, url, frame, kind);
+                if inner.block {
+                    verdict = inner;
+                }
+            }
+        }
         let decision = if verdict.block {
             // Заглушка есть только у правил `$redirect=`/`$redirect-rule=`, и
             // только если её ресурс пришёл с каналом фильтров.
@@ -984,6 +1010,38 @@ mod tests {
             resources,
         ));
         guard
+    }
+
+    #[test]
+    fn frame_rules_apply_to_requests_from_the_frame() {
+        let guard = guard_with("||ads.cdn.test^$script,domain=player.example");
+        let url = "https://ads.cdn.test/ad.js";
+        let page = "https://news.example/article";
+        assert!(matches!(
+            guard.check(url, page, ResourceKind::Script, "GET"),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            guard.check_from(
+                url,
+                page,
+                Some("https://player.example/embed"),
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Block
+        ));
+        // Документ того же сайта, что и вкладка, — проверка одна.
+        assert!(matches!(
+            guard.check_from(
+                url,
+                page,
+                Some("https://news.example/frame"),
+                ResourceKind::Script,
+                "GET"
+            ),
+            Decision::Allow
+        ));
     }
 
     #[test]

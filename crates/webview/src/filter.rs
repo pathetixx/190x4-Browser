@@ -396,8 +396,22 @@ pub(crate) fn install(
                     take_pwstr(raw)
                 };
 
+                // Документ, сделавший запрос: у фрейма чужого сайта — его
+                // адрес из Referer (страница может его убрать, но не подменить
+                // чужим). Движок не сообщает, из какого фрейма запрос.
+                let initiator = if main_frame {
+                    None
+                } else {
+                    request.Headers().ok().and_then(|headers| {
+                        let mut raw = PWSTR::null();
+                        headers.GetHeader(h!("Referer"), &mut raw).ok()?;
+                        Some(take_pwstr(raw)).filter(|referer| !referer.is_empty())
+                    })
+                };
+
                 let kind = map_context(context, main_frame);
-                match guard.check(&url, &source.borrow(), kind, &method) {
+                match guard.check_from(&url, &source.borrow(), initiator.as_deref(), kind, &method)
+                {
                     Decision::Allow => {}
                     Decision::Block => {
                         counter.hit(id, &sink);
@@ -463,6 +477,9 @@ struct HostScript {
     empty: bool,
     /// Посчитан как сайт вкладки, со всей косметикой.
     page: bool,
+    /// Номер подсчёта: ответ движка о встраивании прежнего скрипта хоста
+    /// (посчитанного для фрейма) не займёт место нового.
+    ticket: u64,
 }
 
 struct CosmeticState {
@@ -473,6 +490,8 @@ struct CosmeticState {
     epoch: u64,
     /// Хосты, давние — первыми.
     hosts: Vec<HostScript>,
+    /// Номер следующего подсчёта скрипта ([`HostScript::ticket`]).
+    tickets: u64,
     /// Адрес документа вкладки — по нему решается, работает ли блокировка во
     /// всех её фреймах.
     top: String,
@@ -511,6 +530,7 @@ impl CosmeticScripts {
                 revision: guard.revision(),
                 epoch: 0,
                 hosts: Vec::new(),
+                tickets: 0,
                 top: String::new(),
                 loading: None,
             }),
@@ -641,32 +661,47 @@ impl CosmeticScripts {
         if host == PAGES_HOST {
             return;
         }
-        {
+        // Скрипт, посчитанный для фрейма, неполный и тогда, когда что-то в
+        // нём есть (правила окон, свои правила хоста): общей косметики сайта
+        // вкладки в нём нет. Такой считается заново, прежний снимается.
+        let outdated = {
             let mut state = self.state.borrow_mut();
-            if let Some(at) = state.hosts.iter().position(|script| script.host == host) {
-                let script = state.hosts.remove(at);
-                let incomplete = page && script.empty && !script.page;
-                if !incomplete {
-                    // Свежий — в конец: уступать место он будет последним.
-                    state.hosts.push(script);
-                    return;
+            match state.hosts.iter().position(|script| script.host == host) {
+                Some(at) => {
+                    let script = state.hosts.remove(at);
+                    if !(page && !script.page) {
+                        // Свежий — в конец: уступать место он будет последним.
+                        state.hosts.push(script);
+                        return;
+                    }
+                    script.id
                 }
+                None => None,
             }
+        };
+        if let Some(id) = outdated {
+            let _ = unsafe {
+                self.core
+                    .RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id))
+            };
         }
         let script = document_script(&host, &cosmetics());
-        let evicted = {
+        let (ticket, evicted) = {
             let mut state = self.state.borrow_mut();
+            state.tickets += 1;
+            let ticket = state.tickets;
             state.hosts.push(HostScript {
                 host: host.clone(),
                 id: None,
                 empty: script.is_none(),
                 page,
+                ticket,
             });
             let mut evicted = Vec::new();
             while state.hosts.len() > HOSTS_LIMIT {
                 evicted.push(state.hosts.remove(0));
             }
-            evicted
+            (ticket, evicted)
         };
         for old in evicted {
             if let Some(id) = old.id {
@@ -679,10 +714,10 @@ impl CosmeticScripts {
         let Some(script) = script else {
             return;
         };
-        self.register(host, script);
+        self.register(host, script, ticket);
     }
 
-    fn register(&self, host: String, script: String) {
+    fn register(&self, host: String, script: String, ticket: u64) {
         let epoch = self.state.borrow().epoch;
         let core = self.core.clone();
         let this = self.me.clone();
@@ -712,7 +747,12 @@ impl CosmeticScripts {
                             let current = state.epoch == epoch;
                             let slot = state.hosts.iter_mut().find(|script| script.host == host);
                             let taken = match slot {
-                                Some(slot) if current && slot.id.is_none() && !slot.empty => {
+                                Some(slot)
+                                    if current
+                                        && slot.ticket == ticket
+                                        && slot.id.is_none()
+                                        && !slot.empty =>
+                                {
                                     slot.id = Some(id.clone());
                                     true
                                 }

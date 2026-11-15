@@ -65,6 +65,8 @@
   let player = null;
   let media = null;
   let timer = 0;
+  /** Куда перемотал сам скрипт: эта перемотка — не выбор человека. */
+  let ownSeek = null;
 
   const sync = () => {
     const next = /^[\w-]{11}$/.test(videoOf()) ? videoOf() : "";
@@ -96,6 +98,7 @@
     const time = media.currentTime;
     const skip = segmentAt(time, ["skip"]);
     if (skip) {
+      ownSeek = skip.end;
       media.currentTime = skip.end;
       showNotice(skip, true);
       return;
@@ -118,6 +121,7 @@
     if (node !== media) {
       media = node;
       player = playerOf(node);
+      follow(node);
     }
     if (event.type === "loadedmetadata" || event.type === "durationchange") {
       sync();
@@ -125,15 +129,31 @@
       return;
     }
     if (event.type === "seeked") {
+      // Перемотал сам скрипт (пропуск сегмента) — следующий сегмент, который
+      // начинается там же, человек смотреть не выбирал.
+      const own = ownSeek !== null && Math.abs(media.currentTime - ownSeek) < 0.5;
+      ownSeek = null;
       // Перемотали внутрь сегмента — человек хочет его посмотреть.
-      const inside = segments.find((segment) => media.currentTime >= segment.start && media.currentTime < segment.end);
+      const inside = !own && segments.find((segment) => media.currentTime >= segment.start && media.currentTime < segment.end);
       if (inside) watched.add(inside.uuid);
     }
     check();
   };
-  for (const type of ["timeupdate", "seeked", "play", "loadedmetadata", "durationchange"]) {
+  const MEDIA_EVENTS = ["timeupdate", "seeked", "play", "loadedmetadata", "durationchange"];
+  for (const type of MEDIA_EVENTS) {
     // События медиа не всплывают, но проходят через document при захвате.
     document.addEventListener(type, onMedia, true);
+  }
+  // Мини-плеер уносит видео в свой документ, и события до этого document уже
+  // не доходят: за выбранным видео следим и на нём самом.
+  const followed = new WeakSet();
+  function follow(node) {
+    if (followed.has(node)) return;
+    followed.add(node);
+    const away = (event) => {
+      if (node.ownerDocument !== document) onMedia(event);
+    };
+    for (const type of MEDIA_EVENTS) node.addEventListener(type, away);
   }
   // Переходы внутри YouTube не перезагружают страницу. Первый запрос — как
   // только документ готов, не дожидаясь, пока плеер загрузит видео.

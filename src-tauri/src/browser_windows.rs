@@ -578,6 +578,7 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
                 crate::external::forget_tab(&handle.state::<App>(), tab);
                 crate::page_messages::forget(tab);
                 crate::drm::forget_tab(tab);
+                crate::sponsorblock::forget_tab(&handle, tab);
             }
             handle.state::<App>().windows.remove(&label);
             // Ещё раз — после того, как окна нет в списке: выход, снявший

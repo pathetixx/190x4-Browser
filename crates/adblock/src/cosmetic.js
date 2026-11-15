@@ -705,6 +705,8 @@
   const added = new Set();
   const touched = new Set();
   let full = true;
+  /** Что не успел обойти прошлый проход: списки узлов и место, где он встал. */
+  let backlog = [];
 
   const survey = () => {
     const classes = [];
@@ -724,22 +726,31 @@
     };
     const roots = full ? [document.documentElement] : topmost(added);
     for (const node of full ? [] : touched) if (node.nodeType === 1) note(node);
+    // Полный обход заменяет всё, что осталось от прошлых.
+    const work = full ? [] : backlog;
     full = false;
     added.clear();
     touched.clear();
-    // Потолок на один проход: страница, пересобирающая тысячи узлов, не
-    // должна занимать поток каждую четверть секунды.
-    let budget = 20000;
     for (const root of roots) {
       if (!root || root.nodeType !== 1 || !root.isConnected) continue;
-      note(root);
-      for (const node of root.querySelectorAll("[class],[id]")) {
-        if (--budget <= 0) break;
-        note(node);
-      }
-      if (budget <= 0) break;
+      work.push({ nodes: [root], index: 0 }, { nodes: root.querySelectorAll("[class],[id]"), index: 0 });
     }
+    // Потолок на один проход: страница, пересобирающая тысячи узлов, не
+    // должна занимать поток каждую четверть секунды. Остаток обойдут
+    // следующие проходы, а не забудут.
+    let budget = 20000;
+    while (work.length && budget > 0) {
+      const item = work[0];
+      while (item.index < item.nodes.length && budget > 0) {
+        const node = item.nodes[item.index++];
+        budget -= 1;
+        if (node.isConnected) note(node);
+      }
+      if (item.index >= item.nodes.length) work.shift();
+    }
+    backlog = work;
     send(classes, ids);
+    if (backlog.length) schedule(250);
   };
 
   /**
@@ -752,14 +763,33 @@
       return true;
     });
 
-  /** Классы и id — браузеру, пачками до 40 КБ: длинные сообщения он не читает. */
+  /**
+   * Классы и id — браузеру, пачками: браузер читает сообщения до 64 КБ в UTF-8
+   * и не больше 5000 имён в списке. Размер считается в байтах UTF-8 с запасом
+   * на кавычки; пачка, которую отправить не удалось, снова считается новой.
+   */
+  const BATCH_BYTES = 40000;
+  const BATCH_NAMES = 4000;
+  const bytesOf = (name) => {
+    let bytes = 3;
+    for (let i = 0; i < name.length; i += 1) {
+      const code = name.charCodeAt(i);
+      bytes += code < 0x80 ? (code === 0x22 || code === 0x5c ? 2 : 1) : code < 0x800 ? 2 : 3;
+    }
+    return bytes;
+  };
   const send = (classes, ids) => {
     let batch = { classes: [], ids: [] };
     let size = 0;
+    let count = 0;
     const flush = () => {
-      if (batch.classes.length || batch.ids.length) post({ evt: "cosmetic_ids", ...batch });
+      if ((batch.classes.length || batch.ids.length) && !post({ evt: "cosmetic_ids", ...batch })) {
+        for (const name of batch.classes) seenClasses.delete(name);
+        for (const name of batch.ids) seenIds.delete(name);
+      }
       batch = { classes: [], ids: [] };
       size = 0;
+      count = 0;
     };
     for (const [list, key] of [
       [classes, "classes"],
@@ -767,9 +797,11 @@
     ]) {
       for (const name of list) {
         if (name.length > 256) continue;
-        if (size + name.length > 40000) flush();
+        const bytes = bytesOf(name);
+        if (size + bytes > BATCH_BYTES || count >= BATCH_NAMES) flush();
         batch[key].push(name);
-        size += name.length + 3;
+        size += bytes;
+        count += 1;
       }
     }
     flush();

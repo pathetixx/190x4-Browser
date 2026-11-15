@@ -152,6 +152,7 @@ pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Optio
     external::forget_tab(&state, id);
     crate::page_messages::forget(id);
     crate::drm::forget_tab(id);
+    crate::sponsorblock::forget_tab(&app, id);
     with_tab(&app, id, move |host| {
         host.close(TabId(id))
             .map(|next| next.map(|t| t.0))
