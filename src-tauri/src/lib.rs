@@ -186,6 +186,7 @@ pub fn run() {
             ipc::tab_history,
             ipc::tab_history_go,
             ipc::tab_selection,
+            ipc::tab_edited,
             ipc::app_quit,
             shutdown::shutdown_answer,
             ipc::chrome_focus,
@@ -471,8 +472,9 @@ pub(crate) fn route_event(
         }
         // Переход закончился: документ на экране либо сменился, либо остался
         // прежним (переход отменили или он ушёл в загрузку).
-        TabEvent::Finished { id, url, .. } => {
+        TabEvent::Finished { id, url, ok, .. } => {
             let state = app.state::<App>();
+            state.documents.typing_settled(*id, *ok);
             if state
                 .documents
                 .settle(*id, url, label, state.windows.is_private(label))
@@ -485,6 +487,7 @@ pub(crate) fn route_event(
             state
                 .documents
                 .navigate(*id, None, url, label, state.windows.is_private(label));
+            state.documents.typing_navigation(*id);
             passwords::on_navigation(app, *id);
             pip::on_navigation(app, *id);
             // Ссылки на приложения прежней страницы больше никто не откроет.
@@ -582,15 +585,7 @@ fn route_message(
         // страница, шлющая `postMessage` в цикле, загружала бы его событиями.
         // Ввод в любом фрейме: черновик в редакторе внутри фрейма тоже не
         // должен пропасть при выгрузке вкладки.
-        "form_edited" => {
-            let event = browser190x4_webview::TabEvent::Message {
-                id,
-                frame,
-                source: source.to_string(),
-                payload: payload.to_string(),
-            };
-            let _ = app.emit_to(label, "tab", &event);
-        }
+        "form_edited" => app.state::<App>().documents.mark_edited(id),
         "navigate" | "middle_click" | "media_found" if top => {
             let event = browser190x4_webview::TabEvent::Message {
                 id,

@@ -1059,7 +1059,7 @@ function sleepIdle() {
     if (tab.id === state.pipTab) continue;
     const idle = now - seenAt.get(tab.id);
     if (discard > 0 && idle >= discard * 60_000 && discardable(tab)) {
-      discardTab(tab);
+      discardUnlessEdited(tab);
       continue;
     }
     if (tab.frozen || !(minutes > 0) || idle < minutes * 60_000) continue;
@@ -1071,13 +1071,31 @@ function sleepIdle() {
   }
 }
 
-/**
- * Страница сайта, которая ничего не ждёт от человека: её можно закрыть и
- * открыть заново. В документе, где печатали (`edited`), может быть черновик —
- * такую вкладку только усыпляют.
- */
+/** Страница сайта, которая ничего не ждёт от человека: её можно закрыть и открыть заново. */
 function discardable(tab) {
-  return /^https?:\/\//i.test(tab.url ?? "") && !tab.edited && !hasLeaveDialog(tab.id);
+  return /^https?:\/\//i.test(tab.url ?? "") && !hasLeaveDialog(tab.id);
+}
+
+/** Вкладки, про которые браузер сейчас спрашивает, печатали ли на них. */
+const discardChecks = new Set();
+
+/**
+ * Выгрузить вкладку, если на её странице не печатали: там может быть
+ * черновик, и такую вкладку только усыпляют. Признак ввода хранит Rust — он
+ * переезжает с вкладкой в другое окно и переживает переход в загрузку.
+ */
+function discardUnlessEdited(tab) {
+  if (discardChecks.has(tab.id)) return;
+  discardChecks.add(tab.id);
+  invoke("tab_edited", { id: tab.id })
+    .then((edited) => {
+      const current = state.tabs.get(tab.id);
+      if (edited || !current || current.sleeping || current.audible || current.pinned) return;
+      if (current.id === state.activeId || current.id === state.splitId) return;
+      if (discardable(current)) discardTab(current);
+    })
+    .catch(() => {})
+    .finally(() => discardChecks.delete(tab.id));
 }
 
 /** Выгрузить вкладку: страница закрывается, место в строке остаётся спящей вкладкой. */

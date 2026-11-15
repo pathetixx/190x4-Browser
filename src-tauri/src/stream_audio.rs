@@ -60,8 +60,9 @@ const MARKER: &str = "stream-audio.lowered";
 /// усиливает снятый звук. Захват идёт в 32-битных float, и такое усиление
 /// звук не портит.
 const QUIET: f32 = 0.001;
-/// Громкость сессии ниже этой — приглушена браузером, а не человеком.
-const LOWERED: f32 = 0.01;
+/// Громкость сессии ниже этой — приглушена браузером, а не человеком: микшер
+/// Windows ставит громкость с шагом в 1%, а браузер приглушает до 0,1%.
+const LOWERED: f32 = 0.0099;
 
 const RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -89,8 +90,10 @@ static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 /// Включить или выключить пересылку по настройке. Зовётся при запуске и при
 /// смене настройки.
 pub fn apply(app: &AppHandle) {
-    let enabled = app.state::<App>().store.setting_bool(SETTING, false);
     let mut running = RUNNING.lock();
+    // Настройка — под замком: два переключения подряд из разных потоков не
+    // оставят пересылку включённой, когда в базе уже «выключено».
+    let enabled = app.state::<App>().store.setting_bool(SETTING, false);
     // Прежний поток останавливается сам: он возвращает громкость и выходит.
     // Ждёт его новый поток, а не вызывающий — тот может быть главным.
     let previous = running.take().map(|old| {
@@ -283,9 +286,11 @@ impl Pipeline {
                     .iter()
                     .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
                 self.calibrate(peak, lowered, frames);
-                // Усиление, после которого звук упёрся бы в потолок, значит,
-                // что этот кусок снят ещё до приглушения: он идёт как есть.
-                let gain = if lowered && peak * self.gain <= 1.0 {
+                // Приглушённый звук не бывает громче QUIET: кусок громче снят
+                // с сессии, которую ещё не успели приглушить, и идёт как есть.
+                // Порог вдвое выше предела, чтобы усиление не прыгало на
+                // приглушённом звуке.
+                let gain = if lowered && peak <= QUIET * 2.0 {
                     self.gain
                 } else {
                     1.0
@@ -515,41 +520,61 @@ impl Volumes {
         !self.lowered.is_empty()
     }
 
-    /// Приглушить новые сессии движка. Сессия появляется, когда страница
-    /// начинает играть, — проверяется часто.
+    /// Приглушить новые сессии движка — относительно их громкости, чтобы
+    /// пересылка звучала так же, как звучали сессии. Сессия появляется, когда
+    /// страница начинает играть, — проверяется часто. Громкость, которую
+    /// человек сменил в микшере, пока пересылка работает, становится новой
+    /// громкостью сессии.
     fn lower(&mut self, tree: &HashSet<u32>) {
         for (id, volume) in engine_sessions(tree) {
-            if self.lowered.contains_key(&id) {
-                continue;
-            }
             let Ok(level) = (unsafe { volume.GetMasterVolume() }) else {
                 continue;
+            };
+            let original = match self.lowered.get(&id) {
+                Some((_, original)) if (level - original * QUIET).abs() <= 1e-4 => continue,
+                // Сдвинули в микшере.
+                Some(_) => level,
+                None => true_level(level),
             };
             if self.lowered.is_empty() {
                 let _ = std::fs::write(&self.marker, b"1");
             }
-            // Уже приглушена — остаток аварийного выхода: вернётся полной.
-            let original = if level < LOWERED { 1.0 } else { level };
-            if unsafe { volume.SetMasterVolume(QUIET, &GUID::zeroed()) }.is_ok() {
+            if unsafe { volume.SetMasterVolume(original * QUIET, &GUID::zeroed()) }.is_ok() {
                 self.lowered.insert(id, (volume, original));
             }
         }
     }
 
+    /// Вернуть громкость. Сессия, которой вернуть не удалось (устройство
+    /// отключили, служба звука перезапускалась), остаётся в списке до
+    /// следующей попытки, а отметка в профиле — до последней удачной.
     fn restore(&mut self) {
         if self.lowered.is_empty() {
             return;
         }
-        for (_, (volume, original)) in self.lowered.drain() {
-            let _ = unsafe { volume.SetMasterVolume(original, &GUID::zeroed()) };
+        self.lowered.retain(|_, (volume, original)| {
+            unsafe { volume.SetMasterVolume(*original, &GUID::zeroed()) }.is_err()
+        });
+        if self.lowered.is_empty() {
+            let _ = std::fs::remove_file(&self.marker);
         }
-        let _ = std::fs::remove_file(&self.marker);
     }
 }
 
 impl Drop for Volumes {
     fn drop(&mut self) {
         self.restore();
+    }
+}
+
+/// Громкость сессии без приглушения браузера: сессия, приглушённая им и не
+/// возвращённая (аварийный выход), получает прежнюю — браузер приглушал в
+/// QUIET раз. Выключенный звук (0) так и остаётся выключенным.
+fn true_level(level: f32) -> f32 {
+    if level > 0.0 && level < LOWERED {
+        (level / QUIET).min(1.0)
+    } else {
+        level
     }
 }
 
@@ -566,9 +591,17 @@ fn repair(stop: &AtomicBool, marker: &std::path::Path) {
                 if restored.contains(&id) {
                     continue;
                 }
-                let level = unsafe { volume.GetMasterVolume() }.unwrap_or(1.0);
-                if level < LOWERED {
-                    let _ = unsafe { volume.SetMasterVolume(1.0, &GUID::zeroed()) };
+                let Ok(level) = (unsafe { volume.GetMasterVolume() }) else {
+                    continue;
+                };
+                // Приглушено браузером и не возвращено.
+                if level > 0.0 && level < LOWERED {
+                    if unsafe { volume.SetMasterVolume(true_level(level), &GUID::zeroed()) }
+                        .is_err()
+                    {
+                        // Повторим на следующем круге.
+                        continue;
+                    }
                     tracing::info!("громкость звука страниц возвращена после аварийного выхода");
                 }
                 restored.insert(id);

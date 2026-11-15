@@ -388,7 +388,14 @@
     // считается выбранное поле. У входа «сначала почта» пароля ещё нет, и
     // чужой пароль на странице (форма регистрации) заполнять нельзя.
     const own = () => {
-      if (anchor.form) return passwordsIn(anchor.form)[0] || null;
+      // Поля формы — и те, что связаны с ней атрибутом form= снаружи разметки.
+      if (anchor.form) {
+        return (
+          Array.from(anchor.form.elements).find(
+            (item) => item instanceof HTMLInputElement && item.type === "password" && usable(item)
+          ) || null
+        );
+      }
       return passwordsIn(scopeFor(anchor)).find((item) => usernameFor(item, scopeFor(item)) === anchor) || null;
     };
     const password = anchor

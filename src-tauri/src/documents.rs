@@ -16,7 +16,19 @@ pub struct Context {
 }
 
 #[derive(Default)]
-pub struct Documents(Mutex<Registry>);
+pub struct Documents(Mutex<Registry>, Mutex<HashMap<u32, Typing>>);
+
+/// Печатали ли в документе вкладки: такую вкладку браузер не выгружает, иначе
+/// черновик пропал бы. Признак живёт здесь, а не в интерфейсе окна: он
+/// переезжает с вкладкой в другое окно и переживает переход, ушедший в
+/// загрузку или отменённый.
+#[derive(Default, Clone, Copy)]
+struct Typing {
+    /// Начало последнего перехода документа вкладки.
+    started: Option<Instant>,
+    /// Когда в документе начали печатать.
+    edited: Option<Instant>,
+}
 
 type Slot = (u32, Option<u32>);
 
@@ -180,7 +192,49 @@ impl Documents {
         state.entries.get(&slot) == Some(context) && !state.pending.contains_key(&slot)
     }
 
+    /// В документе вкладки (или в её фрейме) начали печатать.
+    pub fn mark_edited(&self, tab: u32) {
+        self.1.lock().entry(tab).or_default().edited = Some(Instant::now());
+    }
+
+    /// Можно ли выгрузить вкладку, не потеряв введённого.
+    pub fn edited(&self, tab: u32) -> bool {
+        self.1
+            .lock()
+            .get(&tab)
+            .is_some_and(|typing| typing.edited.is_some())
+    }
+
+    /// Документ вкладки начал переход.
+    pub fn typing_navigation(&self, tab: u32) {
+        self.1.lock().entry(tab).or_default().started = Some(Instant::now());
+    }
+
+    /// Переход документа вкладки закончился. Новый документ (`ok`) — ввод
+    /// прежнего к нему не относится; ввод, начатый уже после начала перехода,
+    /// — его собственный. Переход, ушедший в загрузку или отменённый, документ
+    /// не меняет, и признак остаётся.
+    pub fn typing_settled(&self, tab: u32, ok: bool) {
+        if !ok {
+            return;
+        }
+        let mut typing = self.1.lock();
+        if let Some(entry) = typing.get_mut(&tab) {
+            let before = match (entry.edited, entry.started) {
+                (Some(edited), Some(started)) => edited < started,
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            if before {
+                entry.edited = None;
+            }
+        }
+    }
+
     pub fn forget(&self, tab: u32, frame: Option<u32>) {
+        if frame.is_none() {
+            self.1.lock().remove(&tab);
+        }
         let mut state = self.0.lock();
         let gone = |(id, slot): &Slot| *id == tab && (frame.is_none() || *slot == frame);
         state.entries.retain(|key, _| !gone(key));
@@ -247,6 +301,28 @@ mod tests {
         // Тот же сайт — тот же адресат.
         docs.navigate(1, None, "https://a.test/next", "chrome", false);
         assert!(docs.current(&page));
+    }
+
+    #[test]
+    fn typing_survives_downloads_and_ends_with_the_document() {
+        let docs = Documents::default();
+        docs.mark_edited(1);
+        assert!(docs.edited(1));
+        docs.typing_navigation(1);
+        // Ссылка ушла в загрузку: документ тот же.
+        docs.typing_settled(1, false);
+        assert!(docs.edited(1));
+        docs.typing_navigation(1);
+        docs.typing_settled(1, true);
+        assert!(!docs.edited(1));
+        // Начали печатать в новом документе раньше, чем он догрузился.
+        docs.typing_navigation(1);
+        std::thread::sleep(Duration::from_millis(5));
+        docs.mark_edited(1);
+        docs.typing_settled(1, true);
+        assert!(docs.edited(1));
+        docs.forget(1, None);
+        assert!(!docs.edited(1));
     }
 
     #[test]

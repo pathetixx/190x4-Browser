@@ -145,6 +145,12 @@ pub fn tab_popup_deny(app: AppHandle, opener: u32, token: u64) -> Result<(), Str
     with_tab(&app, opener, move |host| host.popup_deny(token))
 }
 
+/// Печатали ли на странице вкладки: такую вкладку браузер не выгружает.
+#[tauri::command]
+pub fn tab_edited(state: State<'_, App>, id: u32) -> bool {
+    state.documents.edited(id)
+}
+
 #[tauri::command]
 pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
     state.documents.forget(id, None);

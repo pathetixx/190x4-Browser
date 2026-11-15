@@ -319,7 +319,7 @@ listen("tab", (event) => {
       toast("Вкладка не открылась — движок не ответил");
       break;
     case "started":
-      upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null, edited: false });
+      upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
       onNavigation(event.id);
       closeFieldMenu(event.id);
       state.passwordSites.delete(event.id);
@@ -632,10 +632,6 @@ function handlePageMessage({ id, source, payload }) {
   }
   if (message.evt === "middle_click") {
     middleClickAt.set(id, performance.now());
-    return;
-  }
-  if (message.evt === "form_edited") {
-    upsertTab(id, { edited: true });
     return;
   }
   if (message.evt === "media_found" && typeof message.url === "string") {
