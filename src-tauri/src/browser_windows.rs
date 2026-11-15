@@ -320,12 +320,21 @@ fn create_window(app: &AppHandle, kind: WindowKind, opening: Opening) -> tauri::
 
     // Окно записывается в реестр до того, как его интерфейс начнёт грузиться:
     // он сразу спрашивает, что это за окно и какие вкладки восстановить.
-    let session = app.state::<App>().windows.reserve(
-        &label,
-        kind,
-        opening.restore || opening.tabs.is_some(),
-        opening.first,
-    );
+    // Под замком выхода: окно, появившееся после того, как выход снял список
+    // окон, не осталось бы без вопроса «можно закрыть?» и без записи сессии.
+    let Some(session) = crate::shutdown::unless_preparing(app, || {
+        app.state::<App>().windows.reserve(
+            &label,
+            kind,
+            opening.restore || opening.tabs.is_some(),
+            opening.first,
+        )
+    }) else {
+        app.state::<crate::launch::Launch>().forget_window(&label);
+        return Err(tauri::Error::Anyhow(anyhow::anyhow!(
+            "Браузер готовится к закрытию"
+        )));
+    };
     if let (Some(session), Some(tabs)) = (session, opening.tabs) {
         if let Err(err) = app.state::<App>().store.save_session(session, tabs) {
             tracing::warn!(%err, "вкладки закрытого окна не записаны");
@@ -571,6 +580,10 @@ fn wire_window(app: &AppHandle, window: &tauri::WebviewWindow) {
                 crate::drm::forget_tab(tab);
             }
             handle.state::<App>().windows.remove(&label);
+            // Ещё раз — после того, как окна нет в списке: выход, снявший
+            // список между первым вызовом и удалением, не ждал бы его ответа
+            // две минуты.
+            crate::shutdown::window_gone(&handle, &label);
             // Вход Twitch приватного сеанса живёт, пока открыто приватное окно.
             if !handle.state::<App>().windows.any_private() {
                 crate::twitch::forget_private(&handle);
@@ -992,8 +1005,10 @@ pub fn open(app: &AppHandle, kind: WindowKind, urls: Vec<String>) -> tauri::Resu
     let label = create(app, kind, false, false)?;
     if !urls.is_empty() {
         // Интерфейс нового окна ещё грузится: адреса ждут в очереди запуска,
-        // её окно заберёт после восстановления сессии.
+        // её окно заберёт после восстановления сессии. Если оно уже успело
+        // заглянуть в очередь, его позовёт событие `launch`.
         app.state::<crate::launch::Launch>().push_for(&label, urls);
+        let _ = app.emit_to(label.as_str(), "launch", ());
     }
     Ok(label)
 }

@@ -80,6 +80,8 @@ pub fn remove_host(label: &str) -> Vec<u32> {
     let Some(host) = HOSTS.with(|cell| cell.borrow_mut().remove(label)) else {
         return Vec::new();
     };
+    // Мини-плеер окна закрывается вместе с ним — молча, без события.
+    crate::pip::forget_window(label);
     host.shutdown().into_iter().map(|id| id.0).collect()
 }
 

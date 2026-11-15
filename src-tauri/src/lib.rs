@@ -526,15 +526,17 @@ fn route_message(
     source: &str,
     payload: &str,
 ) {
+    // Лимит — до разбора: и чужие, и слишком большие сообщения расходуют его,
+    // иначе страница, шлющая в цикле мусор, держала бы главный поток разбором.
+    if !page_messages::allow(id, frame) {
+        return;
+    }
     if payload.len() > MAX_PAGE_MESSAGE {
         return;
     }
     let Some(evt) = page_messages::event_name(payload) else {
         return;
     };
-    if !page_messages::allow(id, frame) {
-        return;
-    }
     let top = frame.is_none();
     match evt.as_ref() {
         name if name.starts_with("password_") => {

@@ -728,6 +728,9 @@ pub struct Tab {
     /// Вкладку закрывают: навигация на `about:blank` спрашивает страницу
     /// «Покинуть сайт?», а её начало значит «можно закрывать».
     closing: Rc<Cell<bool>>,
+    /// Вкладку закрыли, но её загрузка ещё идёт ([`Tab::park`]): новых окон
+    /// у такой страницы нет.
+    parked: Rc<Cell<bool>>,
     /// События вкладки уходят в интерфейс. Заранее прогретая новая вкладка
     /// молчит, пока её не отдали пользователю (`announce`).
     announced: Rc<Cell<bool>>,
@@ -2017,6 +2020,7 @@ impl Tab {
             fullscreen,
             scripts,
             closing: Rc::new(Cell::new(false)),
+            parked: Rc::new(Cell::new(false)),
             announced,
             sink: sink.clone(),
             route,
@@ -2410,6 +2414,7 @@ impl Tab {
             let s = sink.clone();
             let source = self.source.clone();
             let pip_expected = self.pip_expected.clone();
+            let parked = self.parked.clone();
             let controller = self.controller.clone();
             let core_ref = core.clone();
             let private = self.private;
@@ -2421,6 +2426,12 @@ impl Tab {
                     };
 
                     let Some(args) = args else { return Ok(()) };
+                    // Закрытая вкладка докачивает загрузку: её окна некому
+                    // показать, а без ответа страница ждала бы его вечно.
+                    if parked.get() {
+                        args.SetHandled(true)?;
+                        return Ok(());
+                    }
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
@@ -3053,6 +3064,26 @@ impl Tab {
             self.set_memory_target(true);
         }
         Ok(())
+    }
+
+    /// Вкладку закрыли, а её загрузка ещё идёт: страница живёт невидимой до
+    /// конца загрузки (её события загрузки нужны до конца), но для человека её
+    /// больше нет: звук выключен, видео и музыка на паузе, новых окон нет.
+    pub fn park(&mut self) -> windows_core::Result<()> {
+        self.parked.set(true);
+        if let Err(err) = self.set_muted(true) {
+            tracing::debug!(%err, "закрытая вкладка не заглушена");
+        }
+        let handler = webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+        unsafe {
+            let _ = self.core.ExecuteScript(
+                windows_core::h!(
+                    "document.querySelectorAll('video,audio').forEach((m) => { try { m.pause(); } catch (_) {} })"
+                ),
+                &handler,
+            );
+        }
+        self.set_visible(false)
     }
 
     pub fn visible(&self) -> bool {

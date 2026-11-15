@@ -36,14 +36,42 @@ enum PageEvent {
 pub fn pip_toggle(app: AppHandle, id: u32) -> Result<(), String> {
     let current = CURRENT.lock().clone();
     if let Some((_, tab)) = current {
-        with_tab(&app, tab, |host| host.pip_close(false, "back"))?;
+        // Вкладки прежнего мини-плеера уже нет (закрыли её окно): мини-плеер
+        // ушёл вместе с ним, и помнить его незачем.
+        if with_tab(&app, tab, |host| host.pip_close(false, "back")).is_err() {
+            forget(tab);
+        }
         if tab == id {
             return Ok(());
         }
     }
     with_tab(&app, id, move |host| {
         host.pip_open(TabId(id)).map_err(|err| err.to_string())
-    })?
+    })??;
+    // Окно мини-плеера строится не сразу: место занято уже сейчас, чтобы
+    // второе окно браузера не открыло второй мини-плеер. Не открылся —
+    // событие `on: false` место освободит.
+    let mut current = CURRENT.lock();
+    if current.is_none() {
+        *current = Some((String::new(), id));
+    }
+    Ok(())
+}
+
+/// Забыть мини-плеер вкладки, если он был её.
+fn forget(tab: u32) {
+    let mut current = CURRENT.lock();
+    if current.as_ref().is_some_and(|(_, id)| *id == tab) {
+        *current = None;
+    }
+}
+
+/// Окно браузера закрылось: его мини-плеер закрылся вместе с ним.
+pub fn forget_window(label: &str) {
+    let mut current = CURRENT.lock();
+    if current.as_ref().is_some_and(|(owner, _)| owner == label) {
+        *current = None;
+    }
 }
 
 /// Окно мини-плеера, которое попросила страница: его сажает хост её окна.
