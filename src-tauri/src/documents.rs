@@ -1,5 +1,6 @@
 //! Контекст документа: фоновый ответ не переживает навигацию или перенос вкладки.
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use browser190x4_store::passwords_csv::origin_of;
 use parking_lot::Mutex;
@@ -19,6 +20,11 @@ pub struct Documents(Mutex<Registry>);
 
 type Slot = (u32, Option<u32>);
 
+/// Сколько ждать нового документа фрейма. Конец перехода движок сообщает
+/// только для документа вкладки; если прежний документ фрейма и через это
+/// время пишет браузеру, переход отменили или он ушёл в загрузку.
+const FRAME_SETTLE: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct Registry {
     next: u64,
@@ -27,7 +33,7 @@ struct Registry {
     /// Переход на другой origin начался, но документ ещё не сменился: переход
     /// могут отменить («Остаться»), он может уйти в загрузку. Прежний документ
     /// пока остаётся на месте, но секреты ни ему, ни новому не уходят.
-    pending: HashMap<Slot, Context>,
+    pending: HashMap<Slot, (Context, Instant)>,
 }
 
 impl Registry {
@@ -77,7 +83,7 @@ impl Documents {
             }
             Some(_) => {
                 let context = state.context(tab, frame, origin, window, private);
-                state.pending.insert(slot, context);
+                state.pending.insert(slot, (context, Instant::now()));
             }
             None => {
                 let context = state.context(tab, frame, origin, window, private);
@@ -89,21 +95,42 @@ impl Documents {
     /// Контекст документа, приславшего сообщение. Сообщение нового документа
     /// (origin ожидающего перехода) значит, что переход состоялся.
     pub fn capture(&self, tab: u32, frame: Option<u32>, source: &str) -> Option<Context> {
+        self.capture_at(tab, frame, source, Instant::now())
+    }
+
+    fn capture_at(
+        &self,
+        tab: u32,
+        frame: Option<u32>,
+        source: &str,
+        now: Instant,
+    ) -> Option<Context> {
         let origin = origin_of(source)?;
         let mut state = self.0.lock();
         let slot = (tab, frame);
-        let arrived = state
-            .pending
+        let current = state
+            .entries
             .get(&slot)
-            .is_some_and(|next| next.origin == origin)
+            .is_some_and(|current| current.origin == origin);
+        let arrived = !current
             && state
-                .entries
+                .pending
                 .get(&slot)
-                .is_none_or(|current| current.origin != origin);
+                .is_some_and(|(next, _)| next.origin == origin);
         if arrived {
-            if let Some(context) = state.pending.remove(&slot) {
+            if let Some((context, _)) = state.pending.remove(&slot) {
                 state.replace(context);
             }
+        }
+        // Прежний документ фрейма всё ещё на месте — переход не состоялся.
+        let stale = frame.is_some()
+            && current
+            && state
+                .pending
+                .get(&slot)
+                .is_some_and(|(_, at)| now.duration_since(*at) >= FRAME_SETTLE);
+        if stale {
+            state.pending.remove(&slot);
         }
         state
             .entries
@@ -139,7 +166,7 @@ impl Documents {
             return false;
         }
         let context = match pending {
-            Some(next) if next.origin == origin => next,
+            Some((next, _)) if next.origin == origin => next,
             _ => state.context(tab, None, origin, window, private),
         };
         state.replace(context);
@@ -165,7 +192,10 @@ impl Documents {
         let Registry {
             entries, pending, ..
         } = &mut *state;
-        for ((id, _), context) in entries.iter_mut().chain(pending.iter_mut()) {
+        let pending = pending
+            .iter_mut()
+            .map(|(slot, (context, _))| (slot, context));
+        for ((id, _), context) in entries.iter_mut().chain(pending) {
             if *id == tab {
                 context.window = window.into();
             }
@@ -217,6 +247,26 @@ mod tests {
         // Тот же сайт — тот же адресат.
         docs.navigate(1, None, "https://a.test/next", "chrome", false);
         assert!(docs.current(&page));
+    }
+
+    #[test]
+    fn cancelled_frame_navigation_expires() {
+        let docs = Documents::default();
+        docs.navigate(1, None, "https://a.test/", "chrome", false);
+        docs.navigate(1, Some(7), "https://bank.test/login", "chrome", false);
+        let frame = docs.capture(1, Some(7), "https://bank.test/login").unwrap();
+        docs.navigate(1, Some(7), "https://files.test/x.zip", "chrome", false);
+        let soon = Instant::now();
+        assert!(docs
+            .capture_at(1, Some(7), "https://bank.test/login", soon)
+            .is_some());
+        assert!(!docs.current(&frame));
+        let later = soon + FRAME_SETTLE;
+        assert_eq!(
+            docs.capture_at(1, Some(7), "https://bank.test/login", later),
+            Some(frame.clone())
+        );
+        assert!(docs.current(&frame));
     }
 
     #[test]

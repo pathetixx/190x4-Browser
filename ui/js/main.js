@@ -319,7 +319,7 @@ listen("tab", (event) => {
       toast("Вкладка не открылась — движок не ответил");
       break;
     case "started":
-      upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null });
+      upsertTab(event.id, { loading: true, url: event.url, blocked: 0, media: null, edited: false });
       onNavigation(event.id);
       closeFieldMenu(event.id);
       state.passwordSites.delete(event.id);
@@ -634,6 +634,10 @@ function handlePageMessage({ id, source, payload }) {
     middleClickAt.set(id, performance.now());
     return;
   }
+  if (message.evt === "form_edited") {
+    upsertTab(id, { edited: true });
+    return;
+  }
   if (message.evt === "media_found" && typeof message.url === "string") {
     upsertTab(id, { media: { url: message.url, title: String(message.title ?? "") } });
   }
@@ -666,7 +670,8 @@ listen("password-offer", (offer) => {
 });
 
 listen("password-site", ({ tab, origin, accounts }) => {
-  state.passwordSites.set(tab, { origin, accounts });
+  if (Array.isArray(accounts) && accounts.length) state.passwordSites.set(tab, { origin, accounts });
+  else state.passwordSites.delete(tab);
   if (tab === state.activeId) renderOmnibox();
 });
 

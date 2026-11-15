@@ -1149,6 +1149,7 @@ pub fn engine_hints(app: AppHandle, hints: Value) {
 
 fn apply_setting(app: &AppHandle, state: &App, key: &str) {
     match key {
+        "passwords_autofill" => passwords::refresh(app),
         "identity" | "identity_sites" => crate::identity::apply(app),
         "download_dir" | "download_ask" => {
             let policy = download_policy(&state.store);
@@ -1581,6 +1582,7 @@ pub async fn bookmarks_export(
 
 fn passwords_changed(app: &AppHandle) {
     let _ = app.emit("passwords", ());
+    passwords::refresh(app);
 }
 
 #[tauri::command(async)]
@@ -1749,14 +1751,13 @@ pub async fn passwords_export(
     };
 
     let mut logins = Vec::new();
-    for entry in state.store.password_entries().map_err(text)? {
-        let Some((_, secret)) = state.store.password_secret(entry.id).map_err(text)? else {
-            continue;
-        };
+    // Одним запросом: учётку, изменённую во время экспорта в другом окне,
+    // файл получит целиком старой или целиком новой.
+    for entry in state.store.password_secrets_all().map_err(text)? {
         logins.push(passwords_csv::CsvLogin {
             origin: entry.origin,
             username: entry.username,
-            password: vault::reveal(&secret).map_err(text)?,
+            password: vault::reveal(&entry.secret).map_err(text)?,
         });
     }
     let csv = passwords_csv::render_logins(&logins).map_err(text)?;

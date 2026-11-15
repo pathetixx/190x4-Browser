@@ -116,6 +116,9 @@ pub struct Passwords {
     offers: Mutex<HashMap<u32, Candidate>>,
     /// Учётки по вкладке и фрейму.
     pages: Mutex<HashMap<(u32, Option<u32>), PageOffer>>,
+    /// Документы с формой входа: когда учётки или настройка подсказок
+    /// меняются, их список собирается заново, без перезагрузки страницы.
+    forms: Mutex<HashMap<(u32, Option<u32>), Context>>,
     /// Просьбы показать список, которые ждут учёток документа.
     menus: Mutex<HashMap<(u32, Option<u32>), PendingMenu>>,
     /// Когда вкладка последний раз начала навигацию. Сообщение страницы и
@@ -172,6 +175,7 @@ impl Passwords {
         let gone =
             |(id, slot): &(u32, Option<u32>)| *id == tab && (frame.is_none() || *slot == frame);
         self.pages.lock().retain(|key, _| !gone(key));
+        self.forms.lock().retain(|key, _| !gone(key));
         self.menus.lock().retain(|key, _| !gone(key));
         self.asked.lock().retain(|key, _| !gone(key));
     }
@@ -298,6 +302,11 @@ pub fn handle_message(
             let Some(document) = state.documents.capture(tab, frame, source) else {
                 return true;
             };
+            state
+                .passwords
+                .forms
+                .lock()
+                .insert((tab, frame), document.clone());
             // Сообщения страницы — недоверенный поток: сайт может слать их в
             // цикле. Поэтому работа уходит в пул задач, а не в новый поток на
             // каждое сообщение, и одна и та же форма не опрашивается чаще
@@ -312,6 +321,12 @@ pub fn handle_message(
             let Some(document) = state.documents.capture(tab, frame, source) else {
                 return true;
             };
+            // «С клавиатуры» — слова страницы. Список забирает фокус и заранее
+            // выбирает учётку (следующий Enter её подставит), только если
+            // стрелку вниз и правда нажали: иначе сайт подкладывал бы список
+            // под Enter, который человек нажимает для своей формы.
+            let keyboard = keyboard
+                && browser190x4_webview::tab::arrow_down_pressed(tab, Duration::from_millis(1500));
             let rect = rect.and_then(Rect::sane);
             let offer = state
                 .passwords
@@ -554,20 +569,20 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
     match action {
         "save" => {
             let secret = vault::protect(&candidate.password)?;
-            // Учётку могли удалить, а её номер — отдать другой: обновляем,
-            // только если под ним всё ещё тот же сайт и логин.
-            let replaces = candidate
-                .replaces
-                .as_ref()
-                .filter(|(id, origin)| same_login(&state.store, *id, origin, &candidate.username))
-                .map(|(id, _)| *id);
-            let id = match replaces {
-                Some(id) => {
-                    state
-                        .store
-                        .update_password(id, &candidate.username, Some(&secret))?;
-                    id
+            // Учётку могли удалить, а её номер — отдать другой: пароль
+            // меняется, только если под ним всё ещё тот же сайт и логин, —
+            // проверка и запись одним запросом.
+            let mut replaced = None;
+            if let Some((id, origin)) = &candidate.replaces {
+                if state
+                    .store
+                    .replace_password_secret(*id, origin, &candidate.username, &secret)?
+                {
+                    replaced = Some(*id);
                 }
+            }
+            let id = match replaced {
+                Some(id) => id,
                 None => {
                     state
                         .store
@@ -576,20 +591,12 @@ pub fn answer(app: &AppHandle, tab: u32, action: &str) -> anyhow::Result<()> {
             };
             state.store.touch_password(id)?;
             let _ = app.emit("passwords", ());
+            refresh(app);
         }
         "never" => state.store.never_save_password(&candidate.origin)?,
         _ => {}
     }
     Ok(())
-}
-
-/// Под номером `id` всё ещё учётка этого сайта с этим логином.
-fn same_login(store: &browser190x4_store::Store, id: i64, origin: &str, username: &str) -> bool {
-    store
-        .password_secret(id)
-        .ok()
-        .flatten()
-        .is_some_and(|(entry, _)| entry.origin == origin && entry.username == username)
 }
 
 /// На странице форма входа: найти учётки документа и запомнить их. Документ
@@ -613,9 +620,6 @@ fn offer_accounts(app: &AppHandle, document: Context) {
     let mut seen = HashSet::new();
     offered.retain(|account| seen.insert(account.id));
     tracing::debug!(tab, ?frame, offered = offered.len(), "форма входа");
-    if offered.is_empty() {
-        return;
-    }
 
     let accounts: Vec<Account> = offered
         .into_iter()
@@ -633,6 +637,26 @@ fn offer_accounts(app: &AppHandle, document: Context) {
             return;
         }
         let origin = document.origin.as_str();
+        // Учёток нет (или последнюю удалили): прежний список документа
+        // больше не показывается.
+        if accounts.is_empty() {
+            let mut pages = state.passwords.pages.lock();
+            if pages
+                .get(&(tab, frame))
+                .is_some_and(|offer| offer.document == document)
+            {
+                pages.remove(&(tab, frame));
+                drop(pages);
+                if frame.is_none() {
+                    let _ = handle.emit_to(
+                        document.window.as_str(),
+                        "password-site",
+                        serde_json::json!({ "tab": tab, "origin": origin, "accounts": [] }),
+                    );
+                }
+            }
+            return;
+        }
         state.passwords.pages.lock().insert(
             (tab, frame),
             PageOffer {
@@ -673,6 +697,20 @@ fn offer_accounts(app: &AppHandle, document: Context) {
             }
         }
     });
+}
+
+/// Учётки или настройка подсказок изменились: открытые формы входа получают
+/// новый список — импортированная учётка появляется, удалённая уходит.
+pub fn refresh(app: &AppHandle) {
+    let state = app.state::<App>();
+    let forms: Vec<Context> = state.passwords.forms.lock().values().cloned().collect();
+    for document in forms {
+        if !state.documents.current(&document) {
+            continue;
+        }
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || offer_accounts(&app, document));
+    }
 }
 
 /// Учётка, которую человек выбрал в окне браузера, — в документ вкладки или

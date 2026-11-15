@@ -1023,6 +1023,28 @@ fn sync_filtering(
 /// Белый — фон сайта, который свой не задал.
 const SITE_BACKGROUND: [u8; 3] = [255, 255, 255];
 
+/// Когда во вкладке последний раз нажали стрелку вниз — по событию движка,
+/// а не по сообщению страницы. Сообщение «откройте список паролей с
+/// клавиатуры» страница может прислать сама; захватить фокус и выбрать учётку
+/// список вправе, только если человек и правда нажал клавишу.
+static ARROW_DOWN: LazyLock<parking_lot::Mutex<HashMap<u32, std::time::Instant>>> =
+    LazyLock::new(Default::default);
+
+/// Стрелку вниз во вкладке нажимали не раньше `within` назад.
+pub fn arrow_down_pressed(tab: u32, within: std::time::Duration) -> bool {
+    ARROW_DOWN
+        .lock()
+        .get(&tab)
+        .is_some_and(|at| at.elapsed() <= within)
+}
+
+fn note_arrow_down(tab: u32) {
+    let mut pressed = ARROW_DOWN.lock();
+    let now = std::time::Instant::now();
+    pressed.retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(10));
+    pressed.insert(tab, now);
+}
+
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
 ///
 /// WebView2 отдаёт их до того, как страница их увидит. Всё, что относится к
@@ -1039,7 +1061,8 @@ fn wire_accelerators(
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
+        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_MENU,
+        VK_SHIFT,
     };
 
     let mut token = 0i64;
@@ -1073,6 +1096,10 @@ fn wire_accelerators(
                 let ctrl = down(VK_CONTROL);
                 let shift = down(VK_SHIFT);
                 let alt = down(VK_MENU);
+
+                if key == u32::from(VK_DOWN.0) && !ctrl && !alt {
+                    note_arrow_down(id);
+                }
 
                 // Видео на весь экран сворачивается по Escape, как в любом
                 // браузере; остальное время Escape принадлежит странице.

@@ -570,6 +570,17 @@ fn route_message(
         }
         // Остальное ждёт интерфейс окна; другие сообщения туда не идут:
         // страница, шлющая `postMessage` в цикле, загружала бы его событиями.
+        // Ввод в любом фрейме: черновик в редакторе внутри фрейма тоже не
+        // должен пропасть при выгрузке вкладки.
+        "form_edited" => {
+            let event = browser190x4_webview::TabEvent::Message {
+                id,
+                frame,
+                source: source.to_string(),
+                payload: payload.to_string(),
+            };
+            let _ = app.emit_to(label, "tab", &event);
+        }
         "navigate" | "middle_click" | "media_found" if top => {
             let event = browser190x4_webview::TabEvent::Message {
                 id,
