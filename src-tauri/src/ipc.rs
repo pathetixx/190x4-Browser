@@ -145,6 +145,12 @@ pub fn tab_popup_deny(app: AppHandle, opener: u32, token: u64) -> Result<(), Str
     with_tab(&app, opener, move |host| host.popup_deny(token))
 }
 
+/// Печатали ли на странице вкладки: такую вкладку браузер не выгружает.
+#[tauri::command]
+pub fn tab_edited(state: State<'_, App>, id: u32) -> bool {
+    state.documents.edited(id)
+}
+
 #[tauri::command]
 pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Option<u32>, String> {
     state.documents.forget(id, None);
@@ -152,6 +158,7 @@ pub fn tab_close(app: AppHandle, state: State<'_, App>, id: u32) -> Result<Optio
     external::forget_tab(&state, id);
     crate::page_messages::forget(id);
     crate::drm::forget_tab(id);
+    crate::sponsorblock::forget_tab(&app, id);
     with_tab(&app, id, move |host| {
         host.close(TabId(id))
             .map(|next| next.map(|t| t.0))
@@ -1149,6 +1156,8 @@ pub fn engine_hints(app: AppHandle, hints: Value) {
 
 fn apply_setting(app: &AppHandle, state: &App, key: &str) {
     match key {
+        "passwords_autofill" => passwords::refresh(app),
+        crate::stream_audio::SETTING => crate::stream_audio::apply(app),
         "identity" | "identity_sites" => crate::identity::apply(app),
         "download_dir" | "download_ask" => {
             let policy = download_policy(&state.store);
@@ -1490,17 +1499,20 @@ pub fn bookmark_update(
     parent: Option<i64>,
 ) -> Result<(), String> {
     let store = &state.store;
-    store
-        .update_bookmark(id, &title, url.as_deref())
-        .map_err(text)?;
+    // Сначала перенос: он проверяет папку (не внутрь самой себя) и может
+    // отказать. Отказ не должен оставить в базе половину правки.
     if let Some(parent) = parent {
         let current = store.bookmark(id).map_err(text)?.and_then(|n| n.parent_id);
         if current != Some(parent) {
             store.move_bookmark(id, parent, usize::MAX).map_err(text)?;
         }
+    }
+    let updated = store.update_bookmark(id, &title, url.as_deref());
+    if let Some(parent) = parent {
         let _ = store.set_setting("bookmark_folder", &Value::from(parent));
     }
     bookmarks_changed(&app);
+    updated.map_err(text)?;
     Ok(())
 }
 
@@ -1581,6 +1593,7 @@ pub async fn bookmarks_export(
 
 fn passwords_changed(app: &AppHandle) {
     let _ = app.emit("passwords", ());
+    passwords::refresh(app);
 }
 
 #[tauri::command(async)]
@@ -1749,14 +1762,13 @@ pub async fn passwords_export(
     };
 
     let mut logins = Vec::new();
-    for entry in state.store.password_entries().map_err(text)? {
-        let Some((_, secret)) = state.store.password_secret(entry.id).map_err(text)? else {
-            continue;
-        };
+    // Одним запросом: учётку, изменённую во время экспорта в другом окне,
+    // файл получит целиком старой или целиком новой.
+    for entry in state.store.password_secrets_all().map_err(text)? {
         logins.push(passwords_csv::CsvLogin {
             origin: entry.origin,
             username: entry.username,
-            password: vault::reveal(&secret).map_err(text)?,
+            password: vault::reveal(&entry.secret).map_err(text)?,
         });
     }
     let csv = passwords_csv::render_logins(&logins).map_err(text)?;
@@ -1831,6 +1843,10 @@ pub fn zoom_site_set(
     if host.is_empty() || host.len() > 255 {
         return Ok(());
     }
+    // Карта читается и пишется целиком: два окна, меняющие масштаб разных
+    // сайтов одновременно, без замка стёрли бы изменение друг друга.
+    static ZOOM_SITES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _guard = ZOOM_SITES.lock();
     let mut sites = match state.store.setting("zoom_sites").ok().flatten() {
         Some(Value::Object(map)) => map,
         _ => serde_json::Map::new(),

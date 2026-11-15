@@ -186,13 +186,22 @@ fn confirm_with_password(
         }
 
         // «ДОМЕН\имя» или «MicrosoftAccount\почта» — домен отдельно; «почта» — как есть.
-        let end = user
-            .iter()
-            .position(|&unit| unit == 0)
-            .unwrap_or(user.len());
-        let name = String::from_utf16_lossy(&user[..end]);
+        // Окно входа может вернуть домен и отдельным полем: без него доменная
+        // учётка с верным паролем не входила бы. UPN (`имя@домен`) — без домена.
+        let text = |buffer: &[u16]| {
+            let end = buffer
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(buffer.len());
+            String::from_utf16_lossy(&buffer[..end])
+        };
+        let name = text(&user);
+        let unpacked_domain = text(&domain);
         let (account_domain, account) = match name.split_once('\\') {
             Some((domain, account)) => (Some(domain.to_string()), account.to_string()),
+            None if !unpacked_domain.is_empty() && !name.contains('@') => {
+                (Some(unpacked_domain), name.clone())
+            }
             None => (None, name.clone()),
         };
         let blank = password.first() == Some(&0);

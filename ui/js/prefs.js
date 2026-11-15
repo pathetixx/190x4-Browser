@@ -80,6 +80,8 @@ export const DEFAULTS = {
   zoom_sites: {},
   smartscreen: true,
   media_autoplay: false,
+  // Звук для трансляций: браузер сам пересылает звук страниц (src-tauri/src/stream_audio.rs).
+  stream_audio: false,
   // Защищённое видео: Widevine вообще, переход на PlayReady, если Widevine не
   // справился, и сайты, где он уже выключен. Те же ключи читает src-tauri/src/drm.rs.
   drm_widevine: true,

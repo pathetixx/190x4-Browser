@@ -1076,7 +1076,7 @@ const BUILDERS = {
           ),
           setting(
             "Выгружать давно неоткрытые вкладки",
-            "Страница вкладки закрывается и открывается заново, когда вы к ней вернётесь: память освобождается целиком, но история переходов вкладки и введённый текст пропадают. Закреплённые вкладки и те, где играет звук, не выгружаются",
+            "Страница вкладки закрывается и открывается заново, когда вы к ней вернётесь: память освобождается целиком, но история переходов вкладки пропадает. Закреплённые вкладки, вкладки со звуком и страницы, где вы начали печатать, не выгружаются",
             select("tabs_discard", [
               ["60", "Через час"],
               ["120", "Через 2 часа"],
@@ -1087,6 +1087,16 @@ const BUILDERS = {
           ),
         ],
         { title: "Память" }
+      ),
+      group(
+        [
+          switchSetting(
+            "stream_audio",
+            "Звук для трансляций и записи экрана",
+            "Discord, OBS и другие программы, которые показывают окно браузера, передают и его звук. Нужна Windows 11; звук может идти с небольшой задержкой"
+          ),
+        ],
+        { title: "Звук" }
       ),
     ];
   },
@@ -1510,9 +1520,16 @@ function bookmarkManager() {
     return row;
   };
 
+  // Папку нельзя положить ни в неё саму, ни в её подпапки — их в списке нет.
+  const inside = (node, map, exclude) => {
+    for (let cursor = node; cursor; cursor = map.get(cursor.parent_id)) {
+      if (cursor.id === exclude) return true;
+    }
+    return false;
+  };
   const folderOptions = (map, exclude) =>
     nodes
-      .filter((node) => node.kind === "folder" && node.id !== exclude)
+      .filter((node) => node.kind === "folder" && !inside(node, map, exclude))
       .map((node) => {
         const parts = [];
         for (let cursor = node; cursor; cursor = map.get(cursor.parent_id)) parts.unshift(cursor.title);

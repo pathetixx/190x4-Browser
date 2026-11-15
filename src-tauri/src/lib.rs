@@ -35,6 +35,7 @@ mod shutdown;
 mod site_icons;
 mod sponsorblock;
 mod state;
+mod stream_audio;
 mod suggest;
 mod transfers;
 mod twitch;
@@ -185,6 +186,7 @@ pub fn run() {
             ipc::tab_history,
             ipc::tab_history_go,
             ipc::tab_selection,
+            ipc::tab_edited,
             ipc::app_quit,
             shutdown::shutdown_answer,
             ipc::chrome_focus,
@@ -273,6 +275,8 @@ pub fn run() {
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
             prune_history(store.clone());
+            // Звук для трансляций — или возврат громкости после аварийного выхода.
+            stream_audio::apply(&handle);
 
             // Первое окно — всегда; остальные поднимаются, если в прошлый раз
             // их было больше и пользователь просил восстанавливать сессию.
@@ -292,6 +296,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("не удалось запустить 190x4 Browser")
         .run(|handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Громкость сессий движка в микшере — на место.
+                stream_audio::shutdown();
+            }
             // Выход: в базе остаются сессии только тех окон, что были открыты.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 browser_windows::save_geometry(handle);
@@ -412,6 +420,7 @@ pub(crate) fn route_event(
             app.state::<App>().documents.forget(*id, Some(*frame));
             passwords::on_frame_gone(app, *id, *frame);
             page_messages::forget_frame(*id, *frame);
+            sponsorblock::forget_frame(app, *id, *frame);
             return;
         }
         // Плейлист Twitch: отвечает браузер, интерфейсу это не нужно.
@@ -463,8 +472,9 @@ pub(crate) fn route_event(
         }
         // Переход закончился: документ на экране либо сменился, либо остался
         // прежним (переход отменили или он ушёл в загрузку).
-        TabEvent::Finished { id, url, .. } => {
+        TabEvent::Finished { id, url, ok, .. } => {
             let state = app.state::<App>();
+            state.documents.typing_settled(*id, *ok);
             if state
                 .documents
                 .settle(*id, url, label, state.windows.is_private(label))
@@ -477,6 +487,7 @@ pub(crate) fn route_event(
             state
                 .documents
                 .navigate(*id, None, url, label, state.windows.is_private(label));
+            state.documents.typing_navigation(*id);
             passwords::on_navigation(app, *id);
             pip::on_navigation(app, *id);
             // Ссылки на приложения прежней страницы больше никто не откроет.
@@ -526,15 +537,17 @@ fn route_message(
     source: &str,
     payload: &str,
 ) {
+    // Лимит — до разбора: и чужие, и слишком большие сообщения расходуют его,
+    // иначе страница, шлющая в цикле мусор, держала бы главный поток разбором.
+    if !page_messages::allow(id, frame) {
+        return;
+    }
     if payload.len() > MAX_PAGE_MESSAGE {
         return;
     }
     let Some(evt) = page_messages::event_name(payload) else {
         return;
     };
-    if !page_messages::allow(id, frame) {
-        return;
-    }
     let top = frame.is_none();
     match evt.as_ref() {
         name if name.starts_with("password_") => {
@@ -570,6 +583,9 @@ fn route_message(
         }
         // Остальное ждёт интерфейс окна; другие сообщения туда не идут:
         // страница, шлющая `postMessage` в цикле, загружала бы его событиями.
+        // Ввод в любом фрейме: черновик в редакторе внутри фрейма тоже не
+        // должен пропасть при выгрузке вкладки.
+        "form_edited" => app.state::<App>().documents.mark_edited(id),
         "navigate" | "middle_click" | "media_found" if top => {
             let event = browser190x4_webview::TabEvent::Message {
                 id,
@@ -1011,12 +1027,17 @@ pub(crate) fn rebuild_filter(guard: Arc<Guard>, store: Arc<Store>, app: tauri::A
                 Guard::build(texts, resources())
             }
         };
+        let bytes = fresh.then(|| Guard::snapshot(&engine));
+        // Проверка поколения и замена — под одним замком: сборка, которая
+        // задержалась между ними, не заменит фильтр, уже собранный новее.
+        static PUBLISHING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let publishing = PUBLISHING.lock();
         if FILTER_BUILD.load(Ordering::SeqCst) != build {
             tracing::debug!("списки сменились, пока фильтр собирался — этот набор устарел");
             return;
         }
-        let bytes = fresh.then(|| Guard::snapshot(&engine));
         guard.swap(engine);
+        drop(publishing);
         tracing::info!(
             lists = count,
             snapshot = !fresh,

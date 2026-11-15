@@ -75,15 +75,31 @@ pub fn window_gone(app: &AppHandle, label: &str) {
     }
 }
 
+/// Сделать `f`, если выход сейчас не готовится, — под тем же замком, под
+/// которым выход снимает список окон. Новое окно либо попадает в этот список,
+/// либо не создаётся вовсе.
+pub fn unless_preparing<R>(app: &AppHandle, f: impl FnOnce() -> R) -> Option<R> {
+    let state = app.state::<Shutdown>();
+    let inner = state.0.lock();
+    if inner.active.is_some() {
+        return None;
+    }
+    let result = f();
+    drop(inner);
+    Some(result)
+}
+
 pub async fn prepare(app: &AppHandle) -> Result<Option<Permit>, String> {
-    let labels = app.state::<crate::state::App>().windows.labels();
     let (tx, rx) = oneshot::channel();
-    let id = {
+    let (id, labels) = {
         let state = app.state::<Shutdown>();
         let mut inner = state.0.lock();
         if inner.active.is_some() {
             return Err("Браузер уже готовится к закрытию".into());
         }
+        // Список окон — под замком: окно, которое создаётся или закрывается
+        // прямо сейчас, либо уже в нём, либо его уже нет.
+        let labels = app.state::<crate::state::App>().windows.labels();
         inner.next += 1;
         let id = inner.next;
         inner.active = Some(Attempt {
@@ -91,7 +107,7 @@ pub async fn prepare(app: &AppHandle) -> Result<Option<Permit>, String> {
             waiting: labels.iter().cloned().collect(),
             reply: Some(tx),
         });
-        id
+        (id, labels)
     };
     let permit = Permit {
         app: app.clone(),

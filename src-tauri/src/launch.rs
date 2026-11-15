@@ -56,6 +56,12 @@ impl Launch {
             .push(tab);
     }
 
+    /// Окно так и не открылось: его адреса и вкладки никто не заберёт.
+    pub fn forget_window(&self, label: &str) {
+        self.windows.lock().remove(label);
+        self.adopt.lock().remove(label);
+    }
+
     fn take(&self, label: &str) -> Vec<String> {
         let mut found = self.windows.lock().remove(label).unwrap_or_default();
         found.extend(std::mem::take(&mut *self.common.lock()));

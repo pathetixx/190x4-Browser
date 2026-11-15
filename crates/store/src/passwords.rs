@@ -216,6 +216,46 @@ impl Store {
         Ok(())
     }
 
+    /// Новый пароль учётки `id`, если под этим номером всё ещё учётка этого
+    /// сайта с этим логином. Проверка и запись — один запрос: между ними
+    /// учётку не удалить и номер не отдать другой. `false` — учётки уже нет.
+    pub fn replace_password_secret(
+        &self,
+        id: i64,
+        origin: &str,
+        username: &str,
+        secret: &[u8],
+    ) -> anyhow::Result<bool> {
+        let changed = self.with(|db| {
+            db.execute(
+                "UPDATE passwords SET secret = ?4 WHERE id = ?1 AND origin = ?2 AND username = ?3",
+                rusqlite::params![id, origin, username, secret],
+            )
+        })?;
+        Ok(changed == 1)
+    }
+
+    /// Все учётки с паролями одним запросом — для экспорта: логин и пароль в
+    /// строке файла всегда из одной и той же записи.
+    pub fn password_secrets_all(&self) -> anyhow::Result<Vec<PasswordSecret>> {
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT id, origin, username, secret FROM passwords ORDER BY origin, username",
+            )?;
+            let rows: Vec<PasswordSecret> = stmt
+                .query_map([], |row| {
+                    Ok(PasswordSecret {
+                        id: row.get(0)?,
+                        origin: row.get(1)?,
+                        username: row.get(2)?,
+                        secret: row.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        })
+    }
+
     pub fn delete_password(&self, id: i64) -> anyhow::Result<()> {
         self.with(|db| db.execute("DELETE FROM passwords WHERE id = ?1", [id]))?;
         Ok(())
@@ -324,6 +364,31 @@ mod tests {
         );
 
         assert!(store.update_password(other, "me", None).is_err());
+    }
+
+    #[test]
+    fn secret_is_replaced_only_for_the_same_login() {
+        let store = Store::memory().unwrap();
+        let id = store
+            .save_password("https://habr.com", "me", b"one")
+            .unwrap();
+        assert!(!store
+            .replace_password_secret(id, "https://habr.com", "work", b"two")
+            .unwrap());
+        assert!(!store
+            .replace_password_secret(id, "https://vk.com", "me", b"two")
+            .unwrap());
+        assert!(store
+            .replace_password_secret(id, "https://habr.com", "me", b"two")
+            .unwrap());
+        let all = store.password_secrets_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].secret, b"two".to_vec());
+
+        store.delete_password(id).unwrap();
+        assert!(!store
+            .replace_password_secret(id, "https://habr.com", "me", b"three")
+            .unwrap());
     }
 
     #[test]

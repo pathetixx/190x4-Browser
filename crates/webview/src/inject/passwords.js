@@ -173,6 +173,21 @@
     true
   );
 
+  // Человек начал печатать в документе: браузер не выгружает такую вкладку,
+  // иначе недописанное письмо пропало бы вместе со страницей. Один раз на
+  // документ; поиск по сайту черновиком не считается.
+  let edited = false;
+  on(
+    window,
+    "input",
+    (event) => {
+      if (edited || !event.isTrusted || !(event.target instanceof Element)) return;
+      if (event.target instanceof HTMLInputElement && event.target.type === "search") return;
+      edited = post({ evt: "form_edited" });
+    },
+    true
+  );
+
   // Разбирать щелчки и Enter стоит только там, где есть вход: поиск формы
   // вокруг кнопки обходит DOM и пересчитывает раскладку, а на странице без
   // формы входа (почти на любой) это была бы цена каждого щелчка.
@@ -369,10 +384,23 @@
   const applyFill = (data) => {
     // Форма — вокруг поля, у которого выбрали учётку; без него — первая на странице.
     const anchor = lastField && lastField.isConnected && usable(lastField) ? lastField : null;
-    const password =
-      (anchor && anchor.type === "password" && anchor) ||
-      passwordsIn(anchor ? scopeFor(anchor) : document)[0] ||
-      passwordsIn(document)[0];
+    // Пароль выбранной формы: из той же <form>, а без неё — тот, чьим логином
+    // считается выбранное поле. У входа «сначала почта» пароля ещё нет, и
+    // чужой пароль на странице (форма регистрации) заполнять нельзя.
+    const own = () => {
+      // Поля формы — и те, что связаны с ней атрибутом form= снаружи разметки.
+      if (anchor.form) {
+        return (
+          Array.from(anchor.form.elements).find(
+            (item) => item instanceof HTMLInputElement && item.type === "password" && usable(item)
+          ) || null
+        );
+      }
+      return passwordsIn(scopeFor(anchor)).find((item) => usernameFor(item, scopeFor(item)) === anchor) || null;
+    };
+    const password = anchor
+      ? (anchor.type === "password" && anchor) || own()
+      : passwordsIn(document)[0];
     if (password) {
       setValue(usernameFor(password, scopeFor(password)), data.username);
       setValue(password, data.password);

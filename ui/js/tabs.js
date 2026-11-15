@@ -293,6 +293,9 @@ async function wakeOnce(tab) {
   const url = tab.url;
   const realId = await invoke("tab_open", { url }).catch(() => null);
   if (realId == null) return null;
+  // Заглушённая вкладка просыпается заглушённой: у новой страницы звук свой.
+  // Страница к этому мигу ещё грузится — звучать ей пока нечем.
+  if (tab.muted) await invoke("tab_mute", { id: realId, muted: true }).catch(() => {});
   if (!state.tabs.get(tab.id)?.sleeping) {
     markClosed(realId);
     removeTab(realId);
@@ -459,7 +462,10 @@ export async function close(id, { toOpener = false, force = false } = {}) {
   // Последняя вкладка окна закрывает само окно, как в Chrome. Страницу сперва
   // спрашивают («Покинуть сайт?»), а в сессии окна вкладка остаётся: последнее
   // окно вернётся с ней при запуске, другое вернёт Ctrl+Shift+T.
-  if (![...state.tabs.values()].some((other) => other.id !== id && !other.closing)) {
+  // Вкладка, которая ещё ждёт ответа своей страницы, в счёт: при закрытии
+  // группы окно закроет та, что ответит последней, а «Остаться» на любой
+  // оставит окно с ней.
+  if (![...state.tabs.values()].some((other) => other.id !== id && (!other.closing || leaving.has(other.id)))) {
     if (!force && !tab.internal && !tab.sleeping && !(await confirmClose(id))) return;
     await beforeWindowClose().catch(() => {});
     invoke("window_command", { action: "close_asked" }).catch(() => {});
@@ -770,8 +776,13 @@ export async function moveToNewWindow(id, at = null) {
   const tab = state.tabs.get(id);
   if (!tab || tab.internal || !tab.url) return;
   if (tab.sleeping) {
-    // У спящей вкладки страницы ещё нет — переезжает её адрес.
-    await invoke("window_open", { private: Boolean(state.window.private), url: tab.url }).catch(() => {});
+    // У спящей вкладки страницы ещё нет — переезжает её адрес. Окно не
+    // открылось — вкладка остаётся на месте, а не пропадает.
+    try {
+      await invoke("window_open", { private: Boolean(state.window.private), url: tab.url });
+    } catch {
+      return;
+    }
     await close(id, { force: true });
     return;
   }
@@ -1048,7 +1059,7 @@ function sleepIdle() {
     if (tab.id === state.pipTab) continue;
     const idle = now - seenAt.get(tab.id);
     if (discard > 0 && idle >= discard * 60_000 && discardable(tab)) {
-      discardTab(tab);
+      discardUnlessEdited(tab);
       continue;
     }
     if (tab.frozen || !(minutes > 0) || idle < minutes * 60_000) continue;
@@ -1063,6 +1074,28 @@ function sleepIdle() {
 /** Страница сайта, которая ничего не ждёт от человека: её можно закрыть и открыть заново. */
 function discardable(tab) {
   return /^https?:\/\//i.test(tab.url ?? "") && !hasLeaveDialog(tab.id);
+}
+
+/** Вкладки, про которые браузер сейчас спрашивает, печатали ли на них. */
+const discardChecks = new Set();
+
+/**
+ * Выгрузить вкладку, если на её странице не печатали: там может быть
+ * черновик, и такую вкладку только усыпляют. Признак ввода хранит Rust — он
+ * переезжает с вкладкой в другое окно и переживает переход в загрузку.
+ */
+function discardUnlessEdited(tab) {
+  if (discardChecks.has(tab.id)) return;
+  discardChecks.add(tab.id);
+  invoke("tab_edited", { id: tab.id })
+    .then((edited) => {
+      const current = state.tabs.get(tab.id);
+      if (edited || !current || current.sleeping || current.audible || current.pinned) return;
+      if (current.id === state.activeId || current.id === state.splitId) return;
+      if (discardable(current)) discardTab(current);
+    })
+    .catch(() => {})
+    .finally(() => discardChecks.delete(tab.id));
 }
 
 /** Выгрузить вкладку: страница закрывается, место в строке остаётся спящей вкладкой. */

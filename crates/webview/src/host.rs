@@ -653,6 +653,10 @@ impl TabHost {
                 let bounds = state.bounds_for(id);
                 let visible = state.active == Some(id) || state.split == Some(id);
 
+                // Настройка вкладки может сорваться на любом шаге: тогда
+                // вебвью закрывается, иначе обработчики, которые уже успели
+                // встать, держали бы живую страницу без места в строке.
+                let unfinished = controller.clone();
                 let tab = match Tab::from_controller(
                     id,
                     controller,
@@ -670,6 +674,7 @@ impl TabHost {
                     Ok(tab) => tab,
                     Err(err) => {
                         tracing::error!(?id, %err, "вкладка не настроена");
+                        let _ = unsafe { unfinished.Close() };
                         if let Some(popup) = popup {
                             popup.deny();
                         }
@@ -715,14 +720,33 @@ impl TabHost {
 
         // Родитель — контейнер, а не окно приложения: иначе поверхность
         // окажется под chrome-вебвью.
-        unsafe {
-            match private_options(&env, private)? {
-                Some(options) => {
-                    let env10: ICoreWebView2Environment10 = env.cast()?;
-                    env10.CreateCoreWebView2ControllerWithOptions(container, &options, &handler)?
-                }
-                None => env.CreateCoreWebView2Controller(container, &handler)?,
+        let created = unsafe {
+            match private_options(&env, private) {
+                Ok(Some(options)) => env.cast::<ICoreWebView2Environment10>().and_then(|env10| {
+                    env10.CreateCoreWebView2ControllerWithOptions(container, &options, &handler)
+                }),
+                Ok(None) => env.CreateCoreWebView2Controller(container, &handler),
+                Err(err) => Err(err),
             }
+        };
+        // Движок отказал сразу, коллбека не будет: вкладки, которую уже
+        // записали в порядок (или прогретой), нет и не будет.
+        if let Err(err) = created {
+            let mut state = self.inner.borrow_mut();
+            if spare {
+                state.spare_pending = false;
+            } else {
+                state.order.retain(|other| *other != id);
+                if state.active == Some(id) {
+                    state.active = state.order.last().copied();
+                }
+            }
+            let waiting = popup.and_then(|token| state.popups.borrow_mut().remove(&token));
+            drop(state);
+            if let Some(popup) = waiting {
+                popup.deny();
+            }
+            return Err(err.into());
         }
         Ok(id)
     }
@@ -752,7 +776,7 @@ impl TabHost {
         if let Some(mut tab) = state.tabs.remove(&id) {
             if state.downloads.busy(id.0) {
                 tracing::debug!(?id, "вкладка закрыта, её загрузка ещё идёт");
-                if let Err(err) = tab.set_visible(false) {
+                if let Err(err) = tab.park() {
                     tracing::debug!(?id, %err, "вкладка с загрузкой не спрятана");
                 }
                 state.parked.insert(id, tab);
@@ -927,6 +951,9 @@ impl TabHost {
             doc: None,
         });
 
+        // Отказ движка сразу, без коллбека: окно и ожидающая страница не
+        // должны остаться висеть.
+        let fallback = (popup.args.clone(), popup.deferral.clone());
         let inner = self.inner.clone();
         let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
             move |code, controller| {
@@ -937,7 +964,17 @@ impl TabHost {
                     Err(err) => {
                         tracing::warn!(%err, "окно мини-плеера не получило страницу");
                         popup.deny();
-                        close_pip(&inner, false, "failed");
+                        // Закрывается только своё окно: запоздавший отказ
+                        // прежнего запроса не должен закрыть новый мини-плеер.
+                        let ours = inner
+                            .try_borrow()
+                            .map(|state| {
+                                state.pip.as_ref().is_some_and(|slot| slot.window == window)
+                            })
+                            .unwrap_or(true);
+                        if ours {
+                            close_pip(&inner, false, "failed");
+                        }
                         return Ok(());
                     }
                 };
@@ -1011,14 +1048,30 @@ impl TabHost {
                 Ok(())
             },
         ));
-        unsafe {
-            match private_options(&env, private)? {
-                Some(options) => {
-                    let env10: ICoreWebView2Environment10 = env.cast()?;
-                    env10.CreateCoreWebView2ControllerWithOptions(window, &options, &handler)?
-                }
-                None => env.CreateCoreWebView2Controller(window, &handler)?,
+        let created = unsafe {
+            match private_options(&env, private) {
+                Ok(Some(options)) => env.cast::<ICoreWebView2Environment10>().and_then(|env10| {
+                    env10.CreateCoreWebView2ControllerWithOptions(window, &options, &handler)
+                }),
+                Ok(None) => env.CreateCoreWebView2Controller(window, &handler),
+                Err(err) => Err(err),
             }
+        };
+        if let Err(err) = created {
+            unsafe {
+                let _ = fallback.0.SetHandled(true);
+                let _ = fallback.1.Complete();
+            }
+            let ours = self
+                .inner
+                .borrow()
+                .pip
+                .as_ref()
+                .is_some_and(|slot| slot.window == window);
+            if ours {
+                close_pip(&self.inner, false, "failed");
+            }
+            return Err(err.into());
         }
         Ok(())
     }
@@ -1202,8 +1255,11 @@ impl TabHost {
             };
             state.swapped = false;
         }
-        state.apply_visibility()?;
-        state.apply_bounds()?;
+        // Вкладка уже вынута: ошибка раскладки соседей не должна её потерять —
+        // переезд доводится до конца, а раскладка поправится следующей.
+        if let Err(err) = state.apply_visibility().and_then(|()| state.apply_bounds()) {
+            tracing::debug!(?id, %err, "окно после ухода вкладки не разложено");
+        }
         Ok((tab, hwnd))
     }
 
@@ -1228,9 +1284,15 @@ impl TabHost {
             state.windows.insert(id, hwnd);
         }
         state.tabs.insert(id, tab);
-        rehomed?;
-        state.apply_bounds()?;
-        state.apply_visibility()?;
+        // Переезд считается состоявшимся и при ошибке движка: вкладка уже
+        // здесь, и интерфейс должен о ней узнать, иначе окна разошлись бы в
+        // том, где она живёт.
+        if let Err(err) = rehomed {
+            tracing::warn!(?id, %err, "вкладка переехала с ошибкой движка");
+        }
+        if let Err(err) = state.apply_bounds().and_then(|()| state.apply_visibility()) {
+            tracing::debug!(?id, %err, "окно с новой вкладкой не разложено");
+        }
         drop(state);
         self.with_tab(id, Tab::announce_moved);
         Ok(())

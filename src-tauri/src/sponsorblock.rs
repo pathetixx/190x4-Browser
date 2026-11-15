@@ -12,7 +12,8 @@
 //! ждёт сегменты. Сеть и настройки — здесь; сообщению страницы верят только в
 //! номере видео, адрес документа берётся у движка.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use browser190x4_store::Store;
@@ -109,6 +110,11 @@ struct RawVideo {
 #[derive(Default)]
 pub struct SponsorBlock {
     cache: Mutex<HashMap<String, (Instant, Vec<RawSegment>)>>,
+    /// Растёт при каждой смене настроек: сегменты, найденные по прежним
+    /// (ответ сервера пришёл позже выключения), плееру не уходят.
+    settings: AtomicU64,
+    /// Плееры YouTube во фреймах чужих страниц: новые настройки нужны и им.
+    frames: Mutex<HashSet<(u32, u32)>>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +143,12 @@ pub fn handle_message(
     if !valid_video(&video) {
         return true;
     }
+    if let Some(frame) = frame {
+        app.state::<SponsorBlock>()
+            .frames
+            .lock()
+            .insert((tab, frame));
+    }
     let app = app.clone();
     // Сообщение пришло на главный поток: сеть и база — в фоне.
     tauri::async_runtime::spawn(async move {
@@ -144,8 +156,7 @@ pub fn handle_message(
         if !store.setting_bool("ext_sponsorblock_enabled", true) {
             return;
         }
-        let modes = modes(&store);
-        if modes.values().all(|mode| *mode == Mode::Off) {
+        if modes(&store).values().all(|mode| *mode == Mode::Off) {
             return;
         }
         let raw = match segments_of(&app, &video).await {
@@ -155,7 +166,13 @@ pub fn handle_message(
                 return;
             }
         };
-        let segments = choose(&raw, &modes);
+        // Настройки — после ответа сервера: пока он шёл, расширение могли
+        // выключить или сменить режимы.
+        let generation = app.state::<SponsorBlock>().settings.load(Ordering::SeqCst);
+        if !store.setting_bool("ext_sponsorblock_enabled", true) {
+            return;
+        }
+        let segments = choose(&raw, &modes(&store));
         let message = json!({
             "cmd": "sponsorblock_segments",
             "origin": origin,
@@ -163,7 +180,18 @@ pub fn handle_message(
             "segments": segments,
         })
         .to_string();
+        let current = app.clone();
         crate::state::later(&app, tab, move |host| {
+            // Настройки сменились, пока сегменты шли сюда: плеер получил
+            // `sponsorblock_refresh` и спросит заново.
+            if current
+                .state::<SponsorBlock>()
+                .settings
+                .load(Ordering::SeqCst)
+                != generation
+            {
+                return;
+            }
             host.with_tab(browser190x4_webview::TabId(tab), |view| {
                 if let Err(err) = view.post_to(frame, &message) {
                     tracing::debug!(%err, "сегменты не отправлены плееру");
@@ -281,9 +309,27 @@ fn valid_video(video: &str) -> bool {
 
 /// Настройки SponsorBlock сменились: открытые страницы YouTube берут их сразу.
 pub fn apply(app: &AppHandle) {
+    let sponsorblock = app.state::<SponsorBlock>();
+    sponsorblock.settings.fetch_add(1, Ordering::SeqCst);
+    let frames: Vec<(u32, u32)> = sponsorblock.frames.lock().iter().copied().collect();
     let state = app.state::<App>();
     for label in state.windows.labels() {
-        let _ = crate::state::with_host(app, &label, |host| {
+        let frames = frames.clone();
+        let _ = crate::state::with_host(app, &label, move |host| {
+            // Плееры, встроенные в чужие страницы: origin у них свой, и
+            // скрипт сверяет его сам.
+            for (tab, frame) in frames {
+                host.with_tab(browser190x4_webview::TabId(tab), |view| {
+                    for origin in [
+                        "https://www.youtube.com",
+                        "https://www.youtube-nocookie.com",
+                    ] {
+                        let message =
+                            json!({ "cmd": "sponsorblock_refresh", "origin": origin }).to_string();
+                        let _ = view.post_to(Some(frame), &message);
+                    }
+                });
+            }
             for brief in host.tabs_brief() {
                 let Some(origin) = youtube_origin(&brief.url) else {
                     continue;
@@ -298,6 +344,22 @@ pub fn apply(app: &AppHandle) {
             }
         });
     }
+}
+
+/// Фрейм исчез: настройки ему больше не нужны.
+pub fn forget_frame(app: &AppHandle, tab: u32, frame: u32) {
+    app.state::<SponsorBlock>()
+        .frames
+        .lock()
+        .remove(&(tab, frame));
+}
+
+/// Вкладку закрыли: её фреймы тоже.
+pub fn forget_tab(app: &AppHandle, tab: u32) {
+    app.state::<SponsorBlock>()
+        .frames
+        .lock()
+        .retain(|(id, _)| *id != tab);
 }
 
 /// Origin документа, если это YouTube (с поддоменами) или его плеер без кук.

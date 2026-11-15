@@ -728,6 +728,9 @@ pub struct Tab {
     /// Вкладку закрывают: навигация на `about:blank` спрашивает страницу
     /// «Покинуть сайт?», а её начало значит «можно закрывать».
     closing: Rc<Cell<bool>>,
+    /// Вкладку закрыли, но её загрузка ещё идёт ([`Tab::park`]): новых окон
+    /// у такой страницы нет.
+    parked: Rc<Cell<bool>>,
     /// События вкладки уходят в интерфейс. Заранее прогретая новая вкладка
     /// молчит, пока её не отдали пользователю (`announce`).
     announced: Rc<Cell<bool>>,
@@ -1023,6 +1026,28 @@ fn sync_filtering(
 /// Белый — фон сайта, который свой не задал.
 const SITE_BACKGROUND: [u8; 3] = [255, 255, 255];
 
+/// Когда во вкладке последний раз нажали стрелку вниз — по событию движка,
+/// а не по сообщению страницы. Сообщение «откройте список паролей с
+/// клавиатуры» страница может прислать сама; захватить фокус и выбрать учётку
+/// список вправе, только если человек и правда нажал клавишу.
+static ARROW_DOWN: LazyLock<parking_lot::Mutex<HashMap<u32, std::time::Instant>>> =
+    LazyLock::new(Default::default);
+
+/// Стрелку вниз во вкладке нажимали не раньше `within` назад.
+pub fn arrow_down_pressed(tab: u32, within: std::time::Duration) -> bool {
+    ARROW_DOWN
+        .lock()
+        .get(&tab)
+        .is_some_and(|at| at.elapsed() <= within)
+}
+
+fn note_arrow_down(tab: u32) {
+    let mut pressed = ARROW_DOWN.lock();
+    let now = std::time::Instant::now();
+    pressed.retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(10));
+    pressed.insert(tab, now);
+}
+
 /// Перехват клавиш, принадлежащих браузеру, пока фокус на странице.
 ///
 /// WebView2 отдаёт их до того, как страница их увидит. Всё, что относится к
@@ -1039,7 +1064,8 @@ fn wire_accelerators(
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
+        GetAsyncKeyState, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_MENU,
+        VK_SHIFT,
     };
 
     let mut token = 0i64;
@@ -1073,6 +1099,10 @@ fn wire_accelerators(
                 let ctrl = down(VK_CONTROL);
                 let shift = down(VK_SHIFT);
                 let alt = down(VK_MENU);
+
+                if key == u32::from(VK_DOWN.0) && !ctrl && !alt {
+                    note_arrow_down(id);
+                }
 
                 // Видео на весь экран сворачивается по Escape, как в любом
                 // браузере; остальное время Escape принадлежит странице.
@@ -1990,6 +2020,7 @@ impl Tab {
             fullscreen,
             scripts,
             closing: Rc::new(Cell::new(false)),
+            parked: Rc::new(Cell::new(false)),
             announced,
             sink: sink.clone(),
             route,
@@ -2383,6 +2414,7 @@ impl Tab {
             let s = sink.clone();
             let source = self.source.clone();
             let pip_expected = self.pip_expected.clone();
+            let parked = self.parked.clone();
             let controller = self.controller.clone();
             let core_ref = core.clone();
             let private = self.private;
@@ -2394,6 +2426,12 @@ impl Tab {
                     };
 
                     let Some(args) = args else { return Ok(()) };
+                    // Закрытая вкладка докачивает загрузку: её окна некому
+                    // показать, а без ответа страница ждала бы его вечно.
+                    if parked.get() {
+                        args.SetHandled(true)?;
+                        return Ok(());
+                    }
                     let mut raw = PWSTR::null();
                     args.Uri(&mut raw)?;
                     let url = take_pwstr(raw);
@@ -3026,6 +3064,26 @@ impl Tab {
             self.set_memory_target(true);
         }
         Ok(())
+    }
+
+    /// Вкладку закрыли, а её загрузка ещё идёт: страница живёт невидимой до
+    /// конца загрузки (её события загрузки нужны до конца), но для человека её
+    /// больше нет: звук выключен, видео и музыка на паузе, новых окон нет.
+    pub fn park(&mut self) -> windows_core::Result<()> {
+        self.parked.set(true);
+        if let Err(err) = self.set_muted(true) {
+            tracing::debug!(%err, "закрытая вкладка не заглушена");
+        }
+        let handler = webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+        unsafe {
+            let _ = self.core.ExecuteScript(
+                windows_core::h!(
+                    "document.querySelectorAll('video,audio').forEach((m) => { try { m.pause(); } catch (_) {} })"
+                ),
+                &handler,
+            );
+        }
+        self.set_visible(false)
     }
 
     pub fn visible(&self) -> bool {
