@@ -1151,6 +1151,7 @@ pub fn engine_hints(app: AppHandle, hints: Value) {
 fn apply_setting(app: &AppHandle, state: &App, key: &str) {
     match key {
         "passwords_autofill" => passwords::refresh(app),
+        crate::stream_audio::SETTING => crate::stream_audio::apply(app),
         "identity" | "identity_sites" => crate::identity::apply(app),
         "download_dir" | "download_ask" => {
             let policy = download_policy(&state.store);

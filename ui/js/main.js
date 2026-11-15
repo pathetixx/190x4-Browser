@@ -669,6 +669,11 @@ listen("password-offer", (offer) => {
   openPopup("password", key, { width: 340, align: "end", payload: offer }).catch(() => {});
 });
 
+// Звук для трансляций не включился (старая Windows): сказать, почему.
+listen("stream-audio", ({ error }) => {
+  if (error) toast(String(error));
+});
+
 listen("password-site", ({ tab, origin, accounts }) => {
   if (Array.isArray(accounts) && accounts.length) state.passwordSites.set(tab, { origin, accounts });
   else state.passwordSites.delete(tab);

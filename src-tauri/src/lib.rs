@@ -35,6 +35,7 @@ mod shutdown;
 mod site_icons;
 mod sponsorblock;
 mod state;
+mod stream_audio;
 mod suggest;
 mod transfers;
 mod twitch;
@@ -273,6 +274,8 @@ pub fn run() {
             filters::spawn(handle.clone());
             rebuild_filter(guard.clone(), store.clone(), handle.clone());
             prune_history(store.clone());
+            // Звук для трансляций — или возврат громкости после аварийного выхода.
+            stream_audio::apply(&handle);
 
             // Первое окно — всегда; остальные поднимаются, если в прошлый раз
             // их было больше и пользователь просил восстанавливать сессию.
@@ -292,6 +295,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("не удалось запустить 190x4 Browser")
         .run(|handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Громкость сессий движка в микшере — на место.
+                stream_audio::shutdown();
+            }
             // Выход: в базе остаются сессии только тех окон, что были открыты.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 browser_windows::save_geometry(handle);
